@@ -21,6 +21,12 @@ namespace librmcs::firmware::board {
 
 namespace spec = librmcs::spec::rmcs_board_pro;
 
+// Board capability flags consumed by the shared application layer.
+#define BOARD_HAS_BMI088           1
+#define BOARD_HAS_GPIO_APP         1
+#define BOARD_HAS_USB_SPEED_SWITCH 1
+#define BOARD_LED_USE_WS2812       1
+
 #define BOARD_CAN0(prefix, suffix) prefix##3##suffix
 #define BOARD_CAN1(prefix, suffix) prefix##2##suffix
 #define BOARD_CAN2(prefix, suffix) prefix##1##suffix

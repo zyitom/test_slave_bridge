@@ -5,10 +5,14 @@ project(rmcs_board_superbuild LANGUAGES NONE)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/../common/cmake/librmcs_firmware.cmake")
 
-set(BOARD "pro" CACHE STRING "Target board (pro / lite)")
-set_property(CACHE BOARD PROPERTY STRINGS pro lite)
+set(BOARD "pro" CACHE STRING "Target board (pro / lite / hpm5321)")
+set_property(CACHE BOARD PROPERTY STRINGS pro lite hpm5321)
 set(BOARD_SEARCH_PATH "${CMAKE_CURRENT_SOURCE_DIR}/boards" CACHE PATH "Board search path")
-set(RV_ARCH "rv32imafdcb" CACHE STRING "RISC-V arch")
+# Bitmanip is enabled by the HPM SoC CMake via the granular _zba_zbb_zbc_zbs
+# extensions, so the umbrella "b" here is redundant. Keeping it makes the arch
+# string "rv32imafdcb_..._zba_zbb_zbc_zbs", which recent binutils reject ("cannot
+# find default versions of the ISA extension `b'"). Drop the redundant "b".
+set(RV_ARCH "rv32imafdc" CACHE STRING "RISC-V arch")
 set(RV_ABI "ilp32d" CACHE STRING "RISC-V ABI")
 set(BOARD_BOOTLOADER_MODE "auto" CACHE STRING "Bootloader mode (auto / manual)")
 set_property(CACHE BOARD_BOOTLOADER_MODE PROPERTY STRINGS auto manual)

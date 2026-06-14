@@ -262,9 +262,15 @@ private:
         }
     }
 
-    void usb_transmit_complete_callback(TransferWrapper* wrapper) {
-        // Share mutex with teardown so destructor can block callbacks before draining the queue
-        const std::scoped_lock guard{transmit_transfer_push_mutex_};
+void usb_transmit_complete_callback(TransferWrapper* wrapper) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto interval = now - last_tx_callback_timepoint_;
+    if (last_tx_callback_timepoint_ != std::chrono::steady_clock::time_point::min())
+        logger_.info("TX interval: {}us",
+            std::chrono::duration_cast<std::chrono::microseconds>(interval).count());
+    last_tx_callback_timepoint_ = now;
+
+    const std::scoped_lock guard{transmit_transfer_push_mutex_};
 
         if (stop_handling_events_.load(std::memory_order::relaxed)) [[unlikely]] {
             wrapper->destroy();
@@ -283,8 +289,10 @@ private:
 
         const auto now = std::chrono::steady_clock::now();
         const bool should_drop = now > last_rx_callback_timepoint_ + std::chrono::seconds{1};
+        const auto interval = now - last_rx_callback_timepoint_;
         last_rx_callback_timepoint_ = now;
-
+        logger_.info("RX interval: {}us",
+            std::chrono::duration_cast<std::chrono::microseconds>(interval).count());
         if (!should_drop && transfer->actual_length > 0) {
             const auto* first = reinterpret_cast<std::byte*>(transfer->buffer);
             const auto size = static_cast<std::size_t>(transfer->actual_length);
@@ -348,7 +356,8 @@ private:
 
     utility::RingBuffer<TransferWrapper*> free_transmit_transfers_;
     std::mutex transmit_transfer_pop_mutex_, transmit_transfer_push_mutex_;
-
+    std::chrono::steady_clock::time_point last_tx_callback_timepoint_ =
+        std::chrono::steady_clock::time_point::min();
     std::function<void(std::span<const std::byte>)> receive_callback_;
     std::chrono::steady_clock::time_point last_rx_callback_timepoint_ =
         std::chrono::steady_clock::time_point::min();

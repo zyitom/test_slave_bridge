@@ -13,6 +13,8 @@ void uart_irq_handler(size_t board_uart_index) {
     uart::uart_array[board_uart_index]->irq_handler();
 }
 
+#ifdef BOARD_UART_DBUS
 void uart_dbus_irq_handler() { uart::uart_dbus->irq_handler(); }
+#endif
 
 } // namespace librmcs::firmware::board

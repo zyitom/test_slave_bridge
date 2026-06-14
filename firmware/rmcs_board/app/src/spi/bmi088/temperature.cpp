@@ -1,3 +1,7 @@
+#include "board_app.hpp"
+
+#if BOARD_HAS_BMI088
+
 #include "firmware/rmcs_board/app/src/spi/bmi088/temperature.hpp"
 
 #include <cstdint>
@@ -30,3 +34,5 @@ void bmi088_temperature_timer_isr() {
 }
 
 } // namespace librmcs::firmware::board
+
+#endif

@@ -1,5 +1,3 @@
-Documentation:
-  CommentFormat: Doxygen
 Diagnostics:
   UnusedIncludes: Strict
   MissingIncludes: Strict
@@ -11,5 +9,6 @@ Diagnostics:
     Remove:
       - readability-inconsistent-declaration-parameter-name # Unable to be suppressed by NOLINT
 CompileFlags:
+  CompilationDatabase: firmware/c_board/build
   Add:
     - "-Wextra-semi"

@@ -106,22 +106,26 @@ private:
     UART_Type* uart_base_;
 };
 
+#ifdef BOARD_UART_DBUS
 constexpr HardwareConfig kDbusBoardConfig = {
     .base = BOARD_UART_DBUS(HPM_UART, _BASE),
     .irq_num = BOARD_UART_DBUS(IRQn_UART, ),
     .dma_src_tx = BOARD_UART_DBUS(HPM_DMA_SRC_UART, _TX),
     .dma_src_rx = BOARD_UART_DBUS(HPM_DMA_SRC_UART, _RX),
 };
+#endif
 
 constexpr HardwareConfig kBoardConfigs[] = {
     {.base = BOARD_UART0(HPM_UART, _BASE),
      .irq_num = BOARD_UART0(IRQn_UART, ),
      .dma_src_tx = BOARD_UART0(HPM_DMA_SRC_UART, _TX),
      .dma_src_rx = BOARD_UART0(HPM_DMA_SRC_UART, _RX)},
+#ifdef BOARD_UART1
     {.base = BOARD_UART1(HPM_UART, _BASE),
      .irq_num = BOARD_UART1(IRQn_UART, ),
      .dma_src_tx = BOARD_UART1(HPM_DMA_SRC_UART, _TX),
      .dma_src_rx = BOARD_UART1(HPM_DMA_SRC_UART, _RX)},
+#endif
 #ifdef BOARD_UART2
     {.base = BOARD_UART2(HPM_UART, _BASE),
      .irq_num = BOARD_UART2(IRQn_UART, ),
@@ -136,12 +140,16 @@ constexpr HardwareConfig kBoardConfigs[] = {
 #endif
 };
 
+#ifdef BOARD_UART_DBUS
 inline constinit Uart::Lazy uart_dbus{
     data::DataId::kUartDbus, kDbusBoardConfig, 100000, parity_even};
+#endif
 
 inline constinit Uart::Lazy uart_array[]{
     Uart::Lazy{data::DataId::kUart0, kBoardConfigs[0], 115200, parity_none},
+#ifdef BOARD_UART1
     Uart::Lazy{data::DataId::kUart1, kBoardConfigs[1], 115200, parity_none},
+#endif
 #ifdef BOARD_UART2
     Uart::Lazy{data::DataId::kUart2, kBoardConfigs[2], 115200, parity_none},
 #endif

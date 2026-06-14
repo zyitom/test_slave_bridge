@@ -166,3 +166,8 @@ if(UNIX AND NOT APPLE)
 
     include(CPack)
 endif()
+
+option(BUILD_EXAMPLES "Build example programs" OFF)
+if(BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()

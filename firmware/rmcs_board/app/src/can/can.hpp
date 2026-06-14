@@ -119,23 +119,36 @@ private:
     MCAN_Type* can_base_;
 };
 
-ATTR_PLACE_AT(".ahb_sram")
-inline constinit uint32_t can_msg_buffer[4][MCAN_MSG_BUF_SIZE_IN_WORDS]{};
-static_assert(MCAN_SOC_MSG_BUF_IN_AHB_RAM == 1);
-
 constexpr HardwareConfig kBoardConfigs[] = {
     {.base = BOARD_CAN0(HPM_MCAN, _BASE), .irq_num = BOARD_CAN0(IRQn_MCAN, )},
+#ifdef BOARD_CAN1
     {.base = BOARD_CAN1(HPM_MCAN, _BASE), .irq_num = BOARD_CAN1(IRQn_MCAN, )},
+#endif
+#ifdef BOARD_CAN2
     {.base = BOARD_CAN2(HPM_MCAN, _BASE), .irq_num = BOARD_CAN2(IRQn_MCAN, )},
+#endif
+#ifdef BOARD_CAN3
     {.base = BOARD_CAN3(HPM_MCAN, _BASE), .irq_num = BOARD_CAN3(IRQn_MCAN, )},
+#endif
 };
+constexpr size_t kCanCount = std::size(kBoardConfigs);
+
+ATTR_PLACE_AT(".ahb_sram")
+inline constinit uint32_t can_msg_buffer[kCanCount][MCAN_MSG_BUF_SIZE_IN_WORDS]{};
+static_assert(MCAN_SOC_MSG_BUF_IN_AHB_RAM == 1);
 
 inline constinit Can::Lazy can_array[]{
     Can::Lazy{data::DataId::kCan0, kBoardConfigs[0], &can_msg_buffer[0], sizeof(can_msg_buffer[0])},
+#ifdef BOARD_CAN1
     Can::Lazy{data::DataId::kCan1, kBoardConfigs[1], &can_msg_buffer[1], sizeof(can_msg_buffer[1])},
+#endif
+#ifdef BOARD_CAN2
     Can::Lazy{data::DataId::kCan2, kBoardConfigs[2], &can_msg_buffer[2], sizeof(can_msg_buffer[2])},
+#endif
+#ifdef BOARD_CAN3
     Can::Lazy{data::DataId::kCan3, kBoardConfigs[3], &can_msg_buffer[3], sizeof(can_msg_buffer[3])},
+#endif
 };
-constexpr size_t kCanCount = std::size(can_array);
+static_assert(std::size(can_array) == kCanCount);
 
 } // namespace librmcs::firmware::can

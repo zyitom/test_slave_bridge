@@ -6,7 +6,7 @@
 #include <hpm_csr_regs.h>
 #include <hpm_soc.h>
 
-#include "firmware/rmcs_board/app/src/led/ws2812.hpp"
+#include "firmware/rmcs_board/app/src/led/led.hpp"
 
 namespace librmcs::core::utility {
 
@@ -21,10 +21,10 @@ const char* volatile assert_function = nullptr;
     assert_line = location.line();
     assert_function = location.function_name();
 
-    if (auto* ws2812 = firmware::led::ws2812.try_get()) {
+    if (auto* led_backend = firmware::led::led_backend.try_get()) {
         for (int i = 0; i < 10; i++)
             board_delay_ms(10);
-        ws2812->set_value(255, 0, 0);
+        led_backend->set_value(255, 0, 0);
     }
 
     __builtin_trap();

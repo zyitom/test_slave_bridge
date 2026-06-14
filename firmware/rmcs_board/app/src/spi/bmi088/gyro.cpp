@@ -1,3 +1,7 @@
+#include "board_app.hpp"
+
+#if BOARD_HAS_BMI088
+
 #include "firmware/rmcs_board/app/src/spi/bmi088/gyro.hpp"
 
 #include "firmware/rmcs_board/app/src/spi/bmi088/service.hpp"
@@ -11,3 +15,5 @@ void bmi088_gyro_dataready_irq_handler() {
 }
 
 } // namespace librmcs::firmware::board
+
+#endif
