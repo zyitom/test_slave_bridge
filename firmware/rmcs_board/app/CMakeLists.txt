@@ -19,9 +19,9 @@ set(CONFIG_USB_DEVICE 1)
 set(CONFIG_USB_DEVICE_VENDOR 1)
 set(LIBRMCS_BUILDING_FIRMWARE_APP 1)
 
-if(NOT DEFINED ENV{HPM_SDK_BASE} OR "$ENV{HPM_SDK_BASE}" STREQUAL "")
-    set(ENV{HPM_SDK_BASE} "${CMAKE_CURRENT_SOURCE_DIR}/../bsp/hpm_sdk")
-endif()
+# Always use the SDK pinned by this project's bsp/hpm_sdk submodule, ignoring any
+# external HPM_SDK_BASE in the environment, so the build is reproducible.
+set(ENV{HPM_SDK_BASE} "${CMAKE_CURRENT_SOURCE_DIR}/../bsp/hpm_sdk")
 find_package(hpm-sdk REQUIRED HINTS "$ENV{HPM_SDK_BASE}")
 
 get_property(LIBRMCS_USB_PID GLOBAL PROPERTY LIBRMCS_USB_PID)

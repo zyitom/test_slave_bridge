@@ -19,19 +19,10 @@
 #include "core/src/utility/assert.hpp"
 #include "core/src/utility/immovable.hpp"
 #include "firmware/rmcs_board/app/src/can/can.hpp"
-#if BOARD_HAS_GPIO_APP
-#include "firmware/rmcs_board/app/src/gpio/gpio.hpp"
-#endif
 #include "firmware/rmcs_board/app/src/uart/uart.hpp"
 #include "firmware/rmcs_board/app/src/usb/interrupt_safe_buffer.hpp"
 #include "firmware/rmcs_board/app/src/usb/usb_descriptors.hpp"
 #include "firmware/rmcs_board/app/src/utility/lazy.hpp"
-
-// USB device speed for boards without a hardware HS/FS switch. A board may
-// override this in board_app.hpp (e.g. TUSB_SPEED_HIGH); default is full speed.
-#ifndef BOARD_USB_FIXED_SPEED
-# define BOARD_USB_FIXED_SPEED TUSB_SPEED_FULL
-#endif
 
 namespace librmcs::firmware::usb {
 
@@ -44,18 +35,10 @@ public:
     Vendor() {
         usb::usb_descriptors.init();
 
-#if BOARD_HAS_USB_SPEED_SWITCH
-        board::init_user_button_and_switch_pins();
         const tusb_rhport_init_t init_config{
             .role = TUSB_ROLE_DEVICE,
-            .speed = board::kUserHsFsSwitchPin.is_active() ? TUSB_SPEED_HIGH : TUSB_SPEED_FULL,
+            .speed = board::usb_use_high_speed() ? TUSB_SPEED_HIGH : TUSB_SPEED_FULL,
         };
-#else
-        const tusb_rhport_init_t init_config{
-            .role = TUSB_ROLE_DEVICE,
-            .speed = BOARD_USB_FIXED_SPEED,
-        };
-#endif
         core::utility::assert_always(tusb_rhport_init(0, &init_config));
     }
 
@@ -108,87 +91,43 @@ public:
 private:
     void can_deserialized_callback(
         core::protocol::FieldId id, const data::CanDataView& data) override {
-        switch (id) {
-        case data::DataId::kCan0: can::can_array[0]->handle_downlink(data); break;
-#ifdef BOARD_CAN1
-        case data::DataId::kCan1: can::can_array[1]->handle_downlink(data); break;
-#endif
-#ifdef BOARD_CAN2
-        case data::DataId::kCan2: can::can_array[2]->handle_downlink(data); break;
-#endif
-#ifdef BOARD_CAN3
-        case data::DataId::kCan3: can::can_array[3]->handle_downlink(data); break;
-#endif
-        default: core::utility::assert_failed_always();
+        for (auto& can : can::can_array) {
+            if (static_cast<core::protocol::FieldId>(can->data_id()) == id) {
+                can->handle_downlink(data);
+                return;
+            }
         }
+        core::utility::assert_failed_always();
     }
 
     void uart_deserialized_callback(
         core::protocol::FieldId id, const data::UartDataView& data) override {
-        switch (id) {
-        case data::DataId::kUart0: uart::uart_array[0]->handle_downlink(data); break;
-#ifdef BOARD_UART1
-        case data::DataId::kUart1: uart::uart_array[1]->handle_downlink(data); break;
-#endif
-#ifdef BOARD_UART2
-        case data::DataId::kUart2: uart::uart_array[2]->handle_downlink(data); break;
-#endif
-#ifdef BOARD_UART3
-        case data::DataId::kUart3: uart::uart_array[3]->handle_downlink(data); break;
-#endif
-        default: core::utility::assert_failed_always();
+        for (auto& board_uart : uart::uart_array) {
+            if (static_cast<core::protocol::FieldId>(board_uart->data_id()) == id) {
+                board_uart->handle_downlink(data);
+                return;
+            }
         }
+        core::utility::assert_failed_always();
     }
 
+    // This board has no GPIO application; GPIO commands from the host are ignored.
     void gpio_digital_data_deserialized_callback(
         uint8_t channel_index, const data::GpioDigitalDataView& data) override {
-#if BOARD_HAS_GPIO_APP
-        if (channel_index >= board::spec::kGpioDescriptors.size())
-            return;
-
-        const auto& gpio_descriptor = board::spec::kGpioDescriptors[channel_index];
-        if (!gpio_descriptor.supports(spec::GpioCapability::kDigitalWrite))
-            return;
-
-        gpio::gpio->handle_digital_write(channel_index, data);
-#else
         (void)channel_index;
         (void)data;
-#endif
     }
 
     void gpio_analog_data_deserialized_callback(
         uint8_t channel_index, const data::GpioAnalogDataView& data) override {
-#if BOARD_HAS_GPIO_APP
-        if (channel_index >= board::spec::kGpioDescriptors.size())
-            return;
-
-        const auto& gpio_descriptor = board::spec::kGpioDescriptors[channel_index];
-        if (!gpio_descriptor.supports(spec::GpioCapability::kAnalogWrite))
-            return;
-
-        gpio::gpio->handle_analog_write(channel_index, data);
-#else
         (void)channel_index;
         (void)data;
-#endif
     }
 
     void gpio_digital_read_config_deserialized_callback(
         uint8_t channel_index, const data::GpioReadConfigView& data) override {
-#if BOARD_HAS_GPIO_APP
-        if (channel_index >= board::spec::kGpioDescriptors.size())
-            return;
-
-        const auto& gpio_descriptor = board::spec::kGpioDescriptors[channel_index];
-        if (!data.supported(gpio_descriptor))
-            return;
-
-        gpio::gpio->handle_digital_read(channel_index, data);
-#else
         (void)channel_index;
         (void)data;
-#endif
     }
 
     void gpio_analog_read_config_deserialized_callback(

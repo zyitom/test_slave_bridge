@@ -10,28 +10,33 @@
 #include <hpm_soc_irq.h>
 #include <hpm_uart_regs.h>
 
+#include "firmware/rmcs_board/app/src/can/can_port.hpp"
 #include "firmware/rmcs_board/app/src/gpio/gpio_pin.hpp"
+#include "firmware/rmcs_board/app/src/uart/uart_port.hpp"
 
 namespace librmcs::firmware::board {
 
-// Board capability flags. This board only exposes a single CAN, a single UART
-// and a plain GPIO RGB LED, so the optional application modules (IMU/SPI, the
-// GPIO application, the DBUS UART and the USB high/full-speed switch) are
-// compiled out of the shared application layer.
-#define BOARD_HAS_BMI088           0
-#define BOARD_HAS_GPIO_APP         0
-#define BOARD_HAS_USB_SPEED_SWITCH 0
-#define BOARD_LED_USE_WS2812       0
+// This board exposes a single CAN-FD, a single UART and a plain GPIO RGB LED;
+// it has no IMU, GPIO application, DBUS UART or USB speed switch.
 
-// No HS/FS switch on this board; the HPM5321 USB runs at high speed.
-#define BOARD_USB_FIXED_SPEED TUSB_SPEED_HIGH
+// The HPM5321 USB always runs at high speed.
+bool usb_use_high_speed();
 
-#define BOARD_CAN0(prefix, suffix) prefix##0##suffix
+// CAN ports in logical order (CAN0, CAN1, ...). CAN0 is the DM (Damiao) motor
+// bus and runs CAN-FD; this board has no other CAN.
+constexpr CanPort kCanPorts[] = {
+    {HPM_MCAN0_BASE, IRQn_MCAN0, CanMode::kCanFd},
+};
 
 uint32_t init_can(MCAN_Type* ptr);
 void can_irq_handler(size_t board_can_index);
 
-#define BOARD_UART0(prefix, suffix) prefix##2##suffix
+// UART ports in logical order. This board has a single data UART (UART2) and no
+// DBUS receiver.
+constexpr UartPort kUartPorts[] = {
+    {HPM_UART2_BASE, IRQn_UART2, HPM_DMA_SRC_UART2_TX, HPM_DMA_SRC_UART2_RX,
+     data::DataId::kUart0, 921600, parity_none},
+};
 
 uint32_t init_uart(UART_Type* ptr);
 void uart_irq_handler(size_t board_uart_index);

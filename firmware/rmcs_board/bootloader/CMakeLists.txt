@@ -18,9 +18,9 @@ set_property(CACHE BOARD_BOOTLOADER_MODE PROPERTY STRINGS auto manual)
 set(CONFIG_TINYUSB 1)
 set(CONFIG_USB_DEVICE 1)
 
-if(NOT DEFINED ENV{HPM_SDK_BASE} OR "$ENV{HPM_SDK_BASE}" STREQUAL "")
-    set(ENV{HPM_SDK_BASE} "${CMAKE_CURRENT_SOURCE_DIR}/../bsp/hpm_sdk")
-endif()
+# Always use the SDK pinned by this project's bsp/hpm_sdk submodule, ignoring any
+# external HPM_SDK_BASE in the environment, so the build is reproducible.
+set(ENV{HPM_SDK_BASE} "${CMAKE_CURRENT_SOURCE_DIR}/../bsp/hpm_sdk")
 find_package(hpm-sdk REQUIRED HINTS "$ENV{HPM_SDK_BASE}")
 
 librmcs_setup_project_context(PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../..")

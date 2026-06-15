@@ -5,8 +5,8 @@ project(rmcs_board_superbuild LANGUAGES NONE)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/../common/cmake/librmcs_firmware.cmake")
 
-set(BOARD "pro" CACHE STRING "Target board (pro / lite / hpm5321)")
-set_property(CACHE BOARD PROPERTY STRINGS pro lite hpm5321)
+set(BOARD "hpm5321" CACHE STRING "Target board (hpm5321)")
+set_property(CACHE BOARD PROPERTY STRINGS hpm5321)
 set(BOARD_SEARCH_PATH "${CMAKE_CURRENT_SOURCE_DIR}/boards" CACHE PATH "Board search path")
 # Bitmanip is enabled by the HPM SoC CMake via the granular _zba_zbb_zbc_zbs
 # extensions, so the umbrella "b" here is redundant. Keeping it makes the arch

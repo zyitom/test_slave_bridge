@@ -66,10 +66,12 @@ void init_led_pins() {
     }
 }
 
-SDK_DECLARE_EXT_ISR_M(BOARD_CAN0(IRQn_MCAN, ), can0_isr)
+bool usb_use_high_speed() { return true; }
+
+SDK_DECLARE_EXT_ISR_M(IRQn_MCAN0, can0_isr)
 void can0_isr() { can_irq_handler(0); }
 
-SDK_DECLARE_EXT_ISR_M(BOARD_UART0(IRQn_UART, ), uart0_isr)
+SDK_DECLARE_EXT_ISR_M(IRQn_UART2, uart0_isr)
 void uart0_isr() { uart_irq_handler(0); }
 
 } // namespace librmcs::firmware::board

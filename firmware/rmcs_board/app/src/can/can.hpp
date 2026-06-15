@@ -1,9 +1,11 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <utility>
 
 #include <hpm_common.h>
 #include <hpm_mcan_drv.h>
@@ -14,6 +16,7 @@
 
 #include "board_app.hpp"
 #include "core/include/librmcs/data/datas.hpp"
+#include "firmware/rmcs_board/app/src/can/can_port.hpp"
 #include "core/src/protocol/protocol.hpp"
 #include "core/src/protocol/serializer.hpp"
 #include "core/src/utility/assert.hpp"
@@ -24,20 +27,23 @@
 
 namespace librmcs::firmware::can {
 
-struct HardwareConfig {
-    uint32_t base;
-    uint32_t irq_num;
-};
+using board::CanMode;
+using board::CanPort;
 
 class Can : private core::utility::Immovable {
 public:
-    using Lazy = utility::Lazy<Can, data::DataId, HardwareConfig, uint32_t (*const)[], uint32_t>;
+    using Lazy = utility::Lazy<Can, data::DataId, CanPort, uint32_t (*const)[], uint32_t>;
+
+    // The two supported configurations are fixed: classic CAN 2.0 at 1Mbps, or
+    // CAN-FD with 1Mbps arbitration and 5Mbps data phase (BRS on).
+    static constexpr uint32_t kArbitrationBaudrate = 1'000'000;
+    static constexpr uint32_t kCanFdDataBaudrate = 5'000'000;
 
     explicit Can(
-        data::DataId data_id, HardwareConfig board_config, uint32_t (*const ram_base)[],
-        uint32_t ram_size)
+        data::DataId data_id, CanPort port, uint32_t (*const ram_base)[], uint32_t ram_size)
         : data_id_(data_id)
-        , can_base_(reinterpret_cast<MCAN_Type*>(board_config.base)) {
+        , can_base_(reinterpret_cast<MCAN_Type*>(port.base))
+        , canfd_(port.mode == CanMode::kCanFd) {
 
         const mcan_msg_buf_attr_t attr = {
             .ram_base = reinterpret_cast<uintptr_t>(ram_base),
@@ -50,9 +56,13 @@ public:
 
         mcan_config_t config;
         mcan_get_default_config(can_base_, &config);
-        config.baudrate = 1'000'000; // 1Mbps
+        config.baudrate = kArbitrationBaudrate;
         config.mode = mcan_mode_normal;
-        config.enable_canfd = false;
+        config.enable_canfd = canfd_;
+        if (canfd_)
+            config.baudrate_fd = kCanFdDataBaudrate;
+        // Keep the default 8-byte element size even for CAN-FD: the frames on this
+        // bus never exceed 8 data bytes, so RAM usage stays identical to classic CAN.
         config.ram_config.txbuf_dedicated_txbuf_elem_count = 0;
         config.ram_config.txbuf_fifo_or_queue_elem_count = MCAN_TXBUF_SIZE_CAN_DEFAULT;
         config.ram_config.txfifo_or_txqueue_mode = MCAN_TXBUF_OPERATION_MODE_FIFO;
@@ -60,8 +70,13 @@ public:
 
         mcan_init(can_base_, &config, can_source_clock_freq);
         mcan_enable_interrupts(can_base_, MCAN_INT_RXFIFO0_NEW_MSG);
-        intc_m_enable_irq_with_priority(board_config.irq_num, 1);
+        // CAN RX is the forwarding-critical path (motor feedback -> host), so it
+        // takes a higher PLIC priority than the secondary UART (priority 1).
+        // Higher number == more urgent on the PLIC; USB matches this at 2.
+        intc_m_enable_irq_with_priority(port.irq_num, 2);
     }
+
+    [[nodiscard]] data::DataId data_id() const { return data_id_; }
 
     void handle_downlink(const data::CanDataView& data) {
         mcan_tx_frame_t frame{};
@@ -72,7 +87,8 @@ public:
             frame.use_ext_id = false;
             frame.std_id = data.can_id;
         }
-        frame.canfd_frame = false;
+        frame.canfd_frame = canfd_;
+        frame.bitrate_switch = canfd_; // CAN-FD frames switch to the data-phase baudrate
         frame.rtr = data.is_remote_transmission;
 
         core::utility::assert_debug(data.can_data.size() <= 8);
@@ -117,38 +133,38 @@ public:
 private:
     const data::DataId data_id_;
     MCAN_Type* can_base_;
+    const bool canfd_;
 };
 
-constexpr HardwareConfig kBoardConfigs[] = {
-    {.base = BOARD_CAN0(HPM_MCAN, _BASE), .irq_num = BOARD_CAN0(IRQn_MCAN, )},
-#ifdef BOARD_CAN1
-    {.base = BOARD_CAN1(HPM_MCAN, _BASE), .irq_num = BOARD_CAN1(IRQn_MCAN, )},
-#endif
-#ifdef BOARD_CAN2
-    {.base = BOARD_CAN2(HPM_MCAN, _BASE), .irq_num = BOARD_CAN2(IRQn_MCAN, )},
-#endif
-#ifdef BOARD_CAN3
-    {.base = BOARD_CAN3(HPM_MCAN, _BASE), .irq_num = BOARD_CAN3(IRQn_MCAN, )},
-#endif
-};
-constexpr size_t kCanCount = std::size(kBoardConfigs);
+// Everything below is built from the board's CAN port table (board::kCanPorts),
+// so there are no per-port macros: the count, the FD mode and the dispatch all
+// follow the table.
+constexpr size_t kCanCount = std::size(board::kCanPorts);
+static_assert(kCanCount >= 1 && kCanCount <= 4);
+
+constexpr data::DataId kCanDataIds[] = {
+    data::DataId::kCan0, data::DataId::kCan1, data::DataId::kCan2, data::DataId::kCan3};
 
 ATTR_PLACE_AT(".ahb_sram")
 inline constinit uint32_t can_msg_buffer[kCanCount][MCAN_MSG_BUF_SIZE_IN_WORDS]{};
 static_assert(MCAN_SOC_MSG_BUF_IN_AHB_RAM == 1);
 
-inline constinit Can::Lazy can_array[]{
-    Can::Lazy{data::DataId::kCan0, kBoardConfigs[0], &can_msg_buffer[0], sizeof(can_msg_buffer[0])},
-#ifdef BOARD_CAN1
-    Can::Lazy{data::DataId::kCan1, kBoardConfigs[1], &can_msg_buffer[1], sizeof(can_msg_buffer[1])},
-#endif
-#ifdef BOARD_CAN2
-    Can::Lazy{data::DataId::kCan2, kBoardConfigs[2], &can_msg_buffer[2], sizeof(can_msg_buffer[2])},
-#endif
-#ifdef BOARD_CAN3
-    Can::Lazy{data::DataId::kCan3, kBoardConfigs[3], &can_msg_buffer[3], sizeof(can_msg_buffer[3])},
-#endif
-};
-static_assert(std::size(can_array) == kCanCount);
+namespace internal {
+
+template <std::size_t I>
+consteval Can::Lazy make_can() {
+    return Can::Lazy{
+        kCanDataIds[I], board::kCanPorts[I], &can_msg_buffer[I], sizeof(can_msg_buffer[I])};
+}
+
+template <std::size_t... I>
+consteval std::array<Can::Lazy, sizeof...(I)> make_can_array(std::index_sequence<I...>) {
+    return {make_can<I>()...};
+}
+
+} // namespace internal
+
+inline constinit auto can_array =
+    internal::make_can_array(std::make_index_sequence<kCanCount>{});
 
 } // namespace librmcs::firmware::can

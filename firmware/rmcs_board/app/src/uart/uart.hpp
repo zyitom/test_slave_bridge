@@ -1,9 +1,11 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <span>
+#include <utility>
 
 #include <hpm_common.h>
 #include <hpm_soc.h>
@@ -18,18 +20,14 @@
 #include "core/src/utility/immovable.hpp"
 #include "firmware/rmcs_board/app/src/led/led.hpp"
 #include "firmware/rmcs_board/app/src/uart/rx_buffer.hpp"
+#include "firmware/rmcs_board/app/src/uart/uart_port.hpp"
 #include "firmware/rmcs_board/app/src/uart/tx_buffer.hpp"
 #include "firmware/rmcs_board/app/src/usb/helper.hpp"
 #include "firmware/rmcs_board/app/src/utility/lazy.hpp"
 
 namespace librmcs::firmware::uart {
 
-struct HardwareConfig {
-    uint32_t base;
-    uint32_t irq_num;
-    uint32_t dma_src_tx;
-    uint32_t dma_src_rx;
-};
+using board::UartPort;
 
 class Uart
     : private core::utility::Immovable
@@ -38,17 +36,17 @@ class Uart
     friend class RxBuffer<Uart>;
 
 public:
-    using Lazy = utility::Lazy<Uart, data::DataId, HardwareConfig, uint32_t, parity_setting_t>;
+    using Lazy = utility::Lazy<Uart, UartPort>;
 
-    explicit Uart(
-        data::DataId data_id, HardwareConfig board_config, uint32_t baudrate,
-        parity_setting_t parity)
-        : TxBuffer(reinterpret_cast<UART_Type*>(board_config.base), board_config.dma_src_tx)
-        , RxBuffer(reinterpret_cast<UART_Type*>(board_config.base), board_config.dma_src_rx)
-        , data_id_(data_id)
-        , uart_base_(reinterpret_cast<UART_Type*>(board_config.base)) {
-        init_uart(board_config.irq_num, baudrate, parity);
+    explicit Uart(UartPort port)
+        : TxBuffer(reinterpret_cast<UART_Type*>(port.base), port.dma_src_tx)
+        , RxBuffer(reinterpret_cast<UART_Type*>(port.base), port.dma_src_rx)
+        , data_id_(port.data_id)
+        , uart_base_(reinterpret_cast<UART_Type*>(port.base)) {
+        init_uart(port.irq_num, port.baudrate, port.parity);
     }
+
+    [[nodiscard]] data::DataId data_id() const { return data_id_; }
 
     void handle_downlink(const data::UartDataView& data) {
         if (!TxBuffer::try_enqueue(data))
@@ -106,58 +104,26 @@ private:
     UART_Type* uart_base_;
 };
 
-#ifdef BOARD_UART_DBUS
-constexpr HardwareConfig kDbusBoardConfig = {
-    .base = BOARD_UART_DBUS(HPM_UART, _BASE),
-    .irq_num = BOARD_UART_DBUS(IRQn_UART, ),
-    .dma_src_tx = BOARD_UART_DBUS(HPM_DMA_SRC_UART, _TX),
-    .dma_src_rx = BOARD_UART_DBUS(HPM_DMA_SRC_UART, _RX),
-};
-#endif
+// Everything below is built from the board's UART port table (board::kUartPorts),
+// so there are no per-port macros: the count, the DBUS entry and the dispatch all
+// follow the table.
+constexpr size_t kUartCount = std::size(board::kUartPorts);
 
-constexpr HardwareConfig kBoardConfigs[] = {
-    {.base = BOARD_UART0(HPM_UART, _BASE),
-     .irq_num = BOARD_UART0(IRQn_UART, ),
-     .dma_src_tx = BOARD_UART0(HPM_DMA_SRC_UART, _TX),
-     .dma_src_rx = BOARD_UART0(HPM_DMA_SRC_UART, _RX)},
-#ifdef BOARD_UART1
-    {.base = BOARD_UART1(HPM_UART, _BASE),
-     .irq_num = BOARD_UART1(IRQn_UART, ),
-     .dma_src_tx = BOARD_UART1(HPM_DMA_SRC_UART, _TX),
-     .dma_src_rx = BOARD_UART1(HPM_DMA_SRC_UART, _RX)},
-#endif
-#ifdef BOARD_UART2
-    {.base = BOARD_UART2(HPM_UART, _BASE),
-     .irq_num = BOARD_UART2(IRQn_UART, ),
-     .dma_src_tx = BOARD_UART2(HPM_DMA_SRC_UART, _TX),
-     .dma_src_rx = BOARD_UART2(HPM_DMA_SRC_UART, _RX)},
-#endif
-#ifdef BOARD_UART3
-    {.base = BOARD_UART3(HPM_UART, _BASE),
-     .irq_num = BOARD_UART3(IRQn_UART, ),
-     .dma_src_tx = BOARD_UART3(HPM_DMA_SRC_UART, _TX),
-     .dma_src_rx = BOARD_UART3(HPM_DMA_SRC_UART, _RX)},
-#endif
-};
+namespace internal {
 
-#ifdef BOARD_UART_DBUS
-inline constinit Uart::Lazy uart_dbus{
-    data::DataId::kUartDbus, kDbusBoardConfig, 100000, parity_even};
-#endif
+template <std::size_t I>
+consteval Uart::Lazy make_uart() {
+    return Uart::Lazy{board::kUartPorts[I]};
+}
 
-inline constinit Uart::Lazy uart_array[]{
-    Uart::Lazy{data::DataId::kUart0, kBoardConfigs[0], 115200, parity_none},
-#ifdef BOARD_UART1
-    Uart::Lazy{data::DataId::kUart1, kBoardConfigs[1], 115200, parity_none},
-#endif
-#ifdef BOARD_UART2
-    Uart::Lazy{data::DataId::kUart2, kBoardConfigs[2], 115200, parity_none},
-#endif
-#ifdef BOARD_UART3
-    Uart::Lazy{data::DataId::kUart3, kBoardConfigs[3], 115200, parity_none},
-#endif
-};
+template <std::size_t... I>
+consteval std::array<Uart::Lazy, sizeof...(I)> make_uart_array(std::index_sequence<I...>) {
+    return {make_uart<I>()...};
+}
 
-constexpr size_t kUartCount = std::size(uart_array);
+} // namespace internal
+
+inline constinit auto uart_array =
+    internal::make_uart_array(std::make_index_sequence<kUartCount>{});
 
 } // namespace librmcs::firmware::uart
