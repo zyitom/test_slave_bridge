@@ -53,7 +53,7 @@ public:
         if (view.is_extended_can_id) {
             auto header = CanHeaderExtended::Ref(cursor);
             cursor += sizeof(CanHeaderExtended);
-            header.set<CanHeaderExtended::IsFdCan>(false);
+            header.set<CanHeaderExtended::IsFdCan>(view.is_fdcan);
             header.set<CanHeaderExtended::IsExtendedCanId>(true);
             header.set<CanHeaderExtended::IsRemoteTransmission>(view.is_remote_transmission);
             header.set<CanHeaderExtended::HasTimestamp>(has_timestamp);
@@ -63,7 +63,7 @@ public:
         } else {
             auto header = CanHeaderStandard::Ref(cursor);
             cursor += sizeof(CanHeaderStandard);
-            header.set<CanHeaderStandard::IsFdCan>(false);
+            header.set<CanHeaderStandard::IsFdCan>(view.is_fdcan);
             header.set<CanHeaderStandard::IsExtendedCanId>(false);
             header.set<CanHeaderStandard::IsRemoteTransmission>(view.is_remote_transmission);
             header.set<CanHeaderStandard::HasTimestamp>(has_timestamp);
@@ -415,7 +415,6 @@ private:
     }
 
     static std::size_t required_can_size(FieldId field_id, const data::CanDataView& view) noexcept {
-        LIBRMCS_VERIFY_LIKELY(!view.is_fdcan, 0); // TODO: Support FDCAN when protocol ready
         LIBRMCS_VERIFY_LIKELY(!view.is_remote_transmission || view.can_data.empty(), 0);
         LIBRMCS_VERIFY_LIKELY(view.can_data.size() <= 8, 0);
         if (view.is_extended_can_id)

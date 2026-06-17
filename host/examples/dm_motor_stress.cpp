@@ -75,7 +75,7 @@ public:
     void broadcast(const std::array<std::byte, 8>& frame) {
         auto packet = start_transmit();
         for (const uint32_t id : k_motor_ids)
-            packet.can0_transmit({.can_id = id, .can_data = frame});
+            packet.can0_transmit({.can_id = id, .can_data = frame, .is_fdcan = true});
     }
 
     void send_enable() { broadcast(k_enable); }
@@ -88,7 +88,7 @@ public:
             const std::array<std::byte, 8> frame = {
                 std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0},
                 std::byte{0}, std::byte{0}, std::byte{0}, cmd_byte(id)};
-            packet.can0_transmit({.can_id = id, .can_data = frame});
+            packet.can0_transmit({.can_id = id, .can_data = frame, .is_fdcan = true});
         }
         tx_frames_.fetch_add(k_motor_ids.size(), std::memory_order::relaxed);
 

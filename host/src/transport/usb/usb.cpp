@@ -295,7 +295,6 @@ void usb_transmit_complete_callback(TransferWrapper* wrapper) {
         }
 
         const auto now = std::chrono::steady_clock::now();
-        const bool should_drop = now > last_rx_callback_timepoint_ + std::chrono::seconds{1};
         const auto interval = now - last_rx_callback_timepoint_;
         last_rx_callback_timepoint_ = now;
         // logger_.info("RX interval: {}us",
@@ -304,10 +303,8 @@ void usb_transmit_complete_callback(TransferWrapper* wrapper) {
             const auto size = static_cast<std::size_t>(transfer->actual_length);
             if (usb_stats_enabled_)
                 account_usb_transfer(rx_stats_, size, interval);
-            if (!should_drop) {
-                const auto* first = reinterpret_cast<std::byte*>(transfer->buffer);
-                receive_callback_({first, size});
-            }
+            const auto* first = reinterpret_cast<std::byte*>(transfer->buffer);
+            receive_callback_({first, size});
         }
         report_usb_stats(now);
 

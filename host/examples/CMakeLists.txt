@@ -12,3 +12,6 @@ target_link_libraries(uart_stress PRIVATE librmcs-sdk)
 
 add_executable(rx_monitor rx_monitor.cpp)
 target_link_libraries(rx_monitor PRIVATE librmcs-sdk)
+
+add_executable(motor_pid_sine motor_pid_sine.cpp)
+target_link_libraries(motor_pid_sine PRIVATE librmcs-sdk)

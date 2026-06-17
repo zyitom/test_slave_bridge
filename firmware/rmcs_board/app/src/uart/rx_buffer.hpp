@@ -11,7 +11,6 @@
 #include <hpm_common.h>
 #include <hpm_dma_mgr.h>
 #include <hpm_dmav2_drv.h>
-#include <hpm_l1c_drv.h>
 #include <hpm_soc_feature.h>
 #include <hpm_uart_regs.h>
 
@@ -30,10 +29,14 @@ public:
     static constexpr size_t kBufferMask = kBufferSize - 1;
     static_assert((kBufferSize & (kBufferSize - 1)) == 0);
 
+    // 64-byte DMA transfer per descriptor: 32 linked descriptors cover
+    // the full 2 KiB ring.  Small transfers keep latency low for framed
+    // protocols — HT fires at 32 B (347 us @ 921600), TC at 64 B (694 us).
     static constexpr size_t kBufferTriggerIrqSize = HPM_L1C_CACHELINE_SIZE;
     static constexpr size_t kDmaTransSize = 2 * kBufferTriggerIrqSize;
     static constexpr size_t kDmaDescriptorCount = kBufferSize / kDmaTransSize;
     static_assert(kBufferSize % kDmaTransSize == 0);
+    static_assert(kDmaDescriptorCount >= 2);
 
     static constexpr size_t kMinFragmentSize = 32;
     static constexpr size_t kMaxFragmentSize = kMinFragmentSize + kBufferTriggerIrqSize - 1;
@@ -47,8 +50,11 @@ public:
     void rx_idle_callback() { try_dequeue(true); }
 
 private:
-    RxBuffer(UART_Type* uart_base, uint32_t dmamux_src)
-        : uart_base_(uart_base) {
+    RxBuffer(UART_Type* uart_base, uint32_t dmamux_src, std::byte* data_buffer,
+             dma_mgr_linked_descriptor_t* linked_descriptors)
+        : uart_base_(uart_base)
+        , data_buffer_(data_buffer)
+        , dma_linked_descriptors_(linked_descriptors) {
         init_dma(dmamux_src);
     }
 
@@ -62,17 +68,16 @@ private:
         config.dmamux_src = dmamux_src;
         config.priority = DMA_MGR_CHANNEL_PRIORITY_LOW;
         config.src_addr = reinterpret_cast<uintptr_t>(&uart_base_->RBR);
-        config.dst_addr = reinterpret_cast<uintptr_t>(data_buffer_.data());
+        config.dst_addr = reinterpret_cast<uintptr_t>(data_buffer_);
         config.src_width = DMA_MGR_TRANSFER_WIDTH_BYTE;
         config.dst_width = DMA_MGR_TRANSFER_WIDTH_BYTE;
         config.src_addr_ctrl = DMA_MGR_ADDRESS_CONTROL_FIXED;
         config.dst_addr_ctrl = DMA_MGR_ADDRESS_CONTROL_INCREMENT;
         config.src_mode = DMA_MGR_HANDSHAKE_MODE_HANDSHAKE;
         config.dst_mode = DMA_MGR_HANDSHAKE_MODE_NORMAL;
-        config.src_burst_size = DMA_MGR_NUM_TRANSFER_PER_BURST_1T;
+        config.src_burst_size = DMA_MGR_NUM_TRANSFER_PER_BURST_4T;
         config.size_in_byte = kDmaTransSize;
         config.linked_ptr = reinterpret_cast<uintptr_t>(&dma_linked_descriptors_[1]);
-        static_assert(kDmaDescriptorCount >= 2);
         config.interrupt_mask = DMA_INTERRUPT_MASK_ABORT | DMA_INTERRUPT_MASK_ERROR;
 
         core::utility::assert_always(
@@ -87,9 +92,7 @@ private:
                 == status_success);
             config.dst_addr += kDmaTransSize;
         }
-        l1c_dc_flush(
-            reinterpret_cast<size_t>(dma_linked_descriptors_.data()),
-            sizeof(dma_linked_descriptors_));
+        // No cache maintenance: buffers reside in AHB SRAM (non-cached).
 
         auto callback = [](DMA_Type* /*base*/, uint32_t /*channel*/, void* user_data) {
             static_cast<RxBuffer*>(user_data)->dma_tc_half_tc_callback();
@@ -110,28 +113,20 @@ private:
             return false;
 
         if (readable > kProtocolMaxPayloadSize) [[unlikely]] {
-            // Abnormal condition: ISR latency (or DMA callback starvation) allowed the RX backlog
-            // to exceed what a single protocol UART payload can carry.
 #ifndef NDEBUG
-            // Fail-fast in debug builds to catch timing/interrupt issues early.
             core::utility::assert_failed_always();
 #endif
-            // Release fallback: discard the accumulated bytes to resync the stream.
-            // TODO: add a drop counter / telemetry hook.
         } else {
             const auto offset = out & kBufferMask;
             const auto slice = std::min(readable, kBufferSize - offset);
+            // No cache inval: data_buffer_ is in AHB SRAM.
 
             if (slice == readable) {
-                l1c_dc_invalidate_cacheline_aligned(data_buffer_.data() + offset, slice);
                 static_cast<T*>(this)->handle_uplink(
-                    {data_buffer_.data() + offset, slice}, {}, is_idle);
+                    {data_buffer_ + offset, slice}, {}, is_idle);
             } else {
-                l1c_dc_invalidate_cacheline_aligned(data_buffer_.data() + offset, slice);
-                l1c_dc_invalidate_cacheline_aligned(data_buffer_.data(), readable - slice);
                 static_cast<T*>(this)->handle_uplink(
-                    {data_buffer_.data() + offset, slice}, {data_buffer_.data(), readable - slice},
-                    is_idle);
+                    {data_buffer_ + offset, slice}, {data_buffer_, readable - slice}, is_idle);
             }
         }
 
@@ -146,7 +141,7 @@ private:
         const auto in = in_.load(std::memory_order::relaxed);
 
         const size_t current_offset = dma_.base->CHCTRL[dma_.channel].DSTADDR
-                                    - reinterpret_cast<uintptr_t>(data_buffer_.data());
+                                    - reinterpret_cast<uintptr_t>(data_buffer_);
         core::utility::assert_debug(current_offset < kBufferSize);
 
         auto new_in = static_cast<BufferIndexType>((in & ~kBufferMask) | current_offset);
@@ -157,23 +152,11 @@ private:
         return new_in;
     }
 
-    static void l1c_dc_invalidate_cacheline_aligned(const std::byte* src, uint32_t size) {
-        const uintptr_t aligned_start = HPM_L1C_CACHELINE_ALIGN_DOWN(src);
-        const uintptr_t aligned_end = HPM_L1C_CACHELINE_ALIGN_UP(src + size);
-        const size_t aligned_size = aligned_end - aligned_start;
-        l1c_dc_invalidate(aligned_start, aligned_size);
-    }
-
-    alignas(HPM_L1C_CACHELINE_SIZE) std::array<std::byte, kBufferSize> data_buffer_;
-
-    alignas(HPM_L1C_CACHELINE_SIZE)
-        std::array<dma_mgr_linked_descriptor_t, kDmaDescriptorCount> dma_linked_descriptors_;
-    static_assert(std::is_standard_layout_v<dma_mgr_linked_descriptor_t>);
-    static_assert(std::is_standard_layout_v<dma_linked_descriptor_t>);
-    static_assert(sizeof(dma_mgr_linked_descriptor_t) == sizeof(dma_linked_descriptor_t));
-    static_assert(sizeof(dma_linked_descriptor_t) == HPM_L1C_CACHELINE_SIZE);
-
     UART_Type* uart_base_;
+    // Placed in AHB SRAM by the caller — naturally non-cached, no manual
+    // invalidate required.
+    std::byte* data_buffer_;
+    dma_mgr_linked_descriptor_t* dma_linked_descriptors_;
     dma_resource_t dma_;
 
     std::atomic<BufferIndexType> in_{0}, out_{0};

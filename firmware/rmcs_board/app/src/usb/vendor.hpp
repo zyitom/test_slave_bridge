@@ -91,11 +91,11 @@ public:
 private:
     void can_deserialized_callback(
         core::protocol::FieldId id, const data::CanDataView& data) override {
-        for (auto& can : can::can_array) {
-            if (static_cast<core::protocol::FieldId>(can->data_id()) == id) {
-                can->handle_downlink(data);
-                return;
-            }
+        for (size_t i = 0; i < can::kCanCount; i++) {
+            if (can::kCanDataIds[i] != static_cast<data::DataId>(id))
+                continue;
+            can::can_array[i]->handle_downlink(data);
+            return;
         }
         core::utility::assert_failed_always();
     }

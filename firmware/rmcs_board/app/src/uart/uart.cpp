@@ -7,7 +7,7 @@
 
 namespace librmcs::firmware::board {
 
-void uart_irq_handler(size_t board_uart_index) {
+ATTR_PLACE_AT(".fast") void uart_irq_handler(size_t board_uart_index) {
     core::utility::assert_debug(board_uart_index < uart::kUartCount);
 
     uart::uart_array[board_uart_index]->irq_handler();

@@ -34,8 +34,8 @@ class Can : private core::utility::Immovable {
 public:
     using Lazy = utility::Lazy<Can, data::DataId, CanPort, uint32_t (*const)[], uint32_t>;
 
-    // The two supported configurations are fixed: classic CAN 2.0 at 1Mbps, or
-    // CAN-FD with 1Mbps arbitration and 5Mbps data phase (BRS on).
+    // Baudrates are compile-time constants; the mode is fixed per board via
+    // the CanPort table in board_app.hpp.
     static constexpr uint32_t kArbitrationBaudrate = 1'000'000;
     static constexpr uint32_t kCanFdDataBaudrate = 5'000'000;
 
@@ -69,7 +69,7 @@ public:
         config.disable_auto_retransmission = true;
 
         // Enable internal 16-bit hardware timestamp counter.
-        // Clocked by CAN bit time: 1 Mbps → 1 us/tick.
+        // Clocked by CAN bit time: 1 Mbps -> 1 us/tick.
         // Extended to 32 bits in handle_uplink() via delta accumulation.
         config.timestamp_cfg.counter_prescaler = 1;
         config.timestamp_cfg.timestamp_selection = MCAN_TIMESTAMP_SEL_VALUE_INCREMENT;
@@ -94,7 +94,7 @@ public:
             frame.std_id = data.can_id;
         }
         frame.canfd_frame = canfd_;
-        frame.bitrate_switch = canfd_; // CAN-FD frames switch to the data-phase baudrate
+        frame.bitrate_switch = canfd_;
         frame.rtr = data.is_remote_transmission;
 
         core::utility::assert_debug(data.can_data.size() <= 8);
@@ -113,29 +113,23 @@ public:
 
         data::CanDataView data;
         const size_t data_length = rx.dlc;
-        data.is_fdcan = false;
+        data.is_fdcan = rx.canfd_frame;
         data.is_extended_can_id = rx.use_ext_id;
         data.is_remote_transmission = rx.rtr;
         data.can_id = data.is_extended_can_id ? rx.ext_id : rx.std_id;
         data.can_data = {reinterpret_cast<const std::byte*>(rx.data_8), data_length};
 
-        // Extract hardware timestamp (32-bit TSU or 16-bit internal, extended to 32 bits).
+        // 16-bit hardware TSCC capture at SOF (1 us/tick) -> extend to 32 bits.
         mcan_timestamp_value_t ts_value;
         if (mcan_get_timestamp_from_received_message(can_base_, &rx, &ts_value)
-            == status_success) {
-            if (ts_value.is_32bit) {
-                data.timestamp_us = ts_value.ts_32bit;
-            } else if (ts_value.is_16bit) {
-                // 16-bit internal timestamp at 1 us/tick → extend to 32 bits.
-                // CAN frames arrive at ≥ 1 kHz, so the gap between frames is far less
-                // than the 65 ms wraparound period — simple delta accumulation suffices.
-                static uint32_t extended_us = 0;
-                static uint16_t last_raw = 0;
-                const uint16_t raw = ts_value.ts_16bit;
-                extended_us += static_cast<uint16_t>(raw - last_raw);
-                last_raw = raw;
-                data.timestamp_us = extended_us;
-            }
+            == status_success
+            && ts_value.is_16bit) {
+            static uint32_t base_us = 0;
+            static uint16_t last_raw = 0;
+            const uint16_t raw = ts_value.ts_16bit;
+            base_us += static_cast<uint16_t>(raw - last_raw);
+            last_raw = raw;
+            data.timestamp_us = base_us;
         }
 
         core::utility::assert_always(

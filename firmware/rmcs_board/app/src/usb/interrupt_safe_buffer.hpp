@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <span>
 
+#include <hpm_soc_feature.h>
+
 #include "core/src/protocol/constant.hpp"
 #include "core/src/protocol/serializer.hpp"
 #include "core/src/utility/assert.hpp"
@@ -76,7 +78,8 @@ public:
 
     private:
         std::atomic<size_t> written_size_ = 0;
-        alignas(size_t) std::byte data_[core::protocol::kProtocolBufferSize]{};
+        alignas(HPM_L1C_CACHELINE_SIZE)
+            std::byte data_[core::protocol::kProtocolBufferSize]{};
     };
 
     const Batch* pop_batch() {

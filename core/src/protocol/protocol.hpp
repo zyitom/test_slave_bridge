@@ -33,8 +33,10 @@ struct CanHeaderLayout {
 
 struct CanHeaderStandardLayout {
     using CanId = BitfieldMember<8, 11>;
-    using DataLengthCode = BitfieldMember<8 + 13, 3>;
-    using HasTimestamp = BitfieldMember<22, 1>;
+    // HasTimestamp sits in the 2-bit gap [19:21) between CanId and
+    // DataLengthCode — avoiding overlap with DataLengthCode bit 1.
+    using HasTimestamp = BitfieldMember<19, 1>;
+    using DataLengthCode = BitfieldMember<21, 3>;
 };
 
 struct CanHeaderExtendedLayout {

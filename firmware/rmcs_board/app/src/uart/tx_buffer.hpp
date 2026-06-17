@@ -14,7 +14,6 @@
 #include <hpm_dma_mgr.h>
 #include <hpm_dmav2_drv.h>
 #include <hpm_dmav2_regs.h>
-#include <hpm_l1c_drv.h>
 #include <hpm_soc_feature.h>
 #include <hpm_uart_drv.h>
 #include <hpm_uart_regs.h>
@@ -27,11 +26,6 @@ namespace librmcs::firmware::uart {
 
 class TxBuffer {
 public:
-    TxBuffer(UART_Type* uart_base, uint32_t dmamux_src)
-        : uart_base_(uart_base) {
-        init_dma(dmamux_src);
-    }
-
     static constexpr size_t kBufferSize = 2048;
     static constexpr size_t kBufferMask = kBufferSize - 1;
     static_assert((kBufferSize & (kBufferSize - 1)) == 0);
@@ -40,6 +34,14 @@ public:
     static_assert(kBufferSize <= std::numeric_limits<uint16_t>::max());
 
     static constexpr size_t kMaxIdleCount = 256;
+
+    TxBuffer(UART_Type* uart_base, uint32_t dmamux_src, std::byte* data_buffer,
+             dma_mgr_linked_descriptor_t* linked_descriptor)
+        : uart_base_(uart_base)
+        , data_buffer_(data_buffer)
+        , linked_descriptor_(linked_descriptor) {
+        init_dma(dmamux_src);
+    }
 
     bool try_enqueue(const data::UartDataView& data_view) {
         const auto in = in_.load(std::memory_order::relaxed);
@@ -57,17 +59,13 @@ public:
             const auto end_idle =
                 static_cast<BufferIndexType>(in + static_cast<BufferIndexType>(size));
 
-            // Optimization: Reuse the logical idle boundary at the current producer position.
             if (idle_boundary_before_in_) {
                 if (size) {
-                    // Non-empty: Only append the new 'end'.
                     if (!idle_checkpoints_.push_back(end_idle))
                         return false;
                 }
-                // If ZLP (size==0): the existing checkpoint already enforces the idle wait.
             } else {
                 if (size) {
-                    // Non-empty: Push [begin, end] atomically to ensure isolation on both sides.
                     if (idle_checkpoints_.push_back_n(
                             [&, i = 0]() mutable noexcept {
                                 return (i++ == 0) ? begin_idle : end_idle;
@@ -77,7 +75,6 @@ public:
                         return false;
                     }
                 } else {
-                    // ZLP: 'begin' == 'end'. Push single checkpoint to force an IDLE wait.
                     if (!idle_checkpoints_.push_back(begin_idle))
                         return false;
                 }
@@ -87,8 +84,8 @@ public:
         if (size) {
             auto offset = in & kBufferMask;
             auto slice = std::min(size, kBufferSize - offset);
-            std::memcpy(data_buffer_.data() + offset, data_view.uart_data.data(), slice);
-            std::memcpy(data_buffer_.data(), data_view.uart_data.data() + slice, size - slice);
+            std::memcpy(data_buffer_ + offset, data_view.uart_data.data(), slice);
+            std::memcpy(data_buffer_, data_view.uart_data.data() + slice, size - slice);
 
             in_.store(
                 static_cast<BufferIndexType>(in + static_cast<BufferIndexType>(size)),
@@ -96,7 +93,6 @@ public:
 
             idle_boundary_before_in_ = data_view.idle_delimited;
         } else {
-            // Zero-length non-idle packets should not clear an existing boundary.
             idle_boundary_before_in_ |= data_view.idle_delimited;
         }
 
@@ -143,9 +139,9 @@ public:
 
         const auto slice = std::min(size, kBufferSize - offset);
         if (slice == size)
-            trigger_dma(data_buffer_.data() + offset, slice, nullptr, 0);
+            trigger_dma(data_buffer_ + offset, slice, nullptr, 0);
         else
-            trigger_dma(data_buffer_.data() + offset, slice, data_buffer_.data(), size - slice);
+            trigger_dma(data_buffer_ + offset, slice, data_buffer_, size - slice);
 
         in_flight_ = static_cast<BufferIndexType>(size);
 
@@ -168,31 +164,28 @@ private:
         config.dst_addr_ctrl = DMA_MGR_ADDRESS_CONTROL_FIXED;
         config.src_mode = DMA_MGR_HANDSHAKE_MODE_NORMAL;
         config.dst_mode = DMA_MGR_HANDSHAKE_MODE_HANDSHAKE;
-        config.src_burst_size = DMA_MGR_NUM_TRANSFER_PER_BURST_1T;
+        config.src_burst_size = DMA_MGR_NUM_TRANSFER_PER_BURST_8T;
 
         core::utility::assert_always(
             dma_mgr_request_resource(&dma_) == status_success
             && dma_mgr_setup_channel(&dma_, &config) == status_success
-            && dma_mgr_config_linked_descriptor(&dma_, &config, &dma_linked_descriptor_mgr_)
+            && dma_mgr_config_linked_descriptor(&dma_, &config, linked_descriptor_)
                    == status_success);
-        l1c_dc_flush(
-            reinterpret_cast<size_t>(&dma_linked_descriptor_), sizeof(dma_linked_descriptor_));
+        // No cache flush: descriptor in AHB SRAM.
     }
 
     void trigger_dma(const std::byte* src, size_t size, const std::byte* src2, size_t size2) {
         core::utility::assert_debug(src);
-        l1c_dc_flush_cacheline_aligned(src, size);
+        // No cache flush: buffers in AHB SRAM.
         auto& ctrl = dma_.base->CHCTRL[dma_.channel];
         ctrl.SRCADDR = reinterpret_cast<uintptr_t>(src);
         ctrl.TRANSIZE = size;
 
         if (src2) {
-            l1c_dc_flush_cacheline_aligned(src2, size2);
-            dma_linked_descriptor_.src_addr = reinterpret_cast<uintptr_t>(src2);
-            dma_linked_descriptor_.trans_size = size2;
-            l1c_dc_flush(
-                reinterpret_cast<size_t>(&dma_linked_descriptor_), sizeof(dma_linked_descriptor_));
-            ctrl.LLPOINTER = reinterpret_cast<uintptr_t>(&dma_linked_descriptor_);
+            auto* raw_desc = reinterpret_cast<dma_linked_descriptor_t*>(linked_descriptor_);
+            raw_desc->src_addr = reinterpret_cast<uintptr_t>(src2);
+            raw_desc->trans_size = size2;
+            ctrl.LLPOINTER = reinterpret_cast<uintptr_t>(linked_descriptor_);
         } else {
             ctrl.LLPOINTER = 0;
         }
@@ -200,25 +193,10 @@ private:
         ctrl.CTRL |= DMAV2_CHCTRL_CTRL_ENABLE_MASK;
     }
 
-    static void l1c_dc_flush_cacheline_aligned(const std::byte* src, uint32_t size) {
-        const uintptr_t aligned_start = HPM_L1C_CACHELINE_ALIGN_DOWN(src);
-        const uintptr_t aligned_end = HPM_L1C_CACHELINE_ALIGN_UP(src + size);
-        const size_t aligned_size = aligned_end - aligned_start;
-        l1c_dc_flush(aligned_start, aligned_size);
-    }
-
-    alignas(HPM_L1C_CACHELINE_SIZE) std::array<std::byte, kBufferSize> data_buffer_;
-
-    union alignas(HPM_L1C_CACHELINE_SIZE) {
-        dma_linked_descriptor_t dma_linked_descriptor_;
-        dma_mgr_linked_descriptor_t dma_linked_descriptor_mgr_;
-    };
-    static_assert(std::is_standard_layout_v<dma_mgr_linked_descriptor_t>);
-    static_assert(std::is_standard_layout_v<dma_linked_descriptor_t>);
-    static_assert(sizeof(dma_mgr_linked_descriptor_t) == sizeof(dma_linked_descriptor_t));
-    static_assert(sizeof(dma_linked_descriptor_t) == HPM_L1C_CACHELINE_SIZE);
-
     UART_Type* uart_base_;
+    // Placed in AHB SRAM by the caller — naturally non-cached.
+    std::byte* data_buffer_;
+    dma_mgr_linked_descriptor_t* linked_descriptor_;
     dma_resource_t dma_;
 
     std::atomic<BufferIndexType> in_{0}, out_{0};

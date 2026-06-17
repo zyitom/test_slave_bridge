@@ -36,15 +36,10 @@ class Uart
     friend class RxBuffer<Uart>;
 
 public:
-    using Lazy = utility::Lazy<Uart, UartPort>;
+    using Lazy = utility::Lazy<Uart, UartPort, size_t>;
 
-    explicit Uart(UartPort port)
-        : TxBuffer(reinterpret_cast<UART_Type*>(port.base), port.dma_src_tx)
-        , RxBuffer(reinterpret_cast<UART_Type*>(port.base), port.dma_src_rx)
-        , data_id_(port.data_id)
-        , uart_base_(reinterpret_cast<UART_Type*>(port.base)) {
-        init_uart(port.irq_num, port.baudrate, port.parity);
-    }
+    // Defined out-of-line below the AHB SRAM storage arrays.
+    explicit Uart(UartPort port, size_t storage_index);
 
     [[nodiscard]] data::DataId data_id() const { return data_id_; }
 
@@ -102,18 +97,46 @@ private:
 
     const data::DataId data_id_;
     UART_Type* uart_base_;
+
+public:
+    // DMA buffer storage in AHB SRAM (0xF0400000): naturally non-cached,
+    // eliminating manual l1c_dc_flush/invalidate overhead on the UART data path.
+    struct RxStorage {
+        alignas(HPM_L1C_CACHELINE_SIZE) std::array<std::byte, RxBuffer<Uart>::kBufferSize> data;
+        alignas(HPM_L1C_CACHELINE_SIZE)
+            std::array<dma_mgr_linked_descriptor_t, RxBuffer<Uart>::kDmaDescriptorCount>
+                descriptors;
+    };
+    struct TxStorage {
+        alignas(HPM_L1C_CACHELINE_SIZE) std::array<std::byte, TxBuffer::kBufferSize> data;
+        alignas(HPM_L1C_CACHELINE_SIZE) dma_mgr_linked_descriptor_t descriptor;
+    };
 };
 
-// Everything below is built from the board's UART port table (board::kUartPorts),
-// so there are no per-port macros: the count, the DBUS entry and the dispatch all
-// follow the table.
 constexpr size_t kUartCount = std::size(board::kUartPorts);
+
+ATTR_PLACE_AT(".ahb_sram")
+inline constinit Uart::RxStorage uart_rx_storage_[kUartCount]{};
+ATTR_PLACE_AT(".ahb_sram")
+inline constinit Uart::TxStorage uart_tx_storage_[kUartCount]{};
+
+inline Uart::Uart(UartPort port, size_t storage_index)
+    : TxBuffer(reinterpret_cast<UART_Type*>(port.base), port.dma_src_tx,
+               uart_tx_storage_[storage_index].data.data(),
+               &uart_tx_storage_[storage_index].descriptor)
+    , RxBuffer(reinterpret_cast<UART_Type*>(port.base), port.dma_src_rx,
+               uart_rx_storage_[storage_index].data.data(),
+               uart_rx_storage_[storage_index].descriptors.data())
+    , data_id_(port.data_id)
+    , uart_base_(reinterpret_cast<UART_Type*>(port.base)) {
+    init_uart(port.irq_num, port.baudrate, port.parity);
+}
 
 namespace internal {
 
 template <std::size_t I>
 consteval Uart::Lazy make_uart() {
-    return Uart::Lazy{board::kUartPorts[I]};
+    return Uart::Lazy{board::kUartPorts[I], I};
 }
 
 template <std::size_t... I>

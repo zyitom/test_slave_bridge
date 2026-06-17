@@ -16,8 +16,9 @@
 
 namespace librmcs::firmware::board {
 
-// This board exposes a single CAN-FD, a single UART and a plain GPIO RGB LED;
-// it has no IMU, GPIO application, DBUS UART or USB speed switch.
+// This board exposes a single CAN controller (classic or CAN-FD, host-configured),
+// a single UART and a plain GPIO RGB LED; it has no IMU, GPIO application,
+// DBUS UART or USB speed switch.
 
 // The HPM5321 USB always runs at high speed.
 bool usb_use_high_speed();

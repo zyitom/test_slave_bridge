@@ -3,6 +3,7 @@
 #include <board.h>
 #include <device/usbd.h>
 #include <hpm_dma_mgr.h>
+#include <hpm_l1c_drv.h>
 
 #include "firmware/rmcs_board/app/src/can/can.hpp"
 #include "firmware/rmcs_board/app/src/led/led.hpp"
@@ -22,6 +23,11 @@ App::App() {
     board_init();
     board_init_usb();
     dma_mgr_init();
+
+    // Enable D-cache write-around: streaming writes bypass cache allocation,
+    // keeping the 16 KiB D-cache available for hot control structures.
+    l1c_dc_enable_writearound();
+
     boot::BootMailbox::clear();
 
     led::led.init();

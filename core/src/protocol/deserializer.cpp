@@ -72,9 +72,6 @@ coroutine::LifoTask<bool> Deserializer::process_can_field(FieldId field_id) {
         auto header = CanHeader::CRef{header_bytes};
 
         data_view.is_fdcan = header.get<CanHeader::IsFdCan>();
-        if (data_view.is_fdcan) [[unlikely]]
-            co_return false;
-
         data_view.is_extended_can_id = header.get<CanHeader::IsExtendedCanId>();
         data_view.is_remote_transmission = header.get<CanHeader::IsRemoteTransmission>();
         can_data_length = static_cast<uint8_t>(header.get<CanHeader::HasCanData>());
