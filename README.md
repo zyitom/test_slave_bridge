@@ -8,6 +8,41 @@ LibRMCS v3 正在开发！目前处于测试阶段，无良好的文档/教程�
 
 您可以访问 [v2](https://github.com/Alliance-Algorithm/librmcs/tree/v2) 分支获取 LibRMCS v2 的最新 stable 版本。
 
+## Host SDK 编译
+
+### 依赖
+
+- `gcc` / `g++` >= 14（需要 C++23 `<print>` 支持，GCC 13 不包含该头文件）
+- `cmake` >= 3.28 与 `ninja`
+- `libusb-1.0-dev`
+
+Ubuntu 22.04 默认 GCC 版本较低，需手动安装：
+
+```bash
+sudo apt install g++-14 gcc-14 libusb-1.0-0-dev
+```
+
+### 编译
+
+```bash
+cmake --preset linux-debug -S host
+cmake --build host/build
+```
+
+如需同时构建示例程序（`rx_monitor`、`uart_stress` 等），加上 `-DBUILD_EXAMPLES=ON`：
+
+```bash
+cmake --preset linux-debug -S host -DBUILD_EXAMPLES=ON
+cmake --build host/build --target rx_monitor
+```
+
+如果系统默认 GCC 版本低于 14，需手动指定编译器：
+
+```bash
+cmake --preset linux-debug -S host -DBUILD_EXAMPLES=ON \
+    -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_C_COMPILER=gcc-14
+```
+
 ## 固件编译与烧录
 
 ### 依赖

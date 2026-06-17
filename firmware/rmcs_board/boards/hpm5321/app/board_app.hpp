@@ -25,7 +25,7 @@ bool usb_use_high_speed();
 // CAN ports in logical order (CAN0, CAN1, ...). CAN0 is the DM (Damiao) motor
 // bus and runs CAN-FD; this board has no other CAN.
 constexpr CanPort kCanPorts[] = {
-    {HPM_MCAN0_BASE, IRQn_MCAN0, CanMode::kCanFd},
+    {HPM_MCAN0_BASE, IRQn_MCAN0, CanMode::kClassic},
 };
 
 uint32_t init_can(MCAN_Type* ptr);

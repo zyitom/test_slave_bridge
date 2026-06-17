@@ -22,6 +22,9 @@ struct FieldHeaderExtendedLayout {
 };
 
 struct CanHeaderLayout {
+    // Bit 3 was previously HasTimestamp but conflicts with FieldHeader.Id bit 3.
+    // HasTimestamp has been moved to CanHeaderStandardLayout / CanHeaderExtendedLayout.
+    // Bit 3 is reserved.
     using IsFdCan = BitfieldMember<4, 1>; // Currently invalid, reserved only
     using IsExtendedCanId = BitfieldMember<5, 1>;
     using IsRemoteTransmission = BitfieldMember<6, 1>;
@@ -31,11 +34,13 @@ struct CanHeaderLayout {
 struct CanHeaderStandardLayout {
     using CanId = BitfieldMember<8, 11>;
     using DataLengthCode = BitfieldMember<8 + 13, 3>;
+    using HasTimestamp = BitfieldMember<22, 1>;
 };
 
 struct CanHeaderExtendedLayout {
     using CanId = BitfieldMember<8, 29>;
     using DataLengthCode = BitfieldMember<8 + 29, 3>;
+    using HasTimestamp = BitfieldMember<40, 1>;
 };
 
 struct UartHeaderLayout {
@@ -69,7 +74,7 @@ struct CanHeaderStandard
     , layouts::CanHeaderStandardLayout {};
 
 struct CanHeaderExtended
-    : utility::Bitfield<5>
+    : utility::Bitfield<6>
     , layouts::CanHeaderLayout
     , layouts::CanHeaderExtendedLayout {};
 

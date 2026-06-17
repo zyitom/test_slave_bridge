@@ -68,6 +68,12 @@ public:
         config.ram_config.txfifo_or_txqueue_mode = MCAN_TXBUF_OPERATION_MODE_FIFO;
         config.disable_auto_retransmission = true;
 
+        // Enable internal 16-bit hardware timestamp counter.
+        // Clocked by CAN bit time: 1 Mbps → 1 us/tick.
+        // Extended to 32 bits in handle_uplink() via delta accumulation.
+        config.timestamp_cfg.counter_prescaler = 1;
+        config.timestamp_cfg.timestamp_selection = MCAN_TIMESTAMP_SEL_VALUE_INCREMENT;
+
         mcan_init(can_base_, &config, can_source_clock_freq);
         mcan_enable_interrupts(can_base_, MCAN_INT_RXFIFO0_NEW_MSG);
         // CAN RX is the forwarding-critical path (motor feedback -> host), so it
@@ -112,6 +118,25 @@ public:
         data.is_remote_transmission = rx.rtr;
         data.can_id = data.is_extended_can_id ? rx.ext_id : rx.std_id;
         data.can_data = {reinterpret_cast<const std::byte*>(rx.data_8), data_length};
+
+        // Extract hardware timestamp (32-bit TSU or 16-bit internal, extended to 32 bits).
+        mcan_timestamp_value_t ts_value;
+        if (mcan_get_timestamp_from_received_message(can_base_, &rx, &ts_value)
+            == status_success) {
+            if (ts_value.is_32bit) {
+                data.timestamp_us = ts_value.ts_32bit;
+            } else if (ts_value.is_16bit) {
+                // 16-bit internal timestamp at 1 us/tick → extend to 32 bits.
+                // CAN frames arrive at ≥ 1 kHz, so the gap between frames is far less
+                // than the 65 ms wraparound period — simple delta accumulation suffices.
+                static uint32_t extended_us = 0;
+                static uint16_t last_raw = 0;
+                const uint16_t raw = ts_value.ts_16bit;
+                extended_us += static_cast<uint16_t>(raw - last_raw);
+                last_raw = raw;
+                data.timestamp_us = extended_us;
+            }
+        }
 
         core::utility::assert_always(
             serializer.write_can(field_id, data)

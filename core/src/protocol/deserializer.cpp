@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
 
 #include "core/include/librmcs/data/datas.hpp"
@@ -63,6 +64,7 @@ coroutine::LifoTask<void> Deserializer::process_stream() {
 coroutine::LifoTask<bool> Deserializer::process_can_field(FieldId field_id) {
     data::CanDataView data_view;
     uint8_t can_data_length = 0;
+    bool has_timestamp = false;
     {
         const auto* header_bytes = co_await peek_bytes(sizeof(CanHeader));
         if (!header_bytes) [[unlikely]]
@@ -86,6 +88,7 @@ coroutine::LifoTask<bool> Deserializer::process_can_field(FieldId field_id) {
 
         data_view.can_id = header.get<CanHeaderExtended::CanId>();
         can_data_length = can_data_length ? header.get<CanHeaderExtended::DataLengthCode>() + 1 : 0;
+        has_timestamp = header.get<CanHeaderExtended::HasTimestamp>();
     } else {
         const auto* header_std_bytes = co_await peek_bytes(sizeof(CanHeaderStandard));
         if (!header_std_bytes) [[unlikely]]
@@ -94,6 +97,7 @@ coroutine::LifoTask<bool> Deserializer::process_can_field(FieldId field_id) {
 
         data_view.can_id = header.get<CanHeaderStandard::CanId>();
         can_data_length = can_data_length ? header.get<CanHeaderStandard::DataLengthCode>() + 1 : 0;
+        has_timestamp = header.get<CanHeaderStandard::HasTimestamp>();
     }
     consume_peeked();
 
@@ -105,6 +109,16 @@ coroutine::LifoTask<bool> Deserializer::process_can_field(FieldId field_id) {
         consume_peeked();
     } else {
         data_view.can_data = std::span<const std::byte>{};
+    }
+
+    if (has_timestamp) {
+        const auto* ts_bytes = co_await peek_bytes(sizeof(uint32_t));
+        if (!ts_bytes) [[unlikely]]
+            co_return false;
+        uint32_t ts;
+        std::memcpy(&ts, ts_bytes, sizeof(ts));
+        data_view.timestamp_us = ts;
+        consume_peeked();
     }
 
     callback_.can_deserialized_callback(field_id, data_view);

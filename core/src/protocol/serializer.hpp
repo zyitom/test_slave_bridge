@@ -48,12 +48,15 @@ public:
         const std::uint8_t data_length_code =
             has_data ? static_cast<std::uint8_t>(can_data_length - 1) : 0;
 
+        const bool has_timestamp = view.timestamp_us.has_value();
+
         if (view.is_extended_can_id) {
             auto header = CanHeaderExtended::Ref(cursor);
             cursor += sizeof(CanHeaderExtended);
             header.set<CanHeaderExtended::IsFdCan>(false);
             header.set<CanHeaderExtended::IsExtendedCanId>(true);
             header.set<CanHeaderExtended::IsRemoteTransmission>(view.is_remote_transmission);
+            header.set<CanHeaderExtended::HasTimestamp>(has_timestamp);
             header.set<CanHeaderExtended::HasCanData>(has_data);
             header.set<CanHeaderExtended::CanId>(view.can_id);
             header.set<CanHeaderExtended::DataLengthCode>(data_length_code);
@@ -63,6 +66,7 @@ public:
             header.set<CanHeaderStandard::IsFdCan>(false);
             header.set<CanHeaderStandard::IsExtendedCanId>(false);
             header.set<CanHeaderStandard::IsRemoteTransmission>(view.is_remote_transmission);
+            header.set<CanHeaderStandard::HasTimestamp>(has_timestamp);
             header.set<CanHeaderStandard::HasCanData>(has_data);
             header.set<CanHeaderStandard::CanId>(view.can_id);
             header.set<CanHeaderStandard::DataLengthCode>(data_length_code);
@@ -71,6 +75,12 @@ public:
         if (has_data) {
             std::memcpy(cursor, view.can_data.data(), can_data_length);
             cursor += can_data_length;
+        }
+
+        if (has_timestamp) {
+            const uint32_t ts = *view.timestamp_us;
+            std::memcpy(cursor, &ts, sizeof(ts));
+            cursor += sizeof(ts);
         }
 
         utility::assert_debug(cursor == dst.data() + dst.size());
@@ -416,8 +426,10 @@ private:
         const std::size_t field_header_bytes = required_field_header_size(field_id);
         const std::size_t can_header_bytes =
             view.is_extended_can_id ? sizeof(CanHeaderExtended) : sizeof(CanHeaderStandard);
+        const std::size_t timestamp_bytes =
+            view.timestamp_us.has_value() ? sizeof(uint32_t) : 0;
         const std::size_t total =
-            (field_header_bytes + can_header_bytes - 1) + view.can_data.size();
+            (field_header_bytes + can_header_bytes - 1) + view.can_data.size() + timestamp_bytes;
         utility::assert_debug(total <= kProtocolBufferSize);
 
         return total;
