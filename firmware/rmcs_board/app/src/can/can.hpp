@@ -76,10 +76,10 @@ public:
 
         mcan_init(can_base_, &config, can_source_clock_freq);
         mcan_enable_interrupts(can_base_, MCAN_INT_RXFIFO0_NEW_MSG);
-        // CAN RX is the forwarding-critical path (motor feedback -> host), so it
-        // takes a higher PLIC priority than the secondary UART (priority 1).
-        // Higher number == more urgent on the PLIC; USB matches this at 2.
-        intc_m_enable_irq_with_priority(port.irq_num, 2);
+        // CAN RX is the forwarding-critical path (motor feedback -> host).
+        // Priority 3: above USB (2) and UART (1) — ensures CAN frames are
+        // never delayed by bulk USB transfers or DMA callbacks.
+        intc_m_enable_irq_with_priority(port.irq_num, 3);
     }
 
     [[nodiscard]] data::DataId data_id() const { return data_id_; }
@@ -132,9 +132,11 @@ public:
             data.timestamp_us = base_us;
         }
 
+        const auto result = serializer.write_can(field_id, data);
+        if (result == core::protocol::Serializer::SerializeResult::kBadAlloc) [[unlikely]]
+            led::led->uplink_buffer_full();
         core::utility::assert_always(
-            serializer.write_can(field_id, data)
-            != core::protocol::Serializer::SerializeResult::kInvalidArgument);
+            result != core::protocol::Serializer::SerializeResult::kInvalidArgument);
     }
 
     void irq_handler() {
