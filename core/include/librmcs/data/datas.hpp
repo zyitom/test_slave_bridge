@@ -38,7 +38,8 @@ struct CanDataView {
     bool is_fdcan = false;
     bool is_extended_can_id = false;
     bool is_remote_transmission = false;
-    // Hardware TSU timestamp in microseconds (1 tick = 1 us). std::nullopt if unsupported.
+    // Hardware TSU timestamp in microseconds (1 tick = 1 us, wraps ~71.6 min).
+    // std::nullopt if unsupported.
     std::optional<uint32_t> timestamp_us = std::nullopt;
 };
 

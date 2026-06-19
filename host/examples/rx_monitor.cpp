@@ -16,6 +16,7 @@ static constexpr int kRtCpu = 7;
 
 #include <librmcs/agent/c_board.hpp>
 #include <librmcs/agent/rmcs_board_hpm5321.hpp>
+#include <librmcs/agent/rmcs_board_hpm5321_dual_can.hpp>
 
 // Receive-only monitor. Auto-detects CBoard or RmcsBoardHpm5321.
 // Columns: host time, channel, size, host delta, hw-ts, hw-ts delta, fwd jitter
@@ -226,6 +227,26 @@ private:
     }
 };
 
+class HpmDualCanMonitor : public librmcs::agent::RmcsBoardHpm5321DualCan {
+public:
+    HpmDualCanMonitor()
+        : librmcs::agent::RmcsBoardHpm5321DualCan{{}, {.dangerously_skip_version_checks = true}} {}
+private:
+    void can0_receive_callback(const librmcs::data::CanDataView& data) override {
+        g_stats[kCan0].record(kCan0, data.can_data.size(),
+            data.timestamp_us.has_value() ? data.timestamp_us.value() : 0,
+            data.timestamp_us.has_value());
+    }
+    void can1_receive_callback(const librmcs::data::CanDataView& data) override {
+        g_stats[kCan1].record(kCan1, data.can_data.size(),
+            data.timestamp_us.has_value() ? data.timestamp_us.value() : 0,
+            data.timestamp_us.has_value());
+    }
+    void uart0_receive_callback(const librmcs::data::UartDataView& data) override {
+        g_stats[kUart0].record(kUart0, data.uart_data.size());
+    }
+};
+
 class CBoardMonitor : public librmcs::agent::CBoard {
 public:
     CBoardMonitor()
@@ -262,6 +283,7 @@ int main() {
     printf("RX monitor - auto-detecting board...\n");
 
     std::unique_ptr<HpmMonitor> hpm;
+    std::unique_ptr<HpmDualCanMonitor> hpm_dual;
     std::unique_ptr<CBoardMonitor> cboard;
 
     try {
@@ -269,11 +291,16 @@ int main() {
         printf("Connected: RmcsBoardHpm5321 (CAN0, UART0)\n");
     } catch (const std::runtime_error&) {
         try {
-            cboard = std::make_unique<CBoardMonitor>();
-            printf("Connected: CBoard (CAN1, CAN2, UART1, UART2, DBUS)\n");
-        } catch (const std::runtime_error& e) {
-            fprintf(stderr, "No compatible device found: %s\n", e.what());
-            return 1;
+            hpm_dual = std::make_unique<HpmDualCanMonitor>();
+            printf("Connected: RmcsBoardHpm5321DualCan (CAN0, CAN1, UART0)\n");
+        } catch (const std::runtime_error&) {
+            try {
+                cboard = std::make_unique<CBoardMonitor>();
+                printf("Connected: CBoard (CAN1, CAN2, UART1, UART2, DBUS)\n");
+            } catch (const std::runtime_error& e) {
+                fprintf(stderr, "No compatible device found: %s\n", e.what());
+                return 1;
+            }
         }
     }
 

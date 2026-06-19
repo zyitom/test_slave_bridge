@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 3.28)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
-set(APP_NAME "rmcs_board_app")
+# Fold the selected board into the output name so the produced ELF/BIN/DFU make
+# the target board obvious (e.g. rmcs_board_app_hpm5321.elf vs
+# rmcs_board_app_hpm5321_dual_can.elf) and the wrong image cannot be flashed by
+# mistake.
+set(APP_NAME "rmcs_board_app_${BOARD}")
 
 if(NOT LIBRMCS_RMCS_BOARD_SUPERBUILDING)
     message(FATAL_ERROR
@@ -88,9 +92,9 @@ endif()
 librmcs_add_dfu_image(
     TARGET ${APP_ELF_NAME}
     INPUT_BINARY "${EXECUTABLE_OUTPUT_PATH}/${APP_BIN_NAME}"
-    OUTPUT_DFU "${EXECUTABLE_OUTPUT_PATH}/rmcs_board_app.dfu"
+    OUTPUT_DFU "${EXECUTABLE_OUTPUT_PATH}/${APP_NAME}.dfu"
     VENDOR_ID 0xA11C
     PRODUCT_ID ${LIBRMCS_USB_PID}
     DEVICE_ID 0x0300
-    COMMENT "Generating rmcs_board_app.dfu"
+    COMMENT "Generating ${APP_NAME}.dfu"
 )

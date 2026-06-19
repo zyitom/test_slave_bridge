@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.28)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
-set(APP_NAME "rmcs_board_bootloader")
+# Fold the selected board into the output name so the bootloader ELF/BIN makes
+# the target board obvious and the wrong image cannot be flashed by mistake.
+set(APP_NAME "rmcs_board_bootloader_${BOARD}")
 
 if(NOT LIBRMCS_RMCS_BOARD_SUPERBUILDING)
     message(FATAL_ERROR

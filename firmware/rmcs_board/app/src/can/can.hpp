@@ -7,10 +7,12 @@
 #include <iterator>
 #include <utility>
 
+#include <hpm_clock_drv.h>
 #include <hpm_common.h>
 #include <hpm_mcan_drv.h>
 #include <hpm_mcan_regs.h>
 #include <hpm_mcan_soc.h>
+#include <hpm_ptpc_drv.h>
 #include <hpm_soc.h>
 #include <hpm_soc_feature.h>
 
@@ -68,11 +70,67 @@ public:
         config.ram_config.txfifo_or_txqueue_mode = MCAN_TXBUF_OPERATION_MODE_FIFO;
         config.disable_auto_retransmission = true;
 
-        // Enable internal 16-bit hardware timestamp counter.
-        // Clocked by CAN bit time: 1 Mbps -> 1 us/tick.
-        // Extended to 32 bits in handle_uplink() via delta accumulation.
+        // 64-bit hardware timestamp via the Timestamp Unit (TSU). This SoC's
+        // MCAN has no usable internal TSU timebase (TBCS is fixed to "external"
+        // by synthesis), so every controller's TSU is fed from a single shared
+        // PTPC0 timebase routed through TBSEL slot 0. PTPC keeps an IEEE-1588
+        // {seconds:nanoseconds} counter; handle_uplink() folds it to
+        // microseconds. Because all controllers share PTPC0, their timestamps
+        // sit on one common clock and are directly comparable across buses.
+        config.use_timestamping_unit = true;
+        config.tsu_config.enable_tsu = true;
+        config.tsu_config.enable_64bit_timestamp = true;
+        config.tsu_config.use_ext_timebase = true;
+        config.tsu_config.ext_timebase_src = MCAN_TSU_EXT_TIMEBASE_SRC_TBSEL_0;
+        config.tsu_config.tbsel_option = MCAN_TSU_TBSEL_PTPC0;
+        config.tsu_config.capture_on_sof = true;
+        config.tsu_config.prescaler = 1;  // unused for an external timebase
         config.timestamp_cfg.counter_prescaler = 1;
-        config.timestamp_cfg.timestamp_selection = MCAN_TIMESTAMP_SEL_VALUE_INCREMENT;
+        config.timestamp_cfg.timestamp_selection = MCAN_TIMESTAMP_SEL_EXT_TS_VAL_USED;
+
+        // The external TSU only timestamps a received frame when the filter that
+        // accepts it is marked as a sync message (evaluated only while CCCR.UTSU
+        // is set). The default accept-all filters have sync_message = 0, so swap
+        // in accept-all (mask 0) sync filters for both standard and extended IDs
+        // -- otherwise no frame is ever timestamped.
+        mcan_filter_elem_t std_sync_filter{};
+        std_sync_filter.filter_type = MCAN_FILTER_TYPE_CLASSIC_FILTER;
+        std_sync_filter.filter_config = MCAN_FILTER_ELEM_CFG_STORE_IN_RX_FIFO0_IF_MATCH;
+        std_sync_filter.can_id_type = MCAN_CAN_ID_TYPE_STANDARD;
+        std_sync_filter.sync_message = 1U;
+        std_sync_filter.filter_id = 0U;
+        std_sync_filter.filter_mask = 0U;
+        mcan_filter_elem_t ext_sync_filter = std_sync_filter;
+        ext_sync_filter.can_id_type = MCAN_CAN_ID_TYPE_EXTENDED;
+        config.all_filters_config.std_id_filter_list.filter_elem_list = &std_sync_filter;
+        config.all_filters_config.std_id_filter_list.mcan_filter_elem_count = 1;
+        config.all_filters_config.ext_id_filter_list.filter_elem_list = &ext_sync_filter;
+        config.all_filters_config.ext_id_filter_list.mcan_filter_elem_count = 1;
+
+        // Start the shared PTPC0 timebase once, then point this controller's TSU
+        // input at it. PTPC is clocked from the AHB clock group (clock_ptpc).
+        const uint32_t ptpc_freq = clock_get_frequency(clock_ptpc);
+        // PTPC digital mode advances its nanosecond counter by an integer step
+        // of floor(1e9 / ptpc_freq) ns (6 ns at 160 MHz) rather than the exact
+        // 1e9 / ptpc_freq (6.25 ns), so reported time runs slow. Converting
+        // reported nanoseconds to microseconds by dividing by
+        // (ptpc_freq_MHz * step) instead of 1000 cancels the error exactly
+        // (160 * 6 = 960 at 160 MHz). See handle_uplink().
+        const uint32_t ptpc_step_ns = 1'000'000'000U / ptpc_freq;
+        ts_ns_per_us_ = (ptpc_freq / 1'000'000U) * ptpc_step_ns;
+
+        static bool ptpc_timebase_started = false;
+        if (!ptpc_timebase_started) {
+            ptpc_config_t ptpc_config;
+            ptpc_get_default_config(HPM_PTPC, &ptpc_config);
+            ptpc_config.src_frequency = ptpc_freq;
+            ptpc_config.ns_rollover_mode = ptpc_ns_counter_rollover_digital;
+            core::utility::assert_always(
+                ptpc_init(HPM_PTPC, PTPC_PTPC_0, &ptpc_config) == status_success);
+            ptpc_init_timer(HPM_PTPC, PTPC_PTPC_0);
+            ptpc_timebase_started = true;
+        }
+        ptpc_set_timer_output(HPM_PTPC, mcan_get_instance_from_base(can_base_), false);
 
         mcan_init(can_base_, &config, can_source_clock_freq);
         mcan_enable_interrupts(can_base_, MCAN_INT_RXFIFO0_NEW_MSG);
@@ -119,17 +177,24 @@ public:
         data.can_id = data.is_extended_can_id ? rx.ext_id : rx.std_id;
         data.can_data = {reinterpret_cast<const std::byte*>(rx.data_8), data_length};
 
-        // 16-bit hardware TSCC capture at SOF (1 us/tick) -> extend to 32 bits.
+        // 64-bit TSU timestamp captured at SOF from the shared PTPC0 timebase.
+        // PTPC delivers an IEEE-1588 {seconds:nanoseconds} pair (high 32 bits =
+        // seconds, low 32 bits = nanoseconds in [0, 1e9)); recombine into a
+        // single nanosecond count, then divide by ts_ns_per_us_ (= 960 at
+        // 160 MHz, not 1000) to convert to microseconds and undo the PTPC
+        // digital-step error in one step. The result is truncated to 32 bits for
+        // the wire: it wraps every ~71.6 min, but the host only uses deltas,
+        // which are wrap-safe. status_mcan_timestamp_not_exist (frame not matched
+        // by a sync filter) leaves the field as std::nullopt.
         mcan_timestamp_value_t ts_value;
         if (mcan_get_timestamp_from_received_message(can_base_, &rx, &ts_value)
-            == status_success
-            && ts_value.is_16bit) {
-            static uint32_t base_us = 0;
-            static uint16_t last_raw = 0;
-            const uint16_t raw = ts_value.ts_16bit;
-            base_us += static_cast<uint16_t>(raw - last_raw);
-            last_raw = raw;
-            data.timestamp_us = base_us;
+                == status_success
+            && ts_value.is_64bit) {
+            const uint64_t raw = ts_value.ts_64bit;
+            const uint64_t reported_ns =
+                static_cast<uint64_t>(static_cast<uint32_t>(raw >> 32)) * 1'000'000'000ULL
+                + static_cast<uint32_t>(raw);
+            data.timestamp_us = static_cast<uint32_t>(reported_ns / ts_ns_per_us_);
         }
 
         const auto result = serializer.write_can(field_id, data);
@@ -155,6 +220,9 @@ private:
     const data::DataId data_id_;
     MCAN_Type* can_base_;
     const bool canfd_;
+    // Divisor that turns a PTPC reported-nanosecond count into true
+    // microseconds (960 at 160 MHz); set from the PTPC clock in the constructor.
+    uint32_t ts_ns_per_us_ = 1000;
 };
 
 // Everything below is built from the board's CAN port table (board::kCanPorts),
