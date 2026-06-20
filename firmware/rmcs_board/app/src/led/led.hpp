@@ -10,11 +10,33 @@ namespace librmcs::firmware::led {
 
 inline auto& led_backend = gpio_led;
 
+// CAN bus fault categories.  Deliberately coarse: a CAN controller can only
+// reliably tell "nobody acknowledged my frame" apart from "the bits on the wire
+// are corrupted".  The specific protocol error (stuff/form/bit/CRC) fluctuates
+// frame to frame and does NOT map back to a single physical cause -- reversed
+// wiring, a missing 120R termination, a short, a baudrate mismatch and plain
+// noise all produce the same mix -- so they are merged into one BUS-ERROR state
+// instead of pretending to distinguish them.  Each state renders as a distinct,
+// easy-to-read indicator-LED pattern (see the table in Led::update()).
+enum class CanFault : uint8_t {
+    kNone = 0,     // healthy / no error
+    kNoAck,        // ACK error -- alone on the bus / partner unpowered / TX wire cut
+    kWiringFault,  // Bit0 error: cannot drive the bus dominant -- CAN_H/L shorted
+                   // together, reversed, or open (the common physical wiring mistakes)
+    kSignalError,  // stuff/form/CRC (and the rare Bit1 "stuck dominant"): corrupted
+                   // bits whose causes -- missing 120R termination, baudrate mismatch,
+                   // noise -- fluctuate frame to frame and cannot be told apart
+    kBusOff,       // controller bus-off -- too many errors, recovering/offline
+};
+
 class Led {
 public:
     using Lazy = utility::Lazy<Led>;
 
-    Led() { led_backend.init(); }
+    Led() {
+        led_backend.init();
+        board::init_can_indicator_pins();
+    }
 
     void reset() {
         uplink_full_reset_counter_.store(0, std::memory_order::relaxed);
@@ -67,13 +89,71 @@ public:
             // No host yet: slow green blink (~1Hz) = alive, waiting for host.
             led_backend->set_value(0, (tick & 512U) ? 255 : 0, 0);
         }
+
+        // CAN bus indicator light language — one independent LED per CAN
+        // controller (PB14=CAN0, PB15=CAN1).  Four states the controller can
+        // actually distinguish, each a clearly different, easy-to-read pattern:
+        //   off          = healthy / no errors
+        //   slow blink   = NO-ACK: nobody acknowledged -- alone on the bus, the
+        //                  partner is unpowered, or the TX wire is cut
+        //   fast blink   = WIRING FAULT (Bit0): the bus cannot be driven dominant
+        //                  -- CAN_H/L shorted together, reversed, or open
+        //   double blink = SIGNAL ERROR: corrupted bits -- missing 120R termination,
+        //                  baudrate mismatch or noise (cannot be told apart)
+        //   solid on     = BUS-OFF: too many errors; controller recovering/offline
+        // The CAN ISR refreshes the per-controller fault on every error
+        // interrupt; it decays here ~5 s after the last error, returning to off.
+        for (uint8_t i = 0; i < 2; ++i) {
+            uint16_t timeout = can_fault_timeout_[i].load(std::memory_order::relaxed);
+            if (timeout) {
+                --timeout;
+                can_fault_timeout_[i].store(timeout, std::memory_order::relaxed);
+            }
+            const CanFault fault =
+                timeout ? can_fault_[i].load(std::memory_order::relaxed) : CanFault::kNone;
+            bool led_on = false;
+            switch (fault) {
+            case CanFault::kNoAck: led_on = (tick % 1000U) < 500U; break;  // ~1 Hz
+            case CanFault::kWiringFault: led_on = (tick % 200U) < 100U; break;  // ~5 Hz
+            case CanFault::kSignalError: {  // two quick flashes, then a pause
+                const uint32_t phase = tick % 1200U;
+                led_on = phase < 120U || (phase >= 240U && phase < 360U);
+                break;
+            }
+            case CanFault::kBusOff: led_on = true; break;  // solid
+            case CanFault::kNone: led_on = false; break;
+            }
+            (i == 0 ? board::kCan0IndicatorPin : board::kCan1IndicatorPin)
+                .set_active(led_on);
+        }
     }
 
     void set_host_connected(bool connected) {
         host_connected_.store(connected, std::memory_order::relaxed);
     }
 
+    // CAN bus fault light-code tracking.  Called from the CAN ISR with the
+    // controller index (0-based) and the current fault.  The timeout keeps the
+    // indicator LED visible for ~5 s after the last error interrupt.  A kNone
+    // report only refreshes the timeout and keeps the last concrete fault, so a
+    // bus state change (warning/passive) carrying no fresh LEC does not blank a
+    // fault that was reported moments earlier.
+    void report_can_fault(uint8_t can_index, CanFault fault) {
+        if (can_index >= 2)
+            return;
+        can_fault_timeout_[can_index].store(kCanFaultTimeoutTicks, std::memory_order::relaxed);
+        if (fault != CanFault::kNone)
+            can_fault_[can_index].store(fault, std::memory_order::relaxed);
+    }
+
 private:
+    // CAN fault indicator state — ISR-safe via atomic stores.  Each CAN
+    // controller gets its own fault/timeout pair, refreshed by the CAN ISR on
+    // every error interrupt.
+    static constexpr uint16_t kCanFaultTimeoutTicks = 5000;  // 5 s at 1 kHz
+    std::atomic<uint16_t> can_fault_timeout_[2]{};
+    std::atomic<CanFault> can_fault_[2]{};
+
     std::atomic<uint16_t> uplink_full_reset_counter_{0};
     std::atomic<uint16_t> downlink_full_reset_counter_{0};
     std::atomic<bool> host_connected_{false};

@@ -40,6 +40,13 @@ public:
             .speed = board::usb_use_high_speed() ? TUSB_SPEED_HIGH : TUSB_SPEED_FULL,
         };
         core::utility::assert_always(tusb_rhport_init(0, &init_config));
+
+        // tusb_rhport_init -> dcd_init already enabled the USB IRQ; pin its
+        // priority explicitly so the CAN(3) > USB(2) > UART(1) preemption
+        // hierarchy is owned here and cannot silently regress if the SDK default
+        // changes. With preemptive interrupts on, this lets a CAN RX (3) preempt
+        // a running USB ISR (2) -- keeping motor feedback off the USB ISR's tail.
+        intc_m_enable_irq_with_priority(IRQn_USB0, 2);
     }
 
     core::protocol::Serializer& serializer() { return serializer_; }

@@ -15,3 +15,9 @@ target_link_libraries(rx_monitor PRIVATE librmcs-sdk)
 
 add_executable(motor_pid_sine motor_pid_sine.cpp)
 target_link_libraries(motor_pid_sine PRIVATE librmcs-sdk)
+
+add_executable(can_error_test can_error_test.cpp)
+target_link_libraries(can_error_test PRIVATE librmcs-sdk)
+
+add_executable(can_loopback_latency can_loopback_latency.cpp)
+target_link_libraries(can_loopback_latency PRIVATE librmcs-sdk)

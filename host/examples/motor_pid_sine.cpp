@@ -1,6 +1,7 @@
-// Motor 3519 PID position-control sine-wave test via HPM5321 CAN bridge.
+// Motor 3519 PID position-control sine-wave test via HPM5321 DualCan bridge.
 //
-// Controls motor ID 2 through the 一控四 protocol (CAN 2.0):
+// Drives one motor (ID 2) on EACH CAN bus (CAN0 = MCAN0, CAN1 = MCAN3) at the
+// same time, using CAN-FD frames:
 //   - Control frame:  CAN ID 0x200, motor-2 torque-current at bytes [2:3]
 //   - Feedback frame: CAN ID 0x202 (0x200 + motor_id), 1 ms period
 //   - Torque-current range: [-16384, 16384]  ->  [-20.5 A, 20.5 A]
@@ -23,9 +24,13 @@
 #include <optional>
 #include <thread>
 
-#include <librmcs/agent/rmcs_board_hpm5321.hpp>
+#include <librmcs/agent/rmcs_board_hpm5321_dual_can.hpp>
 
 namespace {
+
+// ── Bus configuration ───────────────────────────────────────────────────
+constexpr unsigned kBusCount = 2;       // CAN0 + CAN1
+constexpr bool kUseCanFd = true;        // send CAN-FD frames on both buses
 
 // ── Motor / CAN identifiers (3519 一控四 protocol) ──────────────────────
 constexpr unsigned kMotorId = 2;
@@ -56,10 +61,11 @@ float wrap_delta(float delta) {
 
 }  // namespace
 
-class MotorPidSine : public librmcs::agent::RmcsBoardHpm5321 {
+class MotorPidSine : public librmcs::agent::RmcsBoardHpm5321DualCan {
 public:
     MotorPidSine()
-        : librmcs::agent::RmcsBoardHpm5321{{}, {.dangerously_skip_version_checks = true}} {}
+        : librmcs::agent::RmcsBoardHpm5321DualCan{
+              {}, {.dangerously_skip_version_checks = true}} {}
 
     struct Sample {
         uint16_t raw_angle = 0;
@@ -67,20 +73,33 @@ public:
         std::optional<uint32_t> timestamp_us;
     };
 
-    Sample get_sample() const {
+    Sample get_sample(unsigned bus) const {
         std::lock_guard lock(mutex_);
-        return sample_;
+        return sample_[bus];
     }
 
-    void send_control(int16_t current) {
+    void send_control(unsigned bus, int16_t current) {
         std::array<std::byte, 8> frame{};
         frame[2] = static_cast<std::byte>((current >> 8) & 0xFF);
         frame[3] = static_cast<std::byte>(current & 0xFF);
-        start_transmit().can0_transmit({.can_id = kControlCanId, .can_data = frame,.is_fdcan = false});
+        const librmcs::data::CanDataView data{
+            .can_id = kControlCanId, .can_data = frame, .is_fdcan = kUseCanFd};
+        auto builder = start_transmit();
+        if (bus == 0)
+            builder.can0_transmit(data);
+        else
+            builder.can1_transmit(data);
     }
 
 private:
     void can0_receive_callback(const librmcs::data::CanDataView& data) override {
+        store_sample(0, data);
+    }
+    void can1_receive_callback(const librmcs::data::CanDataView& data) override {
+        store_sample(1, data);
+    }
+
+    void store_sample(unsigned bus, const librmcs::data::CanDataView& data) {
         if (data.can_id != kFeedbackCanId)
             return;
         const auto b = data.can_data;
@@ -94,17 +113,39 @@ private:
         s.valid = true;
 
         std::lock_guard lock(mutex_);
-        sample_ = s;
+        sample_[bus] = s;
     }
 
     mutable std::mutex mutex_;
-    Sample sample_;
+    Sample sample_[kBusCount];
 };
+
+namespace {
+
+// Per-bus control state, advanced independently for CAN0 and CAN1.
+struct BusState {
+    bool present = false;
+    float sine_centre = 0.0F;
+
+    uint16_t prev_raw_angle = 0;
+    uint16_t prev_angle_vel = 0;
+    uint32_t prev_ts_us = 0;
+    bool have_prev = false;
+    int32_t full_turns = 0;
+
+    float last_angle = 0.0F;
+    float last_target = 0.0F;
+    float last_vel_rpm = 0.0F;
+    float last_out = 0.0F;
+};
+
+}  // namespace
 
 int main() {
     std::signal(SIGINT, on_sigint);
 
-    printf("Motor PID Sine — HPM5321 CAN bridge (hw-timestamp derived velocity)\n");
+    printf("Motor PID Sine — HPM5321 DualCan bridge (CAN-FD, hw-timestamp velocity)\n");
+    printf("  buses        : CAN0 + CAN1 (CAN-FD=%s)\n", kUseCanFd ? "on" : "off");
     printf("  motor ID     : %u\n", kMotorId);
     printf("  control CAN  : 0x%03X\n", kControlCanId);
     printf("  feedback CAN : 0x%03X\n", kFeedbackCanId);
@@ -118,54 +159,70 @@ int main() {
     MotorPidSine agent;
     printf("Connected.  Waiting for motor feedback ...\n");
 
-    // ── Wait for first feedback ─────────────────────────────────────────
-    float sine_centre = 0.0F;
+    std::array<BusState, kBusCount> bus{};
+
+    // ── Wait for first feedback on either bus (up to 3 s) ────────────────
     {
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
         while (g_running.load() && std::chrono::steady_clock::now() < deadline) {
-            auto s = agent.get_sample();
-            if (s.valid) {
-                sine_centre = static_cast<float>(s.raw_angle);
-                printf("  motor present — initial angle %u (%.1f deg)%s\n",
-                       s.raw_angle, s.raw_angle * 360.0F / 8192.0F,
-                       s.timestamp_us ? "" : "  (no hw timestamp!)");
-                break;
+            bool all_present = true;
+            for (unsigned i = 0; i < kBusCount; ++i) {
+                if (bus[i].present)
+                    continue;
+                auto s = agent.get_sample(i);
+                if (s.valid) {
+                    bus[i].present = true;
+                    bus[i].sine_centre = static_cast<float>(s.raw_angle);
+                    bus[i].prev_raw_angle = s.raw_angle;
+                    bus[i].prev_angle_vel = s.raw_angle;
+                    printf("  CAN%u motor present — initial angle %u (%.1f deg)%s\n", i,
+                           s.raw_angle, s.raw_angle * 360.0F / 8192.0F,
+                           s.timestamp_us ? "" : "  (no hw timestamp!)");
+                } else {
+                    all_present = false;
+                }
             }
+            if (all_present)
+                break;
             std::this_thread::sleep_for(std::chrono::milliseconds{1});
-        }
-        if (sine_centre == 0.0F) {
-            fprintf(stderr, "ERROR: No motor feedback within 3 s.\n");
-            return 1;
         }
     }
 
+    unsigned active_buses = 0;
+    for (const auto& b : bus)
+        active_buses += b.present ? 1U : 0U;
+    if (active_buses == 0) {
+        fprintf(stderr, "ERROR: No motor feedback on any CAN bus within 3 s.\n");
+        return 1;
+    }
+    for (unsigned i = 0; i < kBusCount; ++i)
+        if (!bus[i].present)
+            printf("  WARNING: CAN%u has no motor — skipping that bus.\n", i);
+
     // ── Phase 1: hold position while ramping current (2 s) ──────────────
-    // During ramp the motor may drift; a gentle P-hold keeps it near the
-    // sine centre so the sine wave doesn't start with a 180 deg step.
-    printf("Phase 1 — holding position during current ramp (2 s) ...\n");
     constexpr float kHoldKp = 2.0F;
     constexpr float kRampDuration = 2.0F;
-    auto ramp_start = std::chrono::steady_clock::now();
+    constexpr float kRampRate = kMaxCurrent / kRampDuration;
+    printf("Phase 1 — holding position during current ramp (2 s) ...\n");
     {
-        float current_limit = 0.0F;
-        constexpr float kRampRate = kMaxCurrent / kRampDuration;
+        auto ramp_start = std::chrono::steady_clock::now();
         auto next_loop = ramp_start;
         while (g_running.load()) {
             const auto now = std::chrono::steady_clock::now();
-            const float elapsed =
-                std::chrono::duration<float>(now - ramp_start).count();
+            const float elapsed = std::chrono::duration<float>(now - ramp_start).count();
             if (elapsed >= kRampDuration)
                 break;
-            current_limit = kRampRate * elapsed;
-            if (current_limit > kMaxCurrent)
-                current_limit = kMaxCurrent;
+            const float current_limit = std::min(kRampRate * elapsed, kMaxCurrent);
 
-            auto s = agent.get_sample();
-            const float err =
-                wrap_delta(sine_centre - static_cast<float>(s.raw_angle));
-            float out = kHoldKp * err;
-            out = std::clamp(out, -current_limit, current_limit);
-            agent.send_control(static_cast<int16_t>(out));
+            for (unsigned i = 0; i < kBusCount; ++i) {
+                if (!bus[i].present)
+                    continue;
+                auto s = agent.get_sample(i);
+                const float err =
+                    wrap_delta(bus[i].sine_centre - static_cast<float>(s.raw_angle));
+                const float out = std::clamp(kHoldKp * err, -current_limit, current_limit);
+                agent.send_control(i, static_cast<int16_t>(out));
+            }
 
             next_loop += kLoopPeriod;
             if (next_loop < now) next_loop = now;
@@ -173,24 +230,18 @@ int main() {
         }
     }
 
-    // Re-centre the sine wave on the motor's actual position after ramp.
-    {
-        auto s = agent.get_sample();
+    // Re-centre each bus's sine wave on the motor's actual position after ramp.
+    for (unsigned i = 0; i < kBusCount; ++i) {
+        if (!bus[i].present)
+            continue;
+        auto s = agent.get_sample(i);
         if (s.valid)
-            sine_centre = static_cast<float>(s.raw_angle);
+            bus[i].sine_centre = static_cast<float>(s.raw_angle);
+        printf("Phase 2 — CAN%u sine centre %.0f (%.1f deg)\n", i, bus[i].sine_centre,
+               bus[i].sine_centre * 360.0F / 8192.0F);
     }
-    printf("Phase 2 — starting sine (centre %.0f, %.1f deg)\n",
-           sine_centre, sine_centre * 360.0F / 8192.0F);
 
-    // ── Velocity derivation state ───────────────────────────────────────
-    uint16_t prev_raw_angle = static_cast<uint16_t>(sine_centre);
-    uint16_t prev_angle_vel = prev_raw_angle;
-    uint32_t prev_ts_us = 0;
-    bool have_prev = false;
-
-    // ── Multi-turn tracking ─────────────────────────────────────────────
-    int32_t full_turns = 0;
-
+    // ── Phase 2: sine on every active bus ───────────────────────────────
     uint64_t loop_count = 0;
     auto next_loop = std::chrono::steady_clock::now();
     auto last_report = next_loop;
@@ -198,54 +249,59 @@ int main() {
     while (g_running.load()) {
         const auto now = std::chrono::steady_clock::now();
 
-        // ── Trajectory ──────────────────────────────────────────────────
         const float t = static_cast<float>(loop_count) / kLoopHz;
         const float target_angle =
-            sine_centre + kAmplitude * std::sin(2.0F * float(M_PI) * kFrequency * t);
-        const float target_vel = kAmplitude * 2.0F * float(M_PI) * kFrequency
-            * std::cos(2.0F * float(M_PI) * kFrequency * t);   // angle-units / s
-        const float target_vel_rpm = target_vel * 60.0F / 8192.0F;
+            kAmplitude * std::sin(2.0F * float(M_PI) * kFrequency * t);
 
-        // ── Feedback ────────────────────────────────────────────────────
-        auto s = agent.get_sample();
-        const uint16_t raw_now = s.raw_angle;
+        for (unsigned i = 0; i < kBusCount; ++i) {
+            auto& bs = bus[i];
+            if (!bs.present)
+                continue;
 
-        // Multi-turn unwrap.
-        int16_t delta16 = static_cast<int16_t>(raw_now - prev_raw_angle);
-        if (delta16 > 4096)
-            full_turns--;
-        else if (delta16 < -4096)
-            full_turns++;
-        prev_raw_angle = raw_now;
-        const float continuous_angle =
-            static_cast<float>(full_turns) * 8192.0F + static_cast<float>(raw_now);
+            const float target = bs.sine_centre + target_angle;
 
-        // ── Derived velocity from hw timestamp delta ────────────────────
-        float derived_vel_rpm = 0.0F;
-        if (have_prev && s.timestamp_us.has_value()) {
-            const uint32_t ts_now = s.timestamp_us.value();
-            const int32_t ts_delta_us = static_cast<int32_t>(ts_now - prev_ts_us);
-            if (ts_delta_us > 0) {
-                const float dt = static_cast<float>(ts_delta_us) * 1.0e-6F;
-                const float d_angle =
-                    wrap_delta(static_cast<float>(raw_now) - static_cast<float>(prev_angle_vel));
-                derived_vel_rpm = (d_angle / dt) * 60.0F / 8192.0F;
+            auto s = agent.get_sample(i);
+            const uint16_t raw_now = s.raw_angle;
+
+            // Multi-turn unwrap.
+            const int16_t delta16 = static_cast<int16_t>(raw_now - bs.prev_raw_angle);
+            if (delta16 > 4096)
+                bs.full_turns--;
+            else if (delta16 < -4096)
+                bs.full_turns++;
+            bs.prev_raw_angle = raw_now;
+            const float continuous_angle =
+                static_cast<float>(bs.full_turns) * 8192.0F + static_cast<float>(raw_now);
+
+            // Derived velocity from hw timestamp delta.
+            float derived_vel_rpm = 0.0F;
+            if (bs.have_prev && s.timestamp_us.has_value()) {
+                const int32_t ts_delta_us =
+                    static_cast<int32_t>(s.timestamp_us.value() - bs.prev_ts_us);
+                if (ts_delta_us > 0) {
+                    const float dt = static_cast<float>(ts_delta_us) * 1.0e-6F;
+                    const float d_angle = wrap_delta(
+                        static_cast<float>(raw_now) - static_cast<float>(bs.prev_angle_vel));
+                    derived_vel_rpm = (d_angle / dt) * 60.0F / 8192.0F;
+                }
             }
+            if (s.timestamp_us.has_value()) {
+                bs.prev_ts_us = s.timestamp_us.value();
+                bs.prev_angle_vel = raw_now;
+                bs.have_prev = true;
+            }
+
+            // Pure P controller.
+            const float pos_error = wrap_delta(target - continuous_angle);
+            const float output = std::clamp(kKp * pos_error, -kMaxCurrent, kMaxCurrent);
+            agent.send_control(i, static_cast<int16_t>(output));
+
+            bs.last_angle = continuous_angle;
+            bs.last_target = target;
+            bs.last_vel_rpm = derived_vel_rpm;
+            bs.last_out = output;
         }
-        if (s.timestamp_us.has_value()) {
-            prev_ts_us = s.timestamp_us.value();
-            prev_angle_vel = raw_now;
-            have_prev = true;
-        }
 
-        // ── Pure P controller ──────────────────────────────────────────
-        const float pos_error = wrap_delta(target_angle - continuous_angle);
-        float output = kKp * pos_error;
-        output = std::clamp(output, -kMaxCurrent, kMaxCurrent);
-
-        agent.send_control(static_cast<int16_t>(output));
-
-        // ── Timing ──────────────────────────────────────────────────────
         next_loop += kLoopPeriod;
         if (next_loop < now)
             next_loop = now;
@@ -255,20 +311,26 @@ int main() {
         // ── Report (1 Hz) ───────────────────────────────────────────────
         if (now - last_report >= std::chrono::seconds{1}) {
             last_report = now;
-            printf(
-                "ang %6.0f (%5.1f deg) | tgt %6.0f (%5.1f deg) | err %6.1f | "
-                "vel %6.1f rpm | tgt_vel %6.1f rpm | out %6.0f | %lu Hz | turn %d\n",
-                continuous_angle, continuous_angle * 360.0F / 8192.0F,
-                target_angle, target_angle * 360.0F / 8192.0F,
-                pos_error, derived_vel_rpm, target_vel_rpm,
-                output, loop_count, full_turns);
+            for (unsigned i = 0; i < kBusCount; ++i) {
+                if (!bus[i].present)
+                    continue;
+                const auto& bs = bus[i];
+                printf("CAN%u | ang %6.0f (%5.1f deg) | tgt %6.0f (%5.1f deg) | "
+                       "vel %6.1f rpm | out %6.0f | turn %d\n",
+                       i, bs.last_angle, bs.last_angle * 360.0F / 8192.0F, bs.last_target,
+                       bs.last_target * 360.0F / 8192.0F, bs.last_vel_rpm, bs.last_out,
+                       bs.full_turns);
+            }
+            printf("  loop %lu Hz\n", loop_count);
             loop_count = 0;
         }
     }
 
-    printf("\nZeroing motor ...\n");
+    printf("\nZeroing motors ...\n");
     for (int i = 0; i < 5; ++i) {
-        agent.send_control(0);
+        for (unsigned b = 0; b < kBusCount; ++b)
+            if (bus[b].present)
+                agent.send_control(b, 0);
         std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
     printf("Stopped.\n");

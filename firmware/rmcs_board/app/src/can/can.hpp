@@ -133,7 +133,14 @@ public:
         ptpc_set_timer_output(HPM_PTPC, mcan_get_instance_from_base(can_base_), false);
 
         mcan_init(can_base_, &config, can_source_clock_freq);
-        mcan_enable_interrupts(can_base_, MCAN_INT_RXFIFO0_NEW_MSG);
+        mcan_enable_interrupts(
+            can_base_,
+            MCAN_INT_RXFIFO0_NEW_MSG
+                | MCAN_INT_BUS_OFF_STATUS
+                | MCAN_INT_WARNING_STATUS
+                | MCAN_INT_ERROR_PASSIVE
+                | MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE
+                | MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE);
         // CAN RX is the forwarding-critical path (motor feedback -> host).
         // Priority 3: above USB (2) and UART (1) — ensures CAN frames are
         // never delayed by bulk USB transfers or DMA callbacks.
@@ -142,81 +149,36 @@ public:
 
     [[nodiscard]] data::DataId data_id() const { return data_id_; }
 
-    void handle_downlink(const data::CanDataView& data) {
-        mcan_tx_frame_t frame{};
-        if (data.is_extended_can_id) {
-            frame.use_ext_id = true;
-            frame.ext_id = data.can_id;
-        } else {
-            frame.use_ext_id = false;
-            frame.std_id = data.can_id;
-        }
-        frame.canfd_frame = canfd_;
-        frame.bitrate_switch = canfd_;
-        frame.rtr = data.is_remote_transmission;
-
-        core::utility::assert_debug(data.can_data.size() <= 8);
-        frame.dlc = data.can_data.size();
-        if (!data.can_data.empty())
-            std::memcpy(frame.data_8, data.can_data.data(), data.can_data.size());
-
-        const hpm_stat_t status = mcan_transmit_via_txfifo_nonblocking(can_base_, &frame, nullptr);
-        if (status != status_success)
-            led::led->downlink_buffer_full();
-    }
-
-    void handle_uplink(core::protocol::FieldId field_id, core::protocol::Serializer& serializer) {
-        mcan_rx_message_t rx;
-        core::utility::assert_always(mcan_read_rxfifo(can_base_, 0, &rx) == status_success);
-
-        data::CanDataView data;
-        const size_t data_length = rx.dlc;
-        data.is_fdcan = rx.canfd_frame;
-        data.is_extended_can_id = rx.use_ext_id;
-        data.is_remote_transmission = rx.rtr;
-        data.can_id = data.is_extended_can_id ? rx.ext_id : rx.std_id;
-        data.can_data = {reinterpret_cast<const std::byte*>(rx.data_8), data_length};
-
-        // 64-bit TSU timestamp captured at SOF from the shared PTPC0 timebase.
-        // PTPC delivers an IEEE-1588 {seconds:nanoseconds} pair (high 32 bits =
-        // seconds, low 32 bits = nanoseconds in [0, 1e9)); recombine into a
-        // single nanosecond count, then divide by ts_ns_per_us_ (= 960 at
-        // 160 MHz, not 1000) to convert to microseconds and undo the PTPC
-        // digital-step error in one step. The result is truncated to 32 bits for
-        // the wire: it wraps every ~71.6 min, but the host only uses deltas,
-        // which are wrap-safe. status_mcan_timestamp_not_exist (frame not matched
-        // by a sync filter) leaves the field as std::nullopt.
-        mcan_timestamp_value_t ts_value;
-        if (mcan_get_timestamp_from_received_message(can_base_, &rx, &ts_value)
-                == status_success
-            && ts_value.is_64bit) {
-            const uint64_t raw = ts_value.ts_64bit;
-            const uint64_t reported_ns =
-                static_cast<uint64_t>(static_cast<uint32_t>(raw >> 32)) * 1'000'000'000ULL
-                + static_cast<uint32_t>(raw);
-            data.timestamp_us = static_cast<uint32_t>(reported_ns / ts_ns_per_us_);
-        }
-
-        const auto result = serializer.write_can(field_id, data);
-        if (result == core::protocol::Serializer::SerializeResult::kBadAlloc) [[unlikely]]
-            led::led->uplink_buffer_full();
-        core::utility::assert_always(
-            result != core::protocol::Serializer::SerializeResult::kInvalidArgument);
-    }
-
-    void irq_handler() {
-        const uint32_t flags = mcan_get_interrupt_flags(can_base_);
-
-        if (!flags) [[unlikely]]
-            return;
-
-        if (flags & MCAN_INT_RXFIFO0_NEW_MSG) [[likely]]
-            handle_uplink(data_id_, usb::get_serializer());
-
-        mcan_clear_interrupt_flags(can_base_, flags);
-    }
+    // Forwarding hot path -- defined out-of-line in can.cpp, in the ILM (.fast)
+    // section, to remove FLASH-XIP fetch jitter from the worst case. See can.cpp
+    // for the rationale and why they are not inline-in-class.
+    void handle_downlink(const data::CanDataView& data);
+    void handle_uplink(
+        core::protocol::FieldId field_id, core::protocol::Serializer& serializer);
+    void irq_handler();
 
 private:
+    // Classifies an MCAN Last Error Code (arbitration or data phase) into an
+    // indicator-LED state -- the granularity a CAN controller can actually back
+    // up electrically:
+    //   ack_error  -> kNoAck       : frame sent fine, nobody acknowledged.
+    //   bit0_error -> kWiringFault : sent dominant, read back recessive -- the bus
+    //                                cannot be driven dominant (CAN_H/L shorted,
+    //                                reversed, or open).  Stable on a hard fault.
+    //   stuff/form/crc/bit1 -> kSignalError : corrupted bits; the exact code
+    //                                fluctuates and its causes (no termination,
+    //                                baudrate mismatch, noise) are indistinguishable.
+    //   no_error/no_change -> kNone.
+    static led::CanFault classify_can_fault(uint8_t last_error_code) {
+        switch (last_error_code) {
+        case mcan_last_error_code_no_error:
+        case mcan_last_error_code_no_change: return led::CanFault::kNone;
+        case mcan_last_error_code_ack_error: return led::CanFault::kNoAck;
+        case mcan_last_error_code_bit0_error: return led::CanFault::kWiringFault;
+        default: return led::CanFault::kSignalError;  // stuff / format / bit1 / crc
+        }
+    }
+
     const data::DataId data_id_;
     MCAN_Type* can_base_;
     const bool canfd_;

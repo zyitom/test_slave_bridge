@@ -71,17 +71,16 @@ void init_led_pins() {
         pin.set_active(false);
         pin.configure_as_output();
     }
-    constexpr uint32_t indicator_pad_ctl =
-        IOC_PAD_PAD_CTL_PE_SET(1) |
-        IOC_PAD_PAD_CTL_PS_SET(0);
-    HPM_IOC->PAD[IOC_PAD_PB14].FUNC_CTL = IOC_PAD_FUNC_CTL_ALT_SELECT_SET(0);
-    HPM_IOC->PAD[IOC_PAD_PB14].PAD_CTL = indicator_pad_ctl;
-    HPM_IOC->PAD[IOC_PAD_PB15].FUNC_CTL = IOC_PAD_FUNC_CTL_ALT_SELECT_SET(0);
-    HPM_IOC->PAD[IOC_PAD_PB15].PAD_CTL = indicator_pad_ctl;
-    gpiom_set_pin_controller(HPM_GPIOM, GPIOM_ASSIGN_GPIOB, 14, gpiom_soc_gpio0);
-    gpiom_set_pin_controller(HPM_GPIOM, GPIOM_ASSIGN_GPIOB, 15, gpiom_soc_gpio0);
-    gpio_set_pin_input(HPM_GPIO0, GPIO_OE_GPIOB, 14);
-    gpio_set_pin_input(HPM_GPIO0, GPIO_OE_GPIOB, 15);
+}
+
+void init_can_indicator_pins() {
+    for (const auto& pin : {kCan0IndicatorPin, kCan1IndicatorPin}) {
+        pin.configure_controller();
+        pin.configure_ioc_function();
+        pin.configure_pad_control(IOC_PAD_PAD_CTL_PE_SET(1) | IOC_PAD_PAD_CTL_PS_SET(0));
+        pin.set_active(false);
+        pin.configure_as_output();
+    }
 }
 
 bool usb_use_high_speed() { return true; }
