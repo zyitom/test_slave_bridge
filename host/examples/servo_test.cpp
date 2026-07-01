@@ -6,10 +6,12 @@
 #include <string>
 #include <thread>
 
-#include <librmcs/agent/c_board.hpp>
+#include "common/multi_board.hpp"
 
-// TIM1/TIM8: 168MHz / 56 / 60000 = 50 Hz (period = 20ms)
-// Standard servo pulse range: 1000-2000 us
+// Interactive servo/PWM tester for any board that exposes PWM-capable GPIO
+// channels (c_board: 7 channels, mc02: 4 channels). Channels are numbered 1..N
+// on the command line; the board's pins run at 50 Hz (20 ms period).
+// Standard servo pulse range: ~1000-2000 us.
 
 namespace {
 
@@ -31,110 +33,121 @@ uint32_t angle_to_pulse_us(int deg) {
         + (k_servo_max_us - k_servo_min_us) * static_cast<uint32_t>(deg) / 180;
 }
 
-const librmcs::spec::c_board::GpioDescriptor* gpio_from_channel(int ch) {
-    using namespace librmcs::spec::c_board;
-    switch (ch) {
-    case 1: return &kGpioDescriptors.kPwm1;
-    case 2: return &kGpioDescriptors.kPwm2;
-    case 3: return &kGpioDescriptors.kPwm3;
-    case 4: return &kGpioDescriptors.kPwm4;
-    case 5: return &kGpioDescriptors.kPwm5;
-    case 6: return &kGpioDescriptors.kPwm6;
-    case 7: return &kGpioDescriptors.kPwm7;
-    default: return nullptr;
-    }
-}
-
 } // namespace
 
-class ServoTester : public librmcs::agent::CBoard {
+class ServoTester : public examples::BoardReceiver {
 public:
-    ServoTester()
-        : librmcs::agent::CBoard{{}, {.dangerously_skip_version_checks = true}} {}
+    void bind(examples::BoardSession* board) { board_ = board; }
+
+    int channel_count() const { return board_->gpio_channel_count(); }
+
+    // User-facing channels are 1-based; descriptor indices are 0-based.
+    bool valid_channel(int ch) const { return ch >= 1 && ch <= channel_count(); }
 
     void set_pulse(int ch, uint32_t pulse_us) {
-        const auto* gpio = gpio_from_channel(ch);
-        if (!gpio) {
-            printf("Invalid channel %d (valid: 1-7)\n", ch);
+        if (!valid_channel(ch)) {
+            printf("Invalid channel %d (valid: 1-%d)\n", ch, channel_count());
             return;
         }
         if (pulse_us < k_servo_min_us || pulse_us > k_servo_max_us)
             printf("Warning: %u us is outside normal servo range (%u-%u us)\n",
                 pulse_us, k_servo_min_us, k_servo_max_us);
 
-        start_transmit().gpio_analog_write(*gpio, {.value = pulse_us_to_duty16(pulse_us)});
+        const uint16_t duty = pulse_us_to_duty16(pulse_us);
+        board_->transmit([&](examples::BoardTransmitter& tx) {
+            tx.gpio_analog(ch - 1, {.value = duty});
+        });
         printf("CH%d -> %u us\n", ch, pulse_us);
     }
 
     void set_angle(int ch, int deg) {
-        const auto* gpio = gpio_from_channel(ch);
-        if (!gpio) {
-            printf("Invalid channel %d (valid: 1-7)\n", ch);
+        if (!valid_channel(ch)) {
+            printf("Invalid channel %d (valid: 1-%d)\n", ch, channel_count());
             return;
         }
         const uint32_t pulse_us = angle_to_pulse_us(deg);
-        start_transmit().gpio_analog_write(*gpio, {.value = pulse_us_to_duty16(pulse_us)});
+        const uint16_t duty = pulse_us_to_duty16(pulse_us);
+        board_->transmit([&](examples::BoardTransmitter& tx) {
+            tx.gpio_analog(ch - 1, {.value = duty});
+        });
         printf("CH%d -> %d deg (%u us)\n", ch, deg, pulse_us);
     }
 
     void center_all() {
         const uint16_t duty = pulse_us_to_duty16(k_servo_center_us);
-        using namespace librmcs::spec::c_board;
-        start_transmit()
-            .gpio_analog_write(kGpioDescriptors.kPwm1, {.value = duty})
-            .gpio_analog_write(kGpioDescriptors.kPwm2, {.value = duty})
-            .gpio_analog_write(kGpioDescriptors.kPwm3, {.value = duty})
-            .gpio_analog_write(kGpioDescriptors.kPwm4, {.value = duty})
-            .gpio_analog_write(kGpioDescriptors.kPwm5, {.value = duty})
-            .gpio_analog_write(kGpioDescriptors.kPwm6, {.value = duty})
-            .gpio_analog_write(kGpioDescriptors.kPwm7, {.value = duty});
-        printf("All channels -> center (%u us)\n", k_servo_center_us);
+        const int count = channel_count();
+        board_->transmit([&](examples::BoardTransmitter& tx) {
+            for (int i = 0; i < count; ++i)
+                tx.gpio_analog(i, {.value = duty});
+        });
+        printf("All %d channels -> center (%u us)\n", count, k_servo_center_us);
     }
 
     void sweep(int ch) {
-        const auto* gpio = gpio_from_channel(ch);
-        if (!gpio) {
-            printf("Invalid channel %d (valid: 1-7)\n", ch);
+        if (!valid_channel(ch)) {
+            printf("Invalid channel %d (valid: 1-%d)\n", ch, channel_count());
             return;
         }
         printf("Sweeping CH%d (0 -> 180 -> 0 deg)...\n", ch);
         for (int deg = 0; deg <= 180; deg += 3) {
             const uint32_t pulse_us = angle_to_pulse_us(deg);
-            start_transmit().gpio_analog_write(*gpio, {.value = pulse_us_to_duty16(pulse_us)});
+            const uint16_t duty = pulse_us_to_duty16(pulse_us);
+            board_->transmit([&](examples::BoardTransmitter& tx) {
+                tx.gpio_analog(ch - 1, {.value = duty});
+            });
             printf("\r  %3d deg (%u us)   ", deg, pulse_us);
             fflush(stdout);
             std::this_thread::sleep_for(std::chrono::milliseconds(40));
         }
         for (int deg = 180; deg >= 0; deg -= 3) {
             const uint32_t pulse_us = angle_to_pulse_us(deg);
-            start_transmit().gpio_analog_write(*gpio, {.value = pulse_us_to_duty16(pulse_us)});
+            const uint16_t duty = pulse_us_to_duty16(pulse_us);
+            board_->transmit([&](examples::BoardTransmitter& tx) {
+                tx.gpio_analog(ch - 1, {.value = duty});
+            });
             printf("\r  %3d deg (%u us)   ", deg, pulse_us);
             fflush(stdout);
             std::this_thread::sleep_for(std::chrono::milliseconds(40));
         }
         printf("\nDone.\n");
     }
+
+private:
+    examples::BoardSession* board_ = nullptr;
 };
 
-static void print_help() {
+static void print_help(int channel_count) {
     printf(
         "\nCommands:\n"
         "  set <ch> <us>      Set channel to pulse width in us   e.g. set 1 1500\n"
         "  angle <ch> <deg>   Set channel by angle (0-180 deg)   e.g. angle 2 90\n"
         "  sweep <ch>         Sweep channel 0->180->0 deg        e.g. sweep 3\n"
-        "  center             Center all 7 channels (1500 us)\n"
+        "  center             Center all channels (1500 us)\n"
         "  help               Show this message\n"
         "  quit               Exit\n"
-        "\nChannels: 1-7  |  Pulse range: %u-%u us  |  Frequency: 50 Hz\n\n",
-        k_servo_min_us, k_servo_max_us);
+        "\nChannels: 1-%d  |  Pulse range: %u-%u us  |  Frequency: 50 Hz\n\n",
+        channel_count, k_servo_min_us, k_servo_max_us);
 }
 
 int main() {
-    printf("Servo tester - connecting to c_board...\n");
+    printf("Servo tester - auto-detecting board...\n");
 
     ServoTester tester;
+    auto board = examples::connect_any(tester);
+    if (!board) {
+        fprintf(stderr, "No compatible board found.\n");
+        return 1;
+    }
+    if (board->gpio_channel_count() == 0) {
+        fprintf(stderr, "%.*s has no PWM/servo GPIO channels.\n",
+            static_cast<int>(board->name().size()), board->name().data());
+        return 1;
+    }
+    tester.bind(board.get());
 
-    printf("Connected. Type 'help' for commands.\n");
+    printf("Connected: %.*s (%d servo channels). Type 'help' for commands.\n",
+        static_cast<int>(board->name().size()), board->name().data(),
+        board->gpio_channel_count());
     tester.center_all();
 
     char line[128];
@@ -156,7 +169,7 @@ int main() {
                 || strcmp(cmd, "q") == 0) {
                 break;
             } else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "h") == 0) {
-                print_help();
+                print_help(tester.channel_count());
             } else if (strcmp(cmd, "center") == 0) {
                 tester.center_all();
             } else if (strcmp(cmd, "set") == 0 && n >= 3) {

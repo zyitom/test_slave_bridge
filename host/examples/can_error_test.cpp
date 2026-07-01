@@ -1,9 +1,10 @@
-// CAN error light-code test for the HPM5321 DualCan board.
+// CAN error light-code test for any board with two CAN buses
+// (hpm5321_dual_can, c_board, mc02).
 //
-// Continuously transmits a frame on CAN0 (MCAN0) and CAN1 (MCAN3) so the board
-// is always driving the bus -- CAN errors only arise while a controller is
-// actually transmitting/receiving, so an idle bus reports nothing.  Use this to
-// verify the indicator-LED light language:
+// Continuously transmits a frame on CAN bus 0 and bus 1 so the board is always
+// driving the bus -- CAN errors only arise while a controller is actually
+// transmitting/receiving, so an idle bus reports nothing.  Use this to verify
+// the indicator-LED light language:
 //
 //   off          = healthy / no errors
 //   1 pulse      = ACK error    (no node ACKing -- nothing connected on the bus)
@@ -27,11 +28,11 @@
 #include <cstdio>
 #include <thread>
 
-#include <librmcs/agent/rmcs_board_hpm5321_dual_can.hpp>
+#include "common/multi_board.hpp"
 
 namespace {
 
-constexpr unsigned kBusCount = 2;        // CAN0 + CAN1
+constexpr unsigned kBusCount = 2;        // CAN bus 0 + bus 1
 constexpr bool kUseCanFd = false;        // classic CAN 2.0; set true only with an FD partner
 // Must be unique on the bus: two transmitters sending the SAME id with different
 // data collide after arbitration -> bit errors -> SIGNAL (double blink).  Pick an
@@ -44,40 +45,38 @@ void on_sigint(int) { g_running.store(false); }
 
 }  // namespace
 
-class CanErrorTest : public librmcs::agent::RmcsBoardHpm5321DualCan {
+class CanErrorTest : public examples::BoardReceiver {
 public:
-    CanErrorTest()
-        : librmcs::agent::RmcsBoardHpm5321DualCan{
-              {}, {.dangerously_skip_version_checks = true}} {}
+    void bind(examples::BoardSession* board) { board_ = board; }
 
     void send_test_frame(unsigned bus) {
         std::array<std::byte, 8> frame{
             std::byte{0xDE}, std::byte{0xAD}, std::byte{0xBE}, std::byte{0xEF},
             std::byte{0x00}, std::byte{0x11}, std::byte{0x22}, std::byte{0x33}};
-        const librmcs::data::CanDataView data{
-            .can_id = kTestCanId, .can_data = frame, .is_fdcan = false};
-        auto builder = start_transmit();
-        if (bus == 0)
-            builder.can0_transmit(data);
-        else
-            builder.can1_transmit(data);
+        board_->transmit([&](examples::BoardTransmitter& tx) {
+            tx.can(static_cast<int>(bus),
+                {.can_id = kTestCanId, .can_data = frame, .is_fdcan = kUseCanFd});
+        });
     }
 
     uint64_t rx_count(unsigned bus) const { return rx_count_[bus].load(); }
 
 private:
-    void can0_receive_callback(const librmcs::data::CanDataView&) override { ++rx_count_[0]; }
-    void can1_receive_callback(const librmcs::data::CanDataView&) override { ++rx_count_[1]; }
+    void on_can(int bus, const librmcs::data::CanDataView&) override {
+        if (bus >= 0 && bus < static_cast<int>(kBusCount))
+            ++rx_count_[bus];
+    }
 
     std::atomic<uint64_t> rx_count_[kBusCount]{};
+
+    examples::BoardSession* board_ = nullptr;
 };
 
 int main() {
     std::signal(SIGINT, on_sigint);
 
-    printf("CAN error light-code test — HPM5321 DualCan (CAN-FD=%s)\n",
-           kUseCanFd ? "on" : "off");
-    printf("  Transmitting id 0x%03X on CAN0 and CAN1 at ~200 Hz.\n", kTestCanId);
+    printf("CAN error light-code test (CAN-FD=%s)\n", kUseCanFd ? "on" : "off");
+    printf("  Transmitting id 0x%03X on CAN bus 0 and bus 1 at ~200 Hz.\n", kTestCanId);
     printf("  Watch the per-bus indicator LEDs:\n");
     printf("    disconnected bus -> 1 pulse (ACK error)\n");
     printf("    CAN_H/CAN_L short -> bit error\n");
@@ -85,7 +84,20 @@ int main() {
     printf("Connecting ...\n");
 
     CanErrorTest agent;
-    printf("Connected.  Sending ...\n");
+    auto board = examples::connect_any(agent);
+    if (!board) {
+        fprintf(stderr, "No compatible board found.\n");
+        return 1;
+    }
+    if (board->can_bus_count() < 2) {
+        fprintf(stderr, "%.*s has only %d CAN bus; this test needs two.\n",
+            static_cast<int>(board->name().size()), board->name().data(),
+            board->can_bus_count());
+        return 1;
+    }
+    agent.bind(board.get());
+    printf("Connected: %.*s.  Sending ...\n",
+        static_cast<int>(board->name().size()), board->name().data());
 
     std::array<uint64_t, kBusCount> tx_count{};
     auto next_send = std::chrono::steady_clock::now();

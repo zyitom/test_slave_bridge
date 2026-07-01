@@ -20,7 +20,6 @@ set(MX_Include_Dirs
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/CMSIS/Device/ST/STM32H7xx/Include
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/CMSIS/Include
-    /home/zyi/STM32Cube/Repository//Packs/STMicroelectronics/X-CUBE-ALGOBUILD/1.3.0/Middlewares/Third_Party/ARM/DSP/Inc
 )
 
 # STM32CubeMX generated application sources

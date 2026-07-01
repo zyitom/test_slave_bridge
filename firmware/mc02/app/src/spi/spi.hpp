@@ -63,7 +63,7 @@ public:
         finish_transfer();
     }
 
-    // Uses IT (interrupt) mode — no DMA required on H7.
+    // Uses DMA mode; completion is signaled through the SPI2 DMA stream IRQ.
     void transmit_receive_async(SpiModule& module, size_t size) {
         core::utility::assert_debug(0 < size && size <= kMaxTransferSize);
         core::utility::assert_debug_lazy(
@@ -72,7 +72,7 @@ public:
         begin_transfer(module, size);
 
         core::utility::assert_debug(
-            HAL_SPI_TransmitReceive_IT(hal_spi_handle_, tx_buffer, rx_buffer, tx_rx_size_)
+            HAL_SPI_TransmitReceive_DMA(hal_spi_handle_, tx_buffer, rx_buffer, tx_rx_size_)
             == HAL_OK);
     }
 
@@ -86,7 +86,7 @@ public:
             module->transmit_receive_async_callback(success ? tx_rx_size_ : 0);
     }
 
-    // No-op in IT mode; DMA polling not needed.
+    // No-op: DMA completion is interrupt-driven, so no polling is needed.
     void update() {}
 
     alignas(4) uint8_t tx_buffer[kMaxTransferSize];

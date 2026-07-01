@@ -11,10 +11,10 @@ set(MX_Defines_Syms
 # STM32CubeMX generated include paths
 set(MX_Include_Dirs
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Inc
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Inc
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Inc/Legacy
-    ${LIBRMCS_STM32_DEVICE_ROOT}/Include
-    ${LIBRMCS_CMSIS_CORE_ROOT}/Core/Include
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Inc
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Inc/Legacy
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/CMSIS/Device/ST/STM32F4xx/Include
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/CMSIS/Include
 )
 
 # STM32CubeMX generated application sources
@@ -37,32 +37,67 @@ set(MX_Application_Src
 # STM32 HAL/LL Drivers
 set(STM32_Drivers_Src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/system_stm32f4xx.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_can.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_rcc.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_rcc_ex.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_flash.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_flash_ex.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_flash_ramfunc.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_gpio.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_dma_ex.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_dma.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_pwr.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_pwr_ex.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_cortex.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_exti.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_spi.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_tim.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_tim_ex.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_uart.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_pcd.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_hal_pcd_ex.c
-    ${LIBRMCS_STM32_HAL_DRIVER_ROOT}/Src/stm32f4xx_ll_usb.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_can.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc_ex.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash_ex.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash_ramfunc.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_gpio.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma_ex.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr_ex.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_cortex.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_exti.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_spi.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim_ex.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_uart.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pcd.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pcd_ex.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_ll_usb.c
 )
 
-# Create stm32cubemx object library
-add_library(stm32cubemx OBJECT)
-target_sources(stm32cubemx PRIVATE ${STM32_Drivers_Src})
-target_sources(stm32cubemx PRIVATE ${MX_Application_Src})
-target_include_directories(stm32cubemx PUBLIC ${MX_Include_Dirs})
-target_compile_definitions(stm32cubemx PUBLIC ${MX_Defines_Syms})
+# Drivers Midllewares
+
+
+
+# Link directories setup
+set(MX_LINK_DIRS
+
+)
+# Project static libraries
+set(MX_LINK_LIBS 
+    STM32_Drivers
+    ${TOOLCHAIN_LINK_LIBRARIES}
+    
+)
+# Interface library for includes and symbols
+add_library(stm32cubemx INTERFACE)
+target_include_directories(stm32cubemx INTERFACE ${MX_Include_Dirs})
+target_compile_definitions(stm32cubemx INTERFACE ${MX_Defines_Syms})
+
+# Create STM32_Drivers static library
+add_library(STM32_Drivers OBJECT)
+target_sources(STM32_Drivers PRIVATE ${STM32_Drivers_Src})
+target_link_libraries(STM32_Drivers PUBLIC stm32cubemx)
+
+
+# Add STM32CubeMX generated application sources to the project
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${MX_Application_Src})
+
+# Link directories setup
+target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE ${MX_LINK_DIRS})
+
+# Add libraries to the project
+target_link_libraries(${CMAKE_PROJECT_NAME} ${MX_LINK_LIBS})
+
+# Add the map file to the list of files to be removed with 'clean' target
+set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES ADDITIONAL_CLEAN_FILES ${CMAKE_PROJECT_NAME}.map)
+
+# Validate that STM32CubeMX code is compatible with C standard
+if((CMAKE_C_STANDARD EQUAL 90) OR (CMAKE_C_STANDARD EQUAL 99))
+    message(ERROR "Generated code requires C11 or higher")
+endif()

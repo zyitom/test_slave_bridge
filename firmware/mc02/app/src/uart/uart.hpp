@@ -107,6 +107,17 @@ public:
         trigger_hal_receive();
     }
 
+    // Called from HAL_UART_ErrorCallback on a UART receive error (PE/NE/FE/ORE)
+    // or an RX DMA error. The HAL has already cleared the error flags and aborted
+    // the in-flight ReceiveToIdle DMA, leaving RxState == READY; re-arm reception
+    // immediately so a corrupted frame costs at most one dropped frame instead of
+    // stalling the port until the next try_transmit() poll re-arms it. RX-side
+    // only -- a TX error self-heals via the gState check in try_transmit().
+    void handle_rx_error() {
+        if (hal_uart_handle_->RxState == HAL_UART_STATE_READY) [[likely]]
+            trigger_hal_receive();
+    }
+
     // HAL_UARTEx_RxEventCallback access
     friend void ::HAL_UARTEx_RxEventCallback(UART_HandleTypeDef*, uint16_t);
 

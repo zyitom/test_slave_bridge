@@ -1,12 +1,20 @@
 #include "librmcs/protocol/handler.hpp"
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <memory>
+#include <mutex>
 #include <new>
+#include <random>
 #include <span>
+#include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include "core/src/protocol/deserializer.hpp"
@@ -16,72 +24,149 @@
 #include "host/src/logging/logging.hpp"
 #include "host/src/protocol/stream_buffer.hpp"
 #include "host/src/transport/transport.hpp"
-#include "librmcs/agent/common.hpp"
+#include "librmcs/board/common.hpp"
 #include "librmcs/data/datas.hpp"
 
 namespace librmcs::host::protocol {
 
 class Handler::Impl : public core::protocol::DeserializeCallback {
 public:
+    static constexpr auto kSessionAckTimeout = std::chrono::milliseconds{200};
+    static constexpr size_t kSessionAckRetryCount = 5;
+    static constexpr auto kSessionRefreshInterval = std::chrono::milliseconds{250};
+
     explicit Impl(std::unique_ptr<transport::Transport> transport, data::DataCallback& callback)
-        : transport_(std::move(transport))
-        , callback_(callback)
-        , deserializer_(*this) {
+        : callback_(callback)
+        , deserializer_(*this)
+        , expected_session_nonce_(generate_session_nonce())
+        , transport_(std::move(transport)) {
         transport_->receive([this](std::span<const std::byte> buffer) {
             // Operating system automatically assembles the packet
             deserializer_.feed(buffer);
             deserializer_.finish_transfer();
         });
+
+        establish_session();
+        keepalive_thread_ = std::thread{[this] { keepalive_loop(); }};
+    }
+
+    ~Impl() override {
+        stop_keepalive_.store(true, std::memory_order_relaxed);
+        session_cv_.notify_all();
+        if (keepalive_thread_.joinable())
+            keepalive_thread_.join();
+
+        transport_.reset();
     }
 
     PacketBuilder start_transmit() { return PacketBuilder{transport_.get()}; }
 
-    void can_deserialized_callback(
+    bool can_deserialized_callback(
         core::protocol::FieldId id, const data::CanDataView& data) override {
-        if (!callback_.can_receive_callback(id, data))
+        if (!session_established())
+            return true;
+        if (!callback_.can_receive_callback(id, data)) {
             logging::get_logger().error("Unexpected can field id: ", static_cast<int>(id));
+            return false;
+        }
+        return true;
     }
 
-    void uart_deserialized_callback(
+    bool uart_deserialized_callback(
         core::protocol::FieldId id, const data::UartDataView& data) override {
-        if (!callback_.uart_receive_callback(id, data))
+        if (!session_established())
+            return true;
+        if (!callback_.uart_receive_callback(id, data)) {
             logging::get_logger().error("Unexpected uart field id: ", static_cast<int>(id));
+            return false;
+        }
+        return true;
     }
 
-    void gpio_digital_data_deserialized_callback(
+    bool gpio_digital_data_deserialized_callback(
         uint8_t channel_index, const data::GpioDigitalDataView& data) override {
-        callback_.gpio_digital_read_result_callback(channel_index, data);
+        if (!session_established())
+            return true;
+        if (!callback_.gpio_digital_read_result_callback(channel_index, data)) {
+            logging::get_logger().error(
+                "Unexpected gpio channel index: ", static_cast<int>(channel_index));
+            return false;
+        }
+        return true;
     }
 
-    void gpio_analog_data_deserialized_callback(
+    bool gpio_analog_data_deserialized_callback(
         uint8_t channel_index, const data::GpioAnalogDataView& data) override {
-        callback_.gpio_analog_read_result_callback(channel_index, data);
+        if (!session_established())
+            return true;
+        if (!callback_.gpio_analog_read_result_callback(channel_index, data)) {
+            logging::get_logger().error(
+                "Unexpected gpio channel index: ", static_cast<int>(channel_index));
+            return false;
+        }
+        return true;
     }
 
-    void gpio_digital_read_config_deserialized_callback(
+    bool gpio_digital_read_config_deserialized_callback(
         uint8_t channel_index, const data::GpioReadConfigView& data) override {
+        if (!session_established())
+            return true;
         (void)channel_index;
         (void)data;
         logging::get_logger().error("Unexpected gpio digital read config field in uplink");
+        return false;
     }
 
-    void gpio_analog_read_config_deserialized_callback(
+    bool gpio_analog_read_config_deserialized_callback(
         uint8_t channel_index, const data::GpioReadConfigView& data) override {
+        if (!session_established())
+            return true;
         (void)channel_index;
         (void)data;
         logging::get_logger().error("Unexpected gpio analog read config field in uplink");
+        return false;
     }
 
     void accelerometer_deserialized_callback(const data::AccelerometerDataView& data) override {
+        if (!session_established())
+            return;
         callback_.accelerometer_receive_callback(data);
     }
 
     void gyroscope_deserialized_callback(const data::GyroscopeDataView& data) override {
+        if (!session_established())
+            return;
         callback_.gyroscope_receive_callback(data);
     }
 
     void temperature_deserialized_callback(const data::TemperatureDataView& data) override {
+        if (!session_established())
+            return;
         callback_.temperature_receive_callback(data);
+    }
+
+    void session_control_deserialized_callback(const data::SessionControlView& data) override {
+        if (data.nonce != expected_session_nonce_)
+            return;
+
+        bool notify = false;
+        {
+            const std::scoped_lock guard{session_mutex_};
+            switch (data.type) {
+            case data::SessionType::kStartAck:
+                session_established_.store(true, std::memory_order_relaxed);
+                ++session_start_ack_count_;
+                notify = true;
+                break;
+            case data::SessionType::kKeepaliveAck:
+                ++session_keepalive_ack_count_;
+                notify = true;
+                break;
+            default: break;
+            }
+        }
+        if (notify)
+            session_cv_.notify_all();
     }
 
     void error_callback() override {
@@ -89,9 +174,114 @@ public:
     }
 
 private:
-    std::unique_ptr<transport::Transport> transport_;
+    [[nodiscard]] bool session_established() const {
+        return session_established_.load(std::memory_order_relaxed);
+    }
+
+    void establish_session() {
+        for (size_t attempt = 0; attempt < kSessionAckRetryCount; ++attempt) {
+            uint64_t previous_session_start_ack_count = 0;
+            {
+                const std::scoped_lock guard{session_mutex_};
+                previous_session_start_ack_count = session_start_ack_count_;
+            }
+
+            send_session_start();
+
+            std::unique_lock lock{session_mutex_};
+            if (session_cv_.wait_for(
+                    lock, kSessionAckTimeout, [this, previous_session_start_ack_count] {
+                        return session_start_ack_count_ > previous_session_start_ack_count;
+                    })) {
+                return;
+            }
+        }
+
+        throw std::runtime_error{"Timed out waiting for SESSION_ACK"};
+    }
+
+    void send_session_start() { send_session_control(data::SessionType::kStart, "Session Start"); }
+
+    void refresh_session() {
+        for (size_t attempt = 0; attempt < kSessionAckRetryCount; ++attempt) {
+            uint64_t previous_session_keepalive_ack_count = 0;
+            {
+                const std::scoped_lock guard{session_mutex_};
+                previous_session_keepalive_ack_count = session_keepalive_ack_count_;
+            }
+
+            send_session_keepalive();
+
+            std::unique_lock lock{session_mutex_};
+            if (session_cv_.wait_for(
+                    lock, kSessionAckTimeout, [this, previous_session_keepalive_ack_count] {
+                        return stop_keepalive_.load(std::memory_order_relaxed)
+                            || session_keepalive_ack_count_ > previous_session_keepalive_ack_count;
+                    })) {
+                return;
+            }
+        }
+
+        throw std::runtime_error{"Timed out waiting for SESSION_KEEPALIVE_ACK"};
+    }
+
+    void send_session_keepalive() {
+        send_session_control(data::SessionType::kKeepalive, "Session Keepalive");
+    }
+
+    void send_session_control(data::SessionType type, std::string_view operation_name) {
+        core::protocol::Serializer::SerializeResult result;
+        {
+            StreamBuffer buffer{*transport_};
+            core::protocol::Serializer serializer{buffer};
+            result =
+                serializer.write_session_control({.type = type, .nonce = expected_session_nonce_});
+        }
+
+        core::utility::assert_debug(
+            result != core::protocol::Serializer::SerializeResult::kInvalidArgument);
+        if (result == core::protocol::Serializer::SerializeResult::kBadAlloc) [[unlikely]]
+            throw std::runtime_error(
+                std::string{"Failed to transmit "} + std::string{operation_name}
+                + ": Transmit buffer unavailable (acquire failed)");
+    }
+
+    void keepalive_loop() {
+        while (!stop_keepalive_.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(kSessionRefreshInterval);
+            if (stop_keepalive_.load(std::memory_order_relaxed))
+                break;
+
+            try {
+                refresh_session();
+            } catch (const std::exception& exception) {
+                logging::get_logger().error(
+                    "Failed to refresh session: {}. Terminating...", exception.what());
+                std::terminate();
+            }
+        }
+    }
+
+    static uint32_t generate_session_nonce() {
+        std::random_device random_device;
+        std::uniform_int_distribution<uint32_t> distribution;
+        return distribution(random_device);
+    }
+
     data::DataCallback& callback_;
     core::protocol::Deserializer deserializer_;
+
+    mutable std::mutex session_mutex_;
+    std::condition_variable session_cv_;
+    std::atomic<bool> session_established_{false};
+    uint64_t session_start_ack_count_ = 0;
+    uint64_t session_keepalive_ack_count_ = 0;
+    uint32_t expected_session_nonce_ = 0;
+
+    std::unique_ptr<transport::Transport> transport_;
+
+    std::atomic<bool> stop_keepalive_{false};
+    std::thread keepalive_thread_;
 };
 
 namespace {
@@ -123,7 +313,9 @@ struct PacketBuilderImpl {
 
     [[nodiscard]] bool write_gpio_digital_data(
         uint8_t channel_index, const data::GpioDigitalDataView& view) noexcept {
-        return process_result(serializer_.write_gpio_digital_data(channel_index, view));
+        if (view.timestamp_quarter_us.has_value()) [[unlikely]]
+            return false;
+        return process_result(serializer_.write_gpio_digital_value(channel_index, view));
     }
 
     [[nodiscard]] bool write_gpio_digital_read_config(
@@ -133,7 +325,7 @@ struct PacketBuilderImpl {
 
     [[nodiscard]] bool write_gpio_analog_data(
         uint8_t channel_index, const data::GpioAnalogDataView& view) noexcept {
-        return process_result(serializer_.write_gpio_analog_data(channel_index, view));
+        return process_result(serializer_.write_gpio_analog_value(channel_index, view));
     }
 
     [[nodiscard]] bool write_imu_accelerometer(const data::AccelerometerDataView& view) noexcept {
@@ -207,14 +399,9 @@ bool Handler::PacketBuilder::write_gpio_analog_data(
 
 Handler::Handler(
     uint16_t usb_vid, int32_t usb_pid, std::string_view serial_filter,
-    const agent::AdvancedOptions& options, data::DataCallback& callback)
+    const board::AdvancedOptions& options, data::DataCallback& callback)
     : impl_(new Impl(
-          transport::usb::create_transport(
-              usb_vid, usb_pid, serial_filter,
-              transport::usb::ConnectionOptions{
-                  .dangerously_skip_version_checks = options.dangerously_skip_version_checks,
-              }),
-          callback)) {}
+          transport::usb::create_transport(usb_vid, usb_pid, serial_filter, options), callback)) {}
 
 Handler::Handler(Handler&& other) noexcept
     : impl_(std::exchange(other.impl_, nullptr)) {}

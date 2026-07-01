@@ -24,20 +24,22 @@ public:
     DeserializeCallback& operator=(DeserializeCallback&&) = delete;
     virtual ~DeserializeCallback() = default;
 
-    virtual void can_deserialized_callback(FieldId id, const data::CanDataView& data) = 0;
+    [[nodiscard]] virtual bool
+        can_deserialized_callback(FieldId id, const data::CanDataView& data) = 0;
 
-    virtual void uart_deserialized_callback(FieldId id, const data::UartDataView& data) = 0;
+    [[nodiscard]] virtual bool
+        uart_deserialized_callback(FieldId id, const data::UartDataView& data) = 0;
 
-    virtual void gpio_digital_data_deserialized_callback(
+    [[nodiscard]] virtual bool gpio_digital_data_deserialized_callback(
         uint8_t channel_index, const data::GpioDigitalDataView& data) = 0;
 
-    virtual void gpio_analog_data_deserialized_callback(
+    [[nodiscard]] virtual bool gpio_analog_data_deserialized_callback(
         uint8_t channel_index, const data::GpioAnalogDataView& data) = 0;
 
-    virtual void gpio_digital_read_config_deserialized_callback(
+    [[nodiscard]] virtual bool gpio_digital_read_config_deserialized_callback(
         uint8_t channel_index, const data::GpioReadConfigView& data) = 0;
 
-    virtual void gpio_analog_read_config_deserialized_callback(
+    [[nodiscard]] virtual bool gpio_analog_read_config_deserialized_callback(
         uint8_t channel_index, const data::GpioReadConfigView& data) = 0;
 
     virtual void accelerometer_deserialized_callback(const data::AccelerometerDataView& data) = 0;
@@ -45,6 +47,8 @@ public:
     virtual void gyroscope_deserialized_callback(const data::GyroscopeDataView& data) = 0;
 
     virtual void temperature_deserialized_callback(const data::TemperatureDataView& data) = 0;
+
+    virtual void session_control_deserialized_callback(const data::SessionControlView& data) = 0;
 
     virtual void error_callback() = 0;
 };
@@ -119,6 +123,8 @@ private:
     coroutine::LifoTask<bool> process_gpio_field(FieldId field_id);
 
     coroutine::LifoTask<bool> process_imu_field(FieldId field_id);
+
+    coroutine::LifoTask<bool> process_session_field(FieldId field_id);
 
     // Await until at least `size` contiguous bytes are available at the current read position.
     // Returns a pointer to a contiguous region of at least `size` bytes.

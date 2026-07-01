@@ -36,4 +36,13 @@ extern "C" void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef* hal_uart_handle, 
     uart->handle_uplink(size, is_idle);
 }
 
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
+extern "C" void HAL_UART_ErrorCallback(UART_HandleTypeDef* hal_uart_handle) {
+    auto* uart = get_uart_instance(hal_uart_handle);
+    if (!uart)
+        return;
+
+    uart->handle_rx_error();
+}
+
 } // namespace librmcs::firmware::uart

@@ -8,14 +8,14 @@
 #include <span>
 #include <thread>
 
-#include <librmcs/agent/rmcs_board_hpm5321.hpp>
+#include "common/multi_board.hpp"
 
-// UART-only stress test for the HPM5321 bridge.
+// UART-only stress test for any project board.
 //
-// Sends one UART0 message per loop tick and counts both directions, so you can
-// see how many UART messages/bytes per second the bridge sustains (and, with
-// LIBRMCS_USB_STATS=1, how that maps onto USB bulk traffic). No CAN traffic is
-// generated. Stop with Ctrl-C.
+// Auto-detects the connected board and sends one UART0 message per loop tick,
+// counting both directions, so you can see how many UART messages/bytes per
+// second the bridge sustains (and, with LIBRMCS_USB_STATS=1, how that maps onto
+// USB bulk traffic). No CAN traffic is generated. Stop with Ctrl-C.
 
 namespace {
 
@@ -29,10 +29,9 @@ void on_sigint(int) { g_running.store(false); }
 
 } // namespace
 
-class UartStress : public librmcs::agent::RmcsBoardHpm5321 {
+class UartStress : public examples::BoardReceiver {
 public:
-    UartStress()
-        : librmcs::agent::RmcsBoardHpm5321{{}, {.dangerously_skip_version_checks = true}} {}
+    void bind(examples::BoardSession* board) { board_ = board; }
 
     // One message: a 16-bit big-endian counter followed by an incrementing
     // pattern, so the receiver side could detect gaps or corruption if echoed.
@@ -43,7 +42,9 @@ public:
         for (std::size_t i = 2; i < payload.size(); ++i)
             payload[i] = static_cast<std::byte>(i);
 
-        start_transmit().uart0_transmit({.uart_data = payload, .idle_delimited = true});
+        board_->transmit([&](examples::BoardTransmitter& tx) {
+            tx.uart(0, {.uart_data = payload, .idle_delimited = true});
+        });
         tx_msgs_.fetch_add(1, std::memory_order::relaxed);
         tx_bytes_.fetch_add(payload.size(), std::memory_order::relaxed);
     }
@@ -54,7 +55,8 @@ public:
     uint64_t take_rx_bytes() { return rx_bytes_.exchange(0, std::memory_order::relaxed); }
 
 private:
-    void uart0_receive_callback(const librmcs::data::UartDataView& data) override {
+    void on_uart(int port, const librmcs::data::UartDataView& data) override {
+        (void)port;
         rx_msgs_.fetch_add(1, std::memory_order::relaxed);
         rx_bytes_.fetch_add(data.uart_data.size(), std::memory_order::relaxed);
     }
@@ -63,16 +65,24 @@ private:
     std::atomic<uint64_t> tx_bytes_{0};
     std::atomic<uint64_t> rx_msgs_{0};
     std::atomic<uint64_t> rx_bytes_{0};
+
+    examples::BoardSession* board_ = nullptr;
 };
 
 int main() {
     std::signal(SIGINT, on_sigint);
 
-    printf("UART stress - connecting to HPM5321 bridge...\n");
+    printf("UART stress - auto-detecting board...\n");
     UartStress agent;
+    auto board = examples::connect_any(agent);
+    if (!board) {
+        fprintf(stderr, "No compatible board found.\n");
+        return 1;
+    }
+    agent.bind(board.get());
     printf(
-        "Connected. Sending %zu-byte UART0 messages at 1 kHz. Ctrl-C to stop.\n",
-        k_payload_size);
+        "Connected: %.*s. Sending %zu-byte UART0 messages at 1 kHz. Ctrl-C to stop.\n",
+        static_cast<int>(board->name().size()), board->name().data(), k_payload_size);
 
     auto next = std::chrono::steady_clock::now();
     auto last_report = next;

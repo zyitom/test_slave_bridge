@@ -18,7 +18,11 @@ MEMORY
     FLASH     (rx): ORIGIN = 0x08040000, LENGTH = 768K
 }
 
-_estack = ORIGIN(RAM) + LENGTH(RAM);
+/* Main/ISR stack lives in zero-wait DTCM (CPU-private, never a DMA target), so
+ * every call frame, local and ISR context push is single-cycle and free of AXI
+ * bus-contention jitter -- the lowest-latency place for the stack on this part.
+ * Grows down from just below the boot mailbox at the top of DTCM. */
+_estack = ORIGIN(DTCMRAM) + LENGTH(DTCMRAM);
 _Min_Heap_Size  = 0x2000;
 _Min_Stack_Size = 0x2000;
 
@@ -95,6 +99,36 @@ SECTIONS
         _edata = .;
     } >RAM AT> FLASH
 
+    /* Latency-critical CAN forwarding code, executed from zero-wait ITCM so it
+     * never depends on the I-cache or incurs FLASH-XIP fetch jitter. Loaded from
+     * FLASH and copied to ITCM at boot by app.cpp (App constructor). */
+    _siitcm = LOADADDR(.itcm);
+    .itcm :
+    {
+        . = ALIGN(4);
+        _sitcm = .;
+        *(.itcm)
+        *(.itcm*)
+        . = ALIGN(4);
+        _eitcm = .;
+    } >ITCMRAM AT> FLASH
+
+    /* Hot forwarding data (serializer + USB batch buffers + CAN objects) in
+     * zero-wait DTCM, so the uplink ISR's data accesses never reach the AXI bus
+     * and never contend with DMA -- completing the "CPU off the bus" hot path.
+     * Loaded from FLASH and copied to DTCM at boot by app.cpp. These are CPU-only
+     * structures; UART DMA buffers deliberately stay in non-cacheable AXI. */
+    _sidtcm = LOADADDR(.dtcm);
+    .dtcm :
+    {
+        . = ALIGN(32);
+        _sdtcm = .;
+        *(.dtcm)
+        *(.dtcm*)
+        . = ALIGN(32);
+        _edtcm = .;
+    } >DTCMRAM AT> FLASH
+
     .tbss (NOLOAD) : ALIGN(4)
     {
         _sbss = .;
@@ -130,6 +164,18 @@ SECTIONS
         . = . + _Min_Stack_Size;
         . = ALIGN(8);
     } >RAM
+
+    /* WS2812 LED frame buffer for SPI6 TX. SPI6 is a D3-domain peripheral whose
+     * only DMA path is BDMA, which can reach D3 SRAM (0x38000000) but never the
+     * AXI/D2 SRAMs -- so this buffer must live here. NOLOAD: the CPU fills and
+     * cache-cleans it before each transfer (see led.hpp). */
+    .d3_sram (NOLOAD) :
+    {
+        . = ALIGN(32);
+        *(.d3_sram)
+        *(.d3_sram*)
+        . = ALIGN(32);
+    } >RAM_D3
 
     /DISCARD/ :
     {

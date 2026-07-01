@@ -31,17 +31,15 @@ public:
 
 namespace internal {
 class GpioDescriptors {
-    // mc02 exposes four PWM-capable output pins. Unlike c_board they are
-    // write-only, so they advertise digital/analog write without any read
-    // capability.
-    static constexpr GpioCapability kPwmWriteCapabilities =
-        GpioCapability::kDigitalWrite | GpioCapability::kAnalogWrite;
-
+    // mc02 exposes four pins that, like c_board, can each act in three roles:
+    // digital output, PWM/analog output, or digital input (level/periodic/edge,
+    // with pull and timestamp). All four have a free EXTI line, so all advertise
+    // the full PWM + read capability set.
     static constexpr GpioDescriptor kArray[]{
-        {0, kPwmWriteCapabilities}, // TIM2 CH1 (PA0)
-        {1, kPwmWriteCapabilities}, // TIM2 CH3 (PA2)
-        {2, kPwmWriteCapabilities}, // TIM1 CH1 (PE9)
-        {3, kPwmWriteCapabilities}  // TIM1 CH3 (PE13)
+        {0, kPwmCapabilities}, // TIM2 CH1 (PA0), EXTI0
+        {1, kPwmCapabilities}, // TIM2 CH3 (PA2), EXTI2
+        {2, kPwmCapabilities}, // TIM1 CH1 (PE9), EXTI9
+        {3, kPwmCapabilities}  // TIM1 CH3 (PE13), EXTI13
     };
     static_assert(channel_indices_match_indices(kArray));
 

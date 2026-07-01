@@ -1,12 +1,14 @@
-// Round-trip CAN forwarding latency for the HPM5321 DualCan bridge, measured
-// entirely in the host clock -- so there is NO cross-clock-domain error (unlike
-// subtracting the board's hardware timestamp from a host timestamp, which mixes
-// two unsynchronized clocks; see rx_monitor, which only measures jitter).
+// Round-trip CAN forwarding latency for any two-CAN-bus board (hpm5321_dual_can,
+// c_board, mc02), measured entirely in the host clock -- so there is NO
+// cross-clock-domain error (unlike subtracting the board's hardware timestamp
+// from a host timestamp, which mixes two unsynchronized clocks; see rx_monitor,
+// which only measures jitter).
 //
-// WIRING: join CAN0 and CAN1 onto ONE bus -- CAN0_H<->CAN1_H, CAN0_L<->CAN1_L --
-// with a 120 ohm terminator at EACH end. The host sends a tagged frame on CAN0;
-// the board drives it onto the wire; CAN1 receives it (and ACKs CAN0); the board
-// forwards it back to the host. The measured round trip therefore covers:
+// WIRING: join CAN bus 0 and bus 1 onto ONE wire -- CAN0_H<->CAN1_H,
+// CAN0_L<->CAN1_L -- with a 120 ohm terminator at EACH end. The host sends a
+// tagged frame on bus 0; the board drives it onto the wire; bus 1 receives it
+// (and ACKs bus 0); the board forwards it back to the host. The measured round
+// trip therefore covers:
 //
 //   RTT = USB down + board TX + CAN wire (once) + board RX + USB up + host stack
 //
@@ -34,7 +36,7 @@
 #include <sched.h>
 #include <sys/mman.h>
 
-#include <librmcs/agent/rmcs_board_hpm5321_dual_can.hpp>
+#include "common/multi_board.hpp"
 
 namespace {
 
@@ -75,13 +77,11 @@ double percentile(const std::vector<double>& sorted, double p) {
 
 }  // namespace
 
-class LoopbackTester : public librmcs::agent::RmcsBoardHpm5321DualCan {
+class LoopbackTester : public examples::BoardReceiver {
 public:
-    LoopbackTester()
-        : librmcs::agent::RmcsBoardHpm5321DualCan{
-              {}, {.dangerously_skip_version_checks = true}} {}
+    void bind(examples::BoardSession* board) { board_ = board; }
 
-    // Send ping <seq> on CAN0 and arm matching of its echo. Records the send
+    // Send ping <seq> on CAN bus 0 and arm matching of its echo. Records the send
     // instant as close as possible to the transmit call.
     void send_ping(uint32_t seq) {
         std::array<std::byte, 8> frame{};
@@ -91,8 +91,9 @@ public:
         send_tp_ = std::chrono::steady_clock::now();
         ping_seq_.store(seq, std::memory_order_release);  // publishes send_tp_
 
-        start_transmit().can0_transmit(
-            {.can_id = kPingCanId, .can_data = frame, .is_fdcan = kUseCanFd});
+        board_->transmit([&](examples::BoardTransmitter& tx) {
+            tx.can(0, {.can_id = kPingCanId, .can_data = frame, .is_fdcan = kUseCanFd});
+        });
     }
 
     bool wait_echo() {
@@ -111,7 +112,10 @@ public:
     }
 
 private:
-    void can1_receive_callback(const librmcs::data::CanDataView& data) override {
+    // Echo arrives on CAN bus 1 (the receiving end of the joined wire).
+    void on_can(int bus, const librmcs::data::CanDataView& data) override {
+        if (bus != 1)
+            return;
         const auto now = std::chrono::steady_clock::now();
         if (data.can_id != kPingCanId || data.can_data.size() < sizeof(uint32_t))
             return;
@@ -134,19 +138,34 @@ private:
     std::chrono::steady_clock::time_point send_tp_;
     std::atomic<bool> got_echo_{false};
     std::atomic<int64_t> rtt_ns_{0};
+
+    examples::BoardSession* board_ = nullptr;
 };
 
 int main() {
     std::signal(SIGINT, on_sigint);
     setup_realtime();
 
-    printf("CAN loopback latency -- HPM5321 DualCan (CAN-FD=%s)\n", kUseCanFd ? "on" : "off");
-    printf("  Wire CAN0<->CAN1 together (120 ohm at each end).\n");
-    printf("  Sending id 0x%03X on CAN0, timing the echo on CAN1.\n", kPingCanId);
+    printf("CAN loopback latency (CAN-FD=%s)\n", kUseCanFd ? "on" : "off");
+    printf("  Wire CAN bus 0 <-> bus 1 together (120 ohm at each end).\n");
+    printf("  Sending id 0x%03X on bus 0, timing the echo on bus 1.\n", kPingCanId);
     printf("Connecting ...\n");
 
     LoopbackTester agent;
-    printf("Connected. Measuring %u round trips ...\n\n", kPingCount);
+    auto board = examples::connect_any(agent);
+    if (!board) {
+        fprintf(stderr, "No compatible board found.\n");
+        return 1;
+    }
+    if (board->can_bus_count() < 2) {
+        fprintf(stderr, "%.*s has only %d CAN bus; this test needs two.\n",
+            static_cast<int>(board->name().size()), board->name().data(),
+            board->can_bus_count());
+        return 1;
+    }
+    agent.bind(board.get());
+    printf("Connected: %.*s. Measuring %u round trips ...\n\n",
+        static_cast<int>(board->name().size()), board->name().data(), kPingCount);
 
     std::vector<double> rtt_us;
     rtt_us.reserve(kPingCount);
@@ -163,7 +182,7 @@ int main() {
 
     if (rtt_us.empty()) {
         fprintf(stderr,
-            "No echoes received. Check the CAN0<->CAN1 loopback wiring, termination,\n"
+            "No echoes received. Check the bus0<->bus1 loopback wiring, termination,\n"
             "and that kUseCanFd matches the bus. (%u lost)\n", lost);
         return 1;
     }

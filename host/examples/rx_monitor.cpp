@@ -14,11 +14,11 @@
 // CPU core for the real-time data-collection thread. Set to -1 to disable.
 static constexpr int kRtCpu = 7;
 
-#include <librmcs/agent/c_board.hpp>
-#include <librmcs/agent/rmcs_board_hpm5321.hpp>
-#include <librmcs/agent/rmcs_board_hpm5321_dual_can.hpp>
+#include "common/multi_board.hpp"
 
-// Receive-only monitor. Auto-detects CBoard or RmcsBoardHpm5321.
+// Receive-only monitor. Auto-detects any project board (c_board, mc02, hpm5321,
+// hpm5321_dual_can). CAN/UART channels are shown 0-based: CAN0 is the board's
+// primary CAN bus, etc.
 // Columns: host time, channel, size, host delta, hw-ts, hw-ts delta, fwd jitter
 //   hw-ts delta  = delta between consecutive CAN hardware timestamps (1 us/tick)
 //   fwd jitter   = host delta - hw-ts delta  (USB forwarding latency jitter)
@@ -211,60 +211,25 @@ void set_non_rt(const char* name) {
         printf("Warning: %s: failed to set SCHED_OTHER\n", name);
 }
 
-// --- Board-specific monitors --------------------------------------------------
-class HpmMonitor : public librmcs::agent::RmcsBoardHpm5321 {
-public:
-    HpmMonitor()
-        : librmcs::agent::RmcsBoardHpm5321{{}, {.dangerously_skip_version_checks = true}} {}
+// --- Board-neutral monitor ----------------------------------------------------
+// One receiver for every board; connect_any() routes the connected board's CAN /
+// UART / DBUS traffic here with 0-based bus/port indices.
+class Monitor : public examples::BoardReceiver {
 private:
-    void can0_receive_callback(const librmcs::data::CanDataView& data) override {
-        g_stats[kCan0].record(kCan0, data.can_data.size(),
-            data.timestamp_us.has_value() ? data.timestamp_us.value() : 0,
+    void on_can(int bus, const librmcs::data::CanDataView& data) override {
+        if (bus < 0 || bus > 2)
+            return;
+        const auto ch = static_cast<Channel>(kCan0 + bus);
+        g_stats[ch].record(ch, data.can_data.size(), data.timestamp_us.value_or(0),
             data.timestamp_us.has_value());
     }
-    void uart0_receive_callback(const librmcs::data::UartDataView& data) override {
-        g_stats[kUart0].record(kUart0, data.uart_data.size());
+    void on_uart(int port, const librmcs::data::UartDataView& data) override {
+        if (port < 0 || port > 2)
+            return;
+        const auto ch = static_cast<Channel>(kUart0 + port);
+        g_stats[ch].record(ch, data.uart_data.size());
     }
-};
-
-class HpmDualCanMonitor : public librmcs::agent::RmcsBoardHpm5321DualCan {
-public:
-    HpmDualCanMonitor()
-        : librmcs::agent::RmcsBoardHpm5321DualCan{{}, {.dangerously_skip_version_checks = true}} {}
-private:
-    void can0_receive_callback(const librmcs::data::CanDataView& data) override {
-        g_stats[kCan0].record(kCan0, data.can_data.size(),
-            data.timestamp_us.has_value() ? data.timestamp_us.value() : 0,
-            data.timestamp_us.has_value());
-    }
-    void can1_receive_callback(const librmcs::data::CanDataView& data) override {
-        g_stats[kCan1].record(kCan1, data.can_data.size(),
-            data.timestamp_us.has_value() ? data.timestamp_us.value() : 0,
-            data.timestamp_us.has_value());
-    }
-    void uart0_receive_callback(const librmcs::data::UartDataView& data) override {
-        g_stats[kUart0].record(kUart0, data.uart_data.size());
-    }
-};
-
-class CBoardMonitor : public librmcs::agent::CBoard {
-public:
-    CBoardMonitor()
-        : librmcs::agent::CBoard{{}, {.dangerously_skip_version_checks = true}} {}
-private:
-    void can1_receive_callback(const librmcs::data::CanDataView& data) override {
-        g_stats[kCan1].record(kCan1, data.can_data.size());
-    }
-    void can2_receive_callback(const librmcs::data::CanDataView& data) override {
-        g_stats[kCan2].record(kCan2, data.can_data.size());
-    }
-    void uart1_receive_callback(const librmcs::data::UartDataView& data) override {
-        g_stats[kUart1].record(kUart1, data.uart_data.size());
-    }
-    void uart2_receive_callback(const librmcs::data::UartDataView& data) override {
-        g_stats[kUart2].record(kUart2, data.uart_data.size());
-    }
-    void dbus_receive_callback(const librmcs::data::UartDataView& data) override {
+    void on_dbus(const librmcs::data::UartDataView& data) override {
         g_stats[kDbus].record(kDbus, data.uart_data.size());
     }
 };
@@ -282,27 +247,16 @@ int main() {
 
     printf("RX monitor - auto-detecting board...\n");
 
-    std::unique_ptr<HpmMonitor> hpm;
-    std::unique_ptr<HpmDualCanMonitor> hpm_dual;
-    std::unique_ptr<CBoardMonitor> cboard;
-
-    try {
-        hpm = std::make_unique<HpmMonitor>();
-        printf("Connected: RmcsBoardHpm5321 (CAN0, UART0)\n");
-    } catch (const std::runtime_error&) {
-        try {
-            hpm_dual = std::make_unique<HpmDualCanMonitor>();
-            printf("Connected: RmcsBoardHpm5321DualCan (CAN0, CAN1, UART0)\n");
-        } catch (const std::runtime_error&) {
-            try {
-                cboard = std::make_unique<CBoardMonitor>();
-                printf("Connected: CBoard (CAN1, CAN2, UART1, UART2, DBUS)\n");
-            } catch (const std::runtime_error& e) {
-                fprintf(stderr, "No compatible device found: %s\n", e.what());
-                return 1;
-            }
-        }
+    Monitor monitor;
+    auto board = examples::connect_any(monitor);
+    if (!board) {
+        fprintf(stderr, "No compatible device found.\n");
+        return 1;
     }
+    printf("Connected: %.*s (%d CAN, %d UART%s)\n",
+        static_cast<int>(board->name().size()), board->name().data(),
+        board->can_bus_count(), board->uart_port_count(),
+        board->has_dbus() ? " + DBUS" : "");
 
     printf("Listening. Ctrl-C to stop.\n\n");
     printf("%-13s  %-5s  %5s  %9s  %12s  %10s  %12s\n",

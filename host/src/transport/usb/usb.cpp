@@ -1,8 +1,6 @@
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <exception>
 #include <format>
 #include <functional>
@@ -35,7 +33,6 @@ public:
         uint16_t usb_vid, int32_t usb_pid, std::string_view serial_filter,
         const ConnectionOptions& options)
         : logger_(logging::get_logger())
-        , usb_stats_enabled_(std::getenv("LIBRMCS_USB_STATS") != nullptr)
         , free_transmit_transfers_(kTransmitTransferCount) {
 
         usb_init(usb_vid, usb_pid, serial_filter, options);
@@ -47,7 +44,20 @@ public:
         }};
 
         init_transmit_transfers();
-        event_thread_ = std::thread{[this]() { handle_events(); }};
+
+        if (options.thread_setup) {
+            std::atomic<bool> thread_setup_done{false};
+            event_thread_ = std::thread{[this, &options, &thread_setup_done]() {
+                options.thread_setup(options);
+                thread_setup_done.store(true, std::memory_order_release);
+                thread_setup_done.notify_one();
+                handle_events();
+            }};
+            // Wait until thread_setup returns, so any bound options state remains alive.
+            thread_setup_done.wait(false, std::memory_order_acquire);
+        } else {
+            event_thread_ = std::thread{[this]() { handle_events(); }};
+        }
 
         rollback_on_failure.disable();
     }
@@ -216,7 +226,8 @@ private:
                         wrapper->self_.usb_transmit_complete_callback(wrapper);
                     },
                     wrapper, 0);
-                transfer->flags = libusb_transfer_flags::LIBUSB_TRANSFER_FREE_BUFFER;
+                transfer->flags = libusb_transfer_flags::LIBUSB_TRANSFER_FREE_BUFFER
+                                | libusb_transfer_flags::LIBUSB_TRANSFER_ADD_ZERO_PACKET;
             }
         } catch (...) {
             for (auto& wrapper : transmit_transfers) {
@@ -264,20 +275,9 @@ private:
         }
     }
 
-void usb_transmit_complete_callback(TransferWrapper* wrapper) {
-    const auto now = std::chrono::steady_clock::now();
-    const auto interval = now - last_tx_callback_timepoint_;
-    // if (last_tx_callback_timepoint_ != std::chrono::steady_clock::time_point::min())
-    //     logger_.info("TX interval: {}us",
-    //         std::chrono::duration_cast<std::chrono::microseconds>(interval).count());
-    last_tx_callback_timepoint_ = now;
-
-    if (usb_stats_enabled_)
-        account_usb_transfer(
-            tx_stats_, static_cast<std::size_t>(wrapper->transfer_->actual_length), interval);
-    report_usb_stats(now);
-
-    const std::scoped_lock guard{transmit_transfer_push_mutex_};
+    void usb_transmit_complete_callback(TransferWrapper* wrapper) {
+        // Share mutex with teardown so destructor can block callbacks before draining the queue
+        const std::scoped_lock guard{transmit_transfer_push_mutex_};
 
         if (stop_handling_events_.load(std::memory_order::relaxed)) [[unlikely]] {
             wrapper->destroy();
@@ -294,19 +294,11 @@ void usb_transmit_complete_callback(TransferWrapper* wrapper) {
             return;
         }
 
-        const auto now = std::chrono::steady_clock::now();
-        const auto interval = now - last_rx_callback_timepoint_;
-        last_rx_callback_timepoint_ = now;
-        // logger_.info("RX interval: {}us",
-        //     std::chrono::duration_cast<std::chrono::microseconds>(interval).count());
         if (transfer->actual_length > 0) {
-            const auto size = static_cast<std::size_t>(transfer->actual_length);
-            if (usb_stats_enabled_)
-                account_usb_transfer(rx_stats_, size, interval);
             const auto* first = reinterpret_cast<std::byte*>(transfer->buffer);
+            const auto size = static_cast<std::size_t>(transfer->actual_length);
             receive_callback_({first, size});
         }
-        report_usb_stats(now);
 
         int ret = libusb_submit_transfer(transfer);
         if (ret != 0) [[unlikely]] {
@@ -355,68 +347,6 @@ void usb_transmit_complete_callback(TransferWrapper* wrapper) {
 
     logging::Logger& logger_;
 
-    // --- Optional USB traffic stats (method A) ---------------------------------
-    // Measured: transfers + bytes per direction. Inferred: bulk packet count via
-    // ceil(bytes / 512) -- the HS 512 B split is invisible to software but
-    // deterministic; ZLPs and NAK retries are not counted (need a hw analyzer).
-    // Enabled by the LIBRMCS_USB_STATS env var. Touched only on the libusb event
-    // thread, so no locking is needed.
-    static constexpr std::size_t kHsBulkMaxPacket = 512;
-    struct DirStats {
-        uint64_t transfers = 0, bytes = 0, bulk_packets = 0;
-        // Inter-transfer arrival interval over the window (the "bulk realtime"):
-        uint64_t interval_min_ns = UINT64_MAX, interval_max_ns = 0;
-    };
-
-    void account_usb_transfer(
-        DirStats& stats, std::size_t size, std::chrono::nanoseconds interval) {
-        stats.transfers += 1;
-        stats.bytes += size;
-        stats.bulk_packets += size == 0 ? 1 : (size + kHsBulkMaxPacket - 1) / kHsBulkMaxPacket;
-        // Ignore idle gaps (>1 s) so they do not pollute the min/max.
-        if (interval < std::chrono::seconds{1}) {
-            const auto ns = static_cast<uint64_t>(interval.count());
-            if (ns < stats.interval_min_ns)
-                stats.interval_min_ns = ns;
-            if (ns > stats.interval_max_ns)
-                stats.interval_max_ns = ns;
-        }
-    }
-
-    void report_usb_stats(std::chrono::steady_clock::time_point now) {
-        if (!usb_stats_enabled_)
-            return;
-        if (stats_last_report_ == std::chrono::steady_clock::time_point::min()) {
-            stats_last_report_ = now;
-            return;
-        }
-        if (now - stats_last_report_ < std::chrono::seconds{1})
-            return;
-        const double dt = std::chrono::duration<double>(now - stats_last_report_).count();
-        auto report_dir = [&](const char* name, const DirStats& s) {
-            const double avg_us = s.transfers ? dt / static_cast<double>(s.transfers) * 1e6 : 0.0;
-            const double min_us = s.interval_min_ns == UINT64_MAX
-                ? 0.0
-                : static_cast<double>(s.interval_min_ns) / 1e3;
-            const double max_us = static_cast<double>(s.interval_max_ns) / 1e3;
-            logger_.info(
-                "USB/s {}: {:.0f} transfers, {:.0f} B, ~{:.0f} bulk pkts | "
-                "interval us min/avg/max = {:.0f}/{:.0f}/{:.0f} (512 B/pkt, inferred)",
-                name, static_cast<double>(s.transfers) / dt, static_cast<double>(s.bytes) / dt,
-                static_cast<double>(s.bulk_packets) / dt, min_us, avg_us, max_us);
-        };
-        report_dir("IN (board->host)", rx_stats_);
-        report_dir("OUT(host->board)", tx_stats_);
-        rx_stats_ = {};
-        tx_stats_ = {};
-        stats_last_report_ = now;
-    }
-
-    const bool usb_stats_enabled_;
-    DirStats rx_stats_, tx_stats_;
-    std::chrono::steady_clock::time_point stats_last_report_ =
-        std::chrono::steady_clock::time_point::min();
-
     libusb_context* libusb_context_ = nullptr;
     libusb_device_handle* libusb_device_handle_ = nullptr;
 
@@ -427,11 +357,8 @@ void usb_transmit_complete_callback(TransferWrapper* wrapper) {
 
     utility::RingBuffer<TransferWrapper*> free_transmit_transfers_;
     std::mutex transmit_transfer_pop_mutex_, transmit_transfer_push_mutex_;
-    std::chrono::steady_clock::time_point last_tx_callback_timepoint_ =
-        std::chrono::steady_clock::time_point::min();
+
     std::function<void(std::span<const std::byte>)> receive_callback_;
-    std::chrono::steady_clock::time_point last_rx_callback_timepoint_ =
-        std::chrono::steady_clock::time_point::min();
 };
 
 std::unique_ptr<Transport> create_transport(

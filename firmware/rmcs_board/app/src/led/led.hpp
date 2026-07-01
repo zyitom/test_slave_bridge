@@ -68,20 +68,22 @@ public:
         } while (!downlink_full_reset_counter_.compare_exchange_weak(
             downlink_full, downlink_full - 1, std::memory_order::relaxed));
 
-        // Simple 3-channel GPIO RGB LED (each color is only on/off). Keep every
-        // state a single, clearly distinguishable color and never light all
-        // three channels at once, so the status stays readable:
-        //   green breathing = healthy/idle
-        //   blue blink      = uplink (board -> host) buffer full
-        //   red blink       = downlink (host -> board) buffer full
-        //   red/blue alarm  = both directions congested
+        // Simple 3-channel GPIO RGB LED (each color is only on/off, no PWM
+        // brightness). Color language mirrors the c_board indicator so both
+        // boards read the same; yellow is red+green and cyan is green+blue, and
+        // all three channels are never lit at once so the status stays readable:
+        //   steady green     = healthy, host connected
+        //   slow green blink  = alive, waiting for host
+        //   yellow blink      = uplink (board -> host) buffer full
+        //   cyan blink        = downlink (host -> board) buffer full
+        //   yellow/cyan alt   = both directions congested
         const bool on = (tick & 128U) != 0;
         if (uplink_full && downlink_full) {
-            led_backend->set_value(on ? 255 : 0, 0, on ? 0 : 255);
+            led_backend->set_value(on ? 255 : 0, 255, on ? 0 : 255);
         } else if (uplink_full) {
-            led_backend->set_value(0, 0, on ? 255 : 0);
+            led_backend->set_value(on ? 255 : 0, on ? 255 : 0, 0);
         } else if (downlink_full) {
-            led_backend->set_value(on ? 255 : 0, 0, 0);
+            led_backend->set_value(0, on ? 255 : 0, on ? 255 : 0);
         } else if (host_connected_.load(std::memory_order::relaxed)) {
             // Connected to the host and healthy: steady green.
             led_backend->set_value(0, 255, 0);

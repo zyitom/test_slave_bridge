@@ -1,7 +1,8 @@
-// Motor 3519 PID position-control sine-wave test via HPM5321 DualCan bridge.
+// Motor 3519 PID position-control sine-wave test, on any two-CAN-bus board
+// (hpm5321_dual_can, c_board, mc02).
 //
-// Drives one motor (ID 2) on EACH CAN bus (CAN0 = MCAN0, CAN1 = MCAN3) at the
-// same time, using CAN-FD frames:
+// Drives one motor (ID 2) on EACH CAN bus (bus 0 and bus 1) at the same time,
+// using CAN-FD frames:
 //   - Control frame:  CAN ID 0x200, motor-2 torque-current at bytes [2:3]
 //   - Feedback frame: CAN ID 0x202 (0x200 + motor_id), 1 ms period
 //   - Torque-current range: [-16384, 16384]  ->  [-20.5 A, 20.5 A]
@@ -24,32 +25,32 @@
 #include <optional>
 #include <thread>
 
-#include <librmcs/agent/rmcs_board_hpm5321_dual_can.hpp>
+#include "common/multi_board.hpp"
 
 namespace {
 
-// ── Bus configuration ───────────────────────────────────────────────────
-constexpr unsigned kBusCount = 2;       // CAN0 + CAN1
+// Bus configuration
+constexpr unsigned kBusCount = 2;       // CAN bus 0 + bus 1
 constexpr bool kUseCanFd = true;        // send CAN-FD frames on both buses
 
-// ── Motor / CAN identifiers (3519 一控四 protocol) ──────────────────────
+// Motor / CAN identifiers (3519 control protocol)
 constexpr unsigned kMotorId = 2;
 constexpr uint32_t kControlCanId = 0x200;
 constexpr uint32_t kFeedbackCanId = 0x202;
 
-// ── Pure proportional position control ──────────────────────────────────
+// Pure proportional position control
 constexpr float kKp = 8.0F;     // position error -> torque current
 constexpr float kMaxCurrent = 12000.0F;  // ~15 A (75 % of full-scale)
 
-// ── Sine trajectory ─────────────────────────────────────────────────────
-constexpr float kAmplitude = 3000.0F;  // ±132 deg
+// Sine trajectory
+constexpr float kAmplitude = 3000.0F;  // +-132 deg
 constexpr float kFrequency = 2.0F;     // Hz
 
-// ── Control loop timing ─────────────────────────────────────────────────
+// Control loop timing
 constexpr float kLoopHz = 1000.0F;
 constexpr auto kLoopPeriod = std::chrono::microseconds{1000};
 
-// ── Shutdown ────────────────────────────────────────────────────────────
+// Shutdown
 std::atomic<bool> g_running{true};
 void on_sigint(int) { g_running.store(false); }
 
@@ -61,11 +62,9 @@ float wrap_delta(float delta) {
 
 }  // namespace
 
-class MotorPidSine : public librmcs::agent::RmcsBoardHpm5321DualCan {
+class MotorPidSine : public examples::BoardReceiver {
 public:
-    MotorPidSine()
-        : librmcs::agent::RmcsBoardHpm5321DualCan{
-              {}, {.dangerously_skip_version_checks = true}} {}
+    void bind(examples::BoardSession* board) { board_ = board; }
 
     struct Sample {
         uint16_t raw_angle = 0;
@@ -82,21 +81,16 @@ public:
         std::array<std::byte, 8> frame{};
         frame[2] = static_cast<std::byte>((current >> 8) & 0xFF);
         frame[3] = static_cast<std::byte>(current & 0xFF);
-        const librmcs::data::CanDataView data{
-            .can_id = kControlCanId, .can_data = frame, .is_fdcan = kUseCanFd};
-        auto builder = start_transmit();
-        if (bus == 0)
-            builder.can0_transmit(data);
-        else
-            builder.can1_transmit(data);
+        board_->transmit([&](examples::BoardTransmitter& tx) {
+            tx.can(static_cast<int>(bus),
+                {.can_id = kControlCanId, .can_data = frame, .is_fdcan = kUseCanFd});
+        });
     }
 
 private:
-    void can0_receive_callback(const librmcs::data::CanDataView& data) override {
-        store_sample(0, data);
-    }
-    void can1_receive_callback(const librmcs::data::CanDataView& data) override {
-        store_sample(1, data);
+    void on_can(int bus, const librmcs::data::CanDataView& data) override {
+        if (bus >= 0 && bus < static_cast<int>(kBusCount))
+            store_sample(static_cast<unsigned>(bus), data);
     }
 
     void store_sample(unsigned bus, const librmcs::data::CanDataView& data) {
@@ -118,11 +112,13 @@ private:
 
     mutable std::mutex mutex_;
     Sample sample_[kBusCount];
+
+    examples::BoardSession* board_ = nullptr;
 };
 
 namespace {
 
-// Per-bus control state, advanced independently for CAN0 and CAN1.
+// Per-bus control state, advanced independently for bus 0 and bus 1.
 struct BusState {
     bool present = false;
     float sine_centre = 0.0F;
@@ -144,8 +140,8 @@ struct BusState {
 int main() {
     std::signal(SIGINT, on_sigint);
 
-    printf("Motor PID Sine — HPM5321 DualCan bridge (CAN-FD, hw-timestamp velocity)\n");
-    printf("  buses        : CAN0 + CAN1 (CAN-FD=%s)\n", kUseCanFd ? "on" : "off");
+    printf("Motor PID Sine -- two-CAN-bus bridge (CAN-FD, hw-timestamp velocity)\n");
+    printf("  buses        : bus 0 + bus 1 (CAN-FD=%s)\n", kUseCanFd ? "on" : "off");
     printf("  motor ID     : %u\n", kMotorId);
     printf("  control CAN  : 0x%03X\n", kControlCanId);
     printf("  feedback CAN : 0x%03X\n", kFeedbackCanId);
@@ -157,11 +153,24 @@ int main() {
     printf("Connecting ...\n");
 
     MotorPidSine agent;
-    printf("Connected.  Waiting for motor feedback ...\n");
+    auto board = examples::connect_any(agent);
+    if (!board) {
+        fprintf(stderr, "No compatible board found.\n");
+        return 1;
+    }
+    if (board->can_bus_count() < 2) {
+        fprintf(stderr, "%.*s has only %d CAN bus; this test needs two.\n",
+            static_cast<int>(board->name().size()), board->name().data(),
+            board->can_bus_count());
+        return 1;
+    }
+    agent.bind(board.get());
+    printf("Connected: %.*s.  Waiting for motor feedback ...\n",
+        static_cast<int>(board->name().size()), board->name().data());
 
     std::array<BusState, kBusCount> bus{};
 
-    // ── Wait for first feedback on either bus (up to 3 s) ────────────────
+    // Wait for first feedback on either bus (up to 3 s)
     {
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
         while (g_running.load() && std::chrono::steady_clock::now() < deadline) {
@@ -175,7 +184,7 @@ int main() {
                     bus[i].sine_centre = static_cast<float>(s.raw_angle);
                     bus[i].prev_raw_angle = s.raw_angle;
                     bus[i].prev_angle_vel = s.raw_angle;
-                    printf("  CAN%u motor present — initial angle %u (%.1f deg)%s\n", i,
+                    printf("  bus %u motor present -- initial angle %u (%.1f deg)%s\n", i,
                            s.raw_angle, s.raw_angle * 360.0F / 8192.0F,
                            s.timestamp_us ? "" : "  (no hw timestamp!)");
                 } else {
@@ -197,13 +206,13 @@ int main() {
     }
     for (unsigned i = 0; i < kBusCount; ++i)
         if (!bus[i].present)
-            printf("  WARNING: CAN%u has no motor — skipping that bus.\n", i);
+            printf("  WARNING: bus %u has no motor -- skipping that bus.\n", i);
 
-    // ── Phase 1: hold position while ramping current (2 s) ──────────────
+    // Phase 1: hold position while ramping current (2 s)
     constexpr float kHoldKp = 2.0F;
     constexpr float kRampDuration = 2.0F;
     constexpr float kRampRate = kMaxCurrent / kRampDuration;
-    printf("Phase 1 — holding position during current ramp (2 s) ...\n");
+    printf("Phase 1 -- holding position during current ramp (2 s) ...\n");
     {
         auto ramp_start = std::chrono::steady_clock::now();
         auto next_loop = ramp_start;
@@ -237,11 +246,11 @@ int main() {
         auto s = agent.get_sample(i);
         if (s.valid)
             bus[i].sine_centre = static_cast<float>(s.raw_angle);
-        printf("Phase 2 — CAN%u sine centre %.0f (%.1f deg)\n", i, bus[i].sine_centre,
+        printf("Phase 2 -- bus %u sine centre %.0f (%.1f deg)\n", i, bus[i].sine_centre,
                bus[i].sine_centre * 360.0F / 8192.0F);
     }
 
-    // ── Phase 2: sine on every active bus ───────────────────────────────
+    // Phase 2: sine on every active bus
     uint64_t loop_count = 0;
     auto next_loop = std::chrono::steady_clock::now();
     auto last_report = next_loop;
@@ -308,14 +317,14 @@ int main() {
         std::this_thread::sleep_until(next_loop);
         ++loop_count;
 
-        // ── Report (1 Hz) ───────────────────────────────────────────────
+        // Report (1 Hz)
         if (now - last_report >= std::chrono::seconds{1}) {
             last_report = now;
             for (unsigned i = 0; i < kBusCount; ++i) {
                 if (!bus[i].present)
                     continue;
                 const auto& bs = bus[i];
-                printf("CAN%u | ang %6.0f (%5.1f deg) | tgt %6.0f (%5.1f deg) | "
+                printf("bus %u | ang %6.0f (%5.1f deg) | tgt %6.0f (%5.1f deg) | "
                        "vel %6.1f rpm | out %6.0f | turn %d\n",
                        i, bs.last_angle, bs.last_angle * 360.0F / 8192.0F, bs.last_target,
                        bs.last_target * 360.0F / 8192.0F, bs.last_vel_rpm, bs.last_out,

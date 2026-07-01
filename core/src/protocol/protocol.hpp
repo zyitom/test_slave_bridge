@@ -34,7 +34,7 @@ struct CanHeaderLayout {
 struct CanHeaderStandardLayout {
     using CanId = BitfieldMember<8, 11>;
     // HasTimestamp sits in the 2-bit gap [19:21) between CanId and
-    // DataLengthCode — avoiding overlap with DataLengthCode bit 1.
+    // DataLengthCode -- avoiding overlap with DataLengthCode bit 1.
     using HasTimestamp = BitfieldMember<19, 1>;
     using DataLengthCode = BitfieldMember<21, 3>;
 };
@@ -53,6 +53,11 @@ struct UartHeaderLayout {
 
 struct UartHeaderExtendedLayout {
     using DataLengthExtended = BitfieldMember<6, 10>;
+};
+
+struct SessionHeaderLayout {
+    using Type = BitfieldMember<4, 4, data::SessionType>;
+    using Nonce = BitfieldMember<8, 32, uint32_t>;
 };
 
 } // namespace layouts
@@ -89,16 +94,17 @@ struct UartHeaderExtended
     , layouts::UartHeaderLayout
     , layouts::UartHeaderExtendedLayout {};
 
+struct SessionHeader
+    : utility::Bitfield<5>
+    , layouts::SessionHeaderLayout {};
+
 struct GpioHeader : utility::Bitfield<2> {
     enum class PayloadEnum : uint8_t {
-        kDigitalWriteLow = 0b0000,
-        kDigitalWriteHigh = 0b0001,
-        kAnalogWrite = 0b0010,
-        kDigitalRead = 0b0100,
-        kAnalogRead = 0b0110,
-        kDigitalReadResultLow = 0b1000,
-        kDigitalReadResultHigh = 0b1001,
-        kAnalogReadResult = 0b1010,
+        kDigitalLow = 0b0000,
+        kDigitalHigh = 0b0001,
+        kAnalog = 0b0010,
+        kDigitalReadConfig = 0b0100,
+        kAnalogReadConfig = 0b0110,
     };
 
     using PayloadType = utility::BitfieldMember<4, 4, PayloadEnum>;

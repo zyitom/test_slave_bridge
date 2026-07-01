@@ -31,8 +31,21 @@ int main() {
 
 namespace librmcs::firmware {
 
+// Linker-defined bounds of the .ccmram section: load image in FLASH (_siccmram)
+// and run location in CCM (_sccmram.._eccmram). The F4 startup code only copies
+// .data and clears .bss, so the App constructor stands in for the .ccmram copy.
+extern "C" {
+extern uint32_t _siccmram, _sccmram, _eccmram;
+}
+
 App::App() {
     const utility::InterruptLockGuard guard;
+
+    // Copy hot CPU-only forwarding state (serializer + USB batch buffers + CAN TX
+    // rings) into zero-wait CCM before any of those globals are used. The M4 has
+    // no data cache, so the writes land directly; interrupts are masked here.
+    for (uint32_t *dst = &_sccmram, *src = &_siccmram; dst < &_eccmram;)
+        *dst++ = *src++;
 
     HAL_Init();
     SystemClock_Config();

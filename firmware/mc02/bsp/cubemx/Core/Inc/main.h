@@ -51,11 +51,14 @@ extern "C" {
 
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
-void SystemClock_Config(void);
-void MPU_Config(void);
 
 /* USER CODE BEGIN EFP */
-
+// librmcs: app.cpp provides its own main() and drives the generated init/clock
+// functions directly, so expose them here. Kept inside USER CODE so CubeMX
+// regeneration preserves the declarations.
+void SystemClock_Config(void);
+void PeriphCommonClock_Config(void);
+void MPU_Config(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

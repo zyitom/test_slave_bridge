@@ -7,7 +7,7 @@
 
 namespace librmcs::firmware::spi {
 
-// IT mode completion callback — fires when HAL_SPI_TransmitReceive_IT finishes.
+// Completion callback; fires when HAL_SPI_TransmitReceive_DMA finishes.
 extern "C" void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef* hal_spi_handle) {
     if (hal_spi_handle == &hspi2) {
         spi1->it_transfer_complete_callback();

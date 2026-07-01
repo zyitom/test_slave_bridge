@@ -8,6 +8,11 @@
 - `firmware/*/bsp/`：厂商/子模块依赖；除非有意更新子模块，否则视为第三方代码。
 - `.scripts/`：与 CI 对齐的工具脚本（`clang-format-check`、`clang-tidy-check`、`generate_version`）。
 
+## CubeMX BSP 修改纪律
+- `firmware/*/bsp/cubemx/` 下 CubeMX 生成的产物（`Core/`、`USB_DEVICE/`、`cmake/`、`Makefile`、`.mxproject`）禁止 AI 直接修改：下次 Generate 会被覆盖。`.claude/settings.json` 已对这些目录硬禁止 Edit/Write。
+- 任何外设/时钟/中断/DMA 配置变更，AI 必须明确指出应在 CubeMX（或对应 `.ioc` 键）的哪个字段修改，由人工在 CubeMX 改后重新 Generate；严禁绕过 `.ioc` 直接改生成代码。
+- 例外：`.ioc` 与手维护的链接脚本 `*.ld` 仅在用户明确要求时方可由 AI 编辑。
+
 ## 构建、测试与开发命令
 ```bash
 cmake --preset linux-debug -S host

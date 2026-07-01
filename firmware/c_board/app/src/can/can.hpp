@@ -60,38 +60,41 @@ public:
 
         core::utility::assert_always(
             (hal_can_state == HAL_CAN_STATE_READY) || (hal_can_state == HAL_CAN_STATE_LISTENING));
-        core::utility::assert_always((hal_can_instance->RF0R & CAN_RF0R_FMP0) != 0U);
+        // Drain the entire RX FIFO0 within this single pending notification rather
+        // than taking one ISR round-trip per message. bxCAN FIFO0 is 3 deep, so
+        // under bursts this avoids paying the ISR entry/exit cost for every frame.
+        while ((hal_can_instance->RF0R & CAN_RF0R_FMP0) != 0U) {
+            const auto rir = hal_can_instance->sFIFOMailBox[CAN_RX_FIFO0].RIR;
+            const auto rdtr = hal_can_instance->sFIFOMailBox[CAN_RX_FIFO0].RDTR;
 
-        const auto rir = hal_can_instance->sFIFOMailBox[CAN_RX_FIFO0].RIR;
-        const auto rdtr = hal_can_instance->sFIFOMailBox[CAN_RX_FIFO0].RDTR;
+            data::CanDataView data{};
+            data.is_fdcan = false;
+            data.is_extended_can_id = static_cast<bool>(CAN_RI0R_IDE & rir);
+            data.is_remote_transmission = static_cast<bool>(CAN_RI0R_RTR & rir);
 
-        data::CanDataView data{};
-        data.is_fdcan = false;
-        data.is_extended_can_id = static_cast<bool>(CAN_RI0R_IDE & rir);
-        data.is_remote_transmission = static_cast<bool>(CAN_RI0R_RTR & rir);
+            if (data.is_extended_can_id) {
+                data.can_id = ((CAN_RI0R_EXID | CAN_RI0R_STID) & rir) >> CAN_RI0R_EXID_Pos;
+            } else {
+                data.can_id = (CAN_RI0R_STID & rir) >> CAN_TI0R_STID_Pos;
+            }
 
-        if (data.is_extended_can_id) {
-            data.can_id = ((CAN_RI0R_EXID | CAN_RI0R_STID) & rir) >> CAN_RI0R_EXID_Pos;
-        } else {
-            data.can_id = (CAN_RI0R_STID & rir) >> CAN_TI0R_STID_Pos;
+            size_t can_data_length = (CAN_RDT0R_DLC & rdtr) >> CAN_RDT0R_DLC_Pos;
+            if (data.is_remote_transmission)
+                can_data_length = 0;
+
+            alignas(uint32_t) std::array<std::byte, 8> can_data{};
+            const uint32_t rdlr = hal_can_instance->sFIFOMailBox[CAN_RX_FIFO0].RDLR;
+            const uint32_t rdhr = hal_can_instance->sFIFOMailBox[CAN_RX_FIFO0].RDHR;
+            std::memcpy(can_data.data(), &rdlr, sizeof(uint32_t));
+            std::memcpy(can_data.data() + 4, &rdhr, sizeof(uint32_t));
+            data.can_data = {can_data.data(), can_data_length};
+
+            core::utility::assert_always(
+                serializer.write_can(field_id, data)
+                != core::protocol::Serializer::SerializeResult::kInvalidArgument);
+
+            hal_can_instance->RF0R |= CAN_RF0R_RFOM0;
         }
-
-        size_t can_data_length = (CAN_RDT0R_DLC & rdtr) >> CAN_RDT0R_DLC_Pos;
-        if (data.is_remote_transmission)
-            can_data_length = 0;
-
-        alignas(uint32_t) std::array<std::byte, 8> can_data{};
-        const uint32_t rdlr = hal_can_instance->sFIFOMailBox[CAN_RX_FIFO0].RDLR;
-        const uint32_t rdhr = hal_can_instance->sFIFOMailBox[CAN_RX_FIFO0].RDHR;
-        std::memcpy(can_data.data(), &rdlr, sizeof(uint32_t));
-        std::memcpy(can_data.data() + 4, &rdhr, sizeof(uint32_t));
-        data.can_data = {can_data.data(), can_data_length};
-
-        core::utility::assert_always(
-            serializer.write_can(field_id, data)
-            != core::protocol::Serializer::SerializeResult::kInvalidArgument);
-
-        hal_can_instance->RF0R |= CAN_RF0R_RFOM0;
     }
 
     bool try_transmit() {
@@ -152,7 +155,10 @@ private:
     utility::RingBuffer<TransmitMailboxData, 16> transmit_buffer_;
 };
 
-inline constinit Can::Lazy can1{&hcan1, 0, 14};
-inline constinit Can::Lazy can2{&hcan2, 14, 14};
+// CAN TX rings live in zero-wait CCM (.ccmram, copied at boot by App::App()).
+// They are written by the USB downlink path and read here in the forwarding
+// loop, all CPU-only (no DMA touches them), so CCM keeps them off the AHB bus.
+[[gnu::section(".ccmram")]] inline constinit Can::Lazy can1{&hcan1, 0, 14};
+[[gnu::section(".ccmram")]] inline constinit Can::Lazy can2{&hcan2, 14, 14};
 
 } // namespace librmcs::firmware::can

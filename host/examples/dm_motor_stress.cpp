@@ -8,9 +8,10 @@
 #include <span>
 #include <thread>
 
-#include <librmcs/agent/rmcs_board_hpm5321.hpp>
+#include "common/multi_board.hpp"
 
-// DM (Damiao) motor stress test for the HPM5321 bridge.
+// DM (Damiao) motor stress test, on whichever board is connected (uses the
+// board's primary CAN0 + UART0, so it runs on every project board).
 //
 // The bus carries 9 motors. Per the user's setup:
 //   ids 1,2,3,4,5,6,9 are commanded with the trailing byte 0xCD
@@ -67,15 +68,15 @@ void on_sigint(int) { g_running.store(false); }
 
 } // namespace
 
-class DmMotorStress : public librmcs::agent::RmcsBoardHpm5321 {
+class DmMotorStress : public examples::BoardReceiver {
 public:
-    DmMotorStress()
-        : librmcs::agent::RmcsBoardHpm5321{{}, {.dangerously_skip_version_checks = true}} {}
+    void bind(examples::BoardSession* board) { board_ = board; }
 
     void broadcast(const std::array<std::byte, 8>& frame) {
-        auto packet = start_transmit();
-        for (const uint32_t id : k_motor_ids)
-            packet.can0_transmit({.can_id = id, .can_data = frame, .is_fdcan = true});
+        board_->transmit([&](examples::BoardTransmitter& tx) {
+            for (const uint32_t id : k_motor_ids)
+                tx.can(0, {.can_id = id, .can_data = frame, .is_fdcan = true});
+        });
     }
 
     void send_enable() { broadcast(k_enable); }
@@ -83,17 +84,18 @@ public:
 
     // One control round: all 9 commands batched into a single USB packet.
     void send_round() {
-        auto packet = start_transmit();
-        for (const uint32_t id : k_motor_ids) {
-            const std::array<std::byte, 8> frame = {
-                std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0},
-                std::byte{0}, std::byte{0}, std::byte{0}, cmd_byte(id)};
-            packet.can0_transmit({.can_id = id, .can_data = frame, .is_fdcan = true});
-        }
+        board_->transmit([&](examples::BoardTransmitter& tx) {
+            for (const uint32_t id : k_motor_ids) {
+                const std::array<std::byte, 8> frame = {
+                    std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0},
+                    std::byte{0}, std::byte{0}, std::byte{0}, cmd_byte(id)};
+                tx.can(0, {.can_id = id, .can_data = frame, .is_fdcan = true});
+            }
+            if (k_send_uart)
+                tx.uart(0, {.uart_data = k_uart_payload, .idle_delimited = true});
+        });
         tx_frames_.fetch_add(k_motor_ids.size(), std::memory_order::relaxed);
-
         if (k_send_uart) {
-            packet.uart0_transmit({.uart_data = k_uart_payload, .idle_delimited = true});
             uart_tx_msgs_.fetch_add(1, std::memory_order::relaxed);
             uart_tx_bytes_.fetch_add(k_uart_payload.size(), std::memory_order::relaxed);
         }
@@ -129,7 +131,8 @@ public:
     }
 
 private:
-    void can0_receive_callback(const librmcs::data::CanDataView& data) override {
+    void on_can(int bus, const librmcs::data::CanDataView& data) override {
+        (void)bus;
         rx_frames_.fetch_add(1, std::memory_order::relaxed);
         const auto bytes = data.can_data;
         if (bytes.size() < 8)
@@ -150,7 +153,8 @@ private:
         last_sample_.store(packed, std::memory_order::relaxed);
     }
 
-    void uart0_receive_callback(const librmcs::data::UartDataView& data) override {
+    void on_uart(int port, const librmcs::data::UartDataView& data) override {
+        (void)port;
         uart_rx_msgs_.fetch_add(1, std::memory_order::relaxed);
         uart_rx_bytes_.fetch_add(data.uart_data.size(), std::memory_order::relaxed);
     }
@@ -163,15 +167,24 @@ private:
     std::atomic<uint64_t> uart_tx_bytes_{0};
     std::atomic<uint64_t> uart_rx_msgs_{0};
     std::atomic<uint64_t> uart_rx_bytes_{0};
+
+    examples::BoardSession* board_ = nullptr;
 };
 
 int main() {
     std::signal(SIGINT, on_sigint);
 
-    printf("DM motor stress - connecting to HPM5321 bridge...\n");
+    printf("DM motor stress - auto-detecting board...\n");
     DmMotorStress agent;
+    auto board = examples::connect_any(agent);
+    if (!board) {
+        fprintf(stderr, "No compatible board found.\n");
+        return 1;
+    }
+    agent.bind(board.get());
 
-    printf("Connected. Enabling %zu motors...\n", k_motor_ids.size());
+    printf("Connected: %.*s. Enabling %zu motors...\n",
+        static_cast<int>(board->name().size()), board->name().data(), k_motor_ids.size());
     for (int i = 0; i < 5 && g_running.load(); ++i) {
         agent.send_enable();
         std::this_thread::sleep_for(std::chrono::milliseconds{2});

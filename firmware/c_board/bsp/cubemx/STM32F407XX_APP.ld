@@ -61,8 +61,13 @@ MAILBOX (rw)   : ORIGIN = 0x1000FFC0, LENGTH = 64
 FLASH (rx)      : ORIGIN = 0x8010000, LENGTH = 960K
 }
 
-/* Highest address of the user mode stack */
-_estack = ORIGIN(RAM) + LENGTH(RAM);    /* end of RAM */
+/* Highest address of the user mode stack. Placed at the top of CCM (just below
+ * the boot mailbox) instead of SRAM: CCM is zero-wait on the M4 D-bus and is not
+ * reachable by DMA, so every exception entry/exit and ISR call frame stays off
+ * the AHB bus and never contends with the UART/SPI DMA engines. The bootloader
+ * reloads MSP from the app vector table on jump, so this takes effect. No DMA
+ * target ever lives on the stack (all DMA buffers are static SRAM members). */
+_estack = ORIGIN(CCMRAM) + LENGTH(CCMRAM);    /* top of CCM, below the mailbox */
 /* Generate a link error if heap and stack don't fit into RAM */
 _Min_Heap_Size = 0x200;      /* required amount of heap  */
 _Min_Stack_Size = 0x400; /* required amount of stack */

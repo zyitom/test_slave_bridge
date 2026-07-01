@@ -22,7 +22,7 @@ namespace librmcs::firmware::usb {
 
 class UsbDescriptors {
 public:
-    UsbDescriptors() { compute_pid_and_serial(); }
+    UsbDescriptors() { compute_serial(); }
 
     const uint8_t* get_device_descriptor() const {
         return reinterpret_cast<const uint8_t*>(&device_descriptor_);
@@ -64,18 +64,9 @@ public:
     }
 
 private:
-    void compute_pid_and_serial() {
-        // Compute PID via CRC-16 over the 12-byte unique device ID.
-        uint16_t pid = 0xFFFF;
-        const auto* uid_data = reinterpret_cast<const uint8_t*>(UID_BASE);
-        for (size_t i = 0; i < 12u; ++i) {
-            pid ^= uid_data[i];
-            for (int j = 0; j < 8; ++j)
-                pid = (pid & 1u) ? static_cast<uint16_t>((pid >> 1u) ^ 0x8408u)
-                                 : static_cast<uint16_t>(pid >> 1u);
-        }
-        device_descriptor_.idProduct = pid;
-
+    void compute_serial() {
+        // idProduct is the fixed mc02 board-type PID (0xD402), matching the bootloader
+        // and the DFU image suffix. Per-device identity lives in the serial number below.
         std::array<uint32_t, 3> uid{HAL_GetUIDw0(), HAL_GetUIDw1(), HAL_GetUIDw2()};
         mix_uid_entropy(uid);
 
@@ -117,7 +108,7 @@ private: // Device Descriptor
         .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
 
         .idVendor = 0xA11C,
-        .idProduct = 0x0000, // Overwritten in compute_pid_and_serial
+        .idProduct = 0xD402,
         .bcdDevice = 0x0100,
 
         .iManufacturer = 0x01,
