@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 
 #include <hpm_common.h>
@@ -48,6 +49,11 @@ constexpr GpioPin kLedBluePin = make_gpio_pin<gpiom_soc_gpio0, 'A', 29, false>()
 constexpr GpioPin kLedGreenPin = make_gpio_pin<gpiom_soc_gpio0, 'A', 30, false>();
 constexpr GpioPin kLedRedPin = make_gpio_pin<gpiom_soc_gpio0, 'A', 31, false>();
 
+// This board has no per-CAN indicator LEDs: the table is empty and the shared
+// Led driver skips the indicator logic entirely.
+constexpr std::array<GpioPin, 0> kCanIndicatorPins{};
+
 void init_led_pins();
+void init_can_indicator_pins();
 
 } // namespace librmcs::firmware::board

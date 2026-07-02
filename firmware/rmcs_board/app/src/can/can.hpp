@@ -115,9 +115,11 @@ public:
         // 1e9 / ptpc_freq (6.25 ns), so reported time runs slow. Converting
         // reported nanoseconds to microseconds by dividing by
         // (ptpc_freq_MHz * step) instead of 1000 cancels the error exactly
-        // (160 * 6 = 960 at 160 MHz). See handle_uplink().
+        // (160 * 6 = 960 at 160 MHz). handle_uplink() bakes this divisor in as
+        // the compile-time kTsNsPerUs so the ISR needs no runtime division --
+        // verify the clock tree still matches it.
         const uint32_t ptpc_step_ns = 1'000'000'000U / ptpc_freq;
-        ts_ns_per_us_ = (ptpc_freq / 1'000'000U) * ptpc_step_ns;
+        core::utility::assert_always((ptpc_freq / 1'000'000U) * ptpc_step_ns == kTsNsPerUs);
 
         static bool ptpc_timebase_started = false;
         if (!ptpc_timebase_started) {
@@ -152,8 +154,10 @@ public:
     // Forwarding hot path -- defined out-of-line in can.cpp, in the ILM (.fast)
     // section, to remove FLASH-XIP fetch jitter from the worst case. See can.cpp
     // for the rationale and why they are not inline-in-class.
+    // handle_uplink reads (at most) one frame from RX FIFO0 and returns whether
+    // a frame was consumed, so the ISR can drain the FIFO in a loop.
     void handle_downlink(const data::CanDataView& data);
-    void handle_uplink(
+    bool handle_uplink(
         core::protocol::FieldId field_id, core::protocol::Serializer& serializer);
     void irq_handler();
 
@@ -179,12 +183,15 @@ private:
         }
     }
 
+    // Divisor that turns a PTPC reported-nanosecond count into true
+    // microseconds; fixed at compile time (960 = 160 MHz AHB * 6 ns step) so
+    // the ISR-side conversion uses only constant divisions (multiply-and-shift
+    // after GCC), and asserted against the real clock tree in the constructor.
+    static constexpr uint32_t kTsNsPerUs = 960;
+
     const data::DataId data_id_;
     MCAN_Type* can_base_;
     const bool canfd_;
-    // Divisor that turns a PTPC reported-nanosecond count into true
-    // microseconds (960 at 160 MHz); set from the PTPC clock in the constructor.
-    uint32_t ts_ns_per_us_ = 1000;
 };
 
 // Everything below is built from the board's CAN port table (board::kCanPorts),

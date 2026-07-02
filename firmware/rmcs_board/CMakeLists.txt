@@ -12,8 +12,15 @@ set(BOARD_SEARCH_PATH "${CMAKE_CURRENT_SOURCE_DIR}/boards" CACHE PATH "Board sea
 # extensions, so the umbrella "b" here is redundant. Keeping it makes the arch
 # string "rv32imafdcb_..._zba_zbb_zbc_zbs", which recent binutils reject ("cannot
 # find default versions of the ISA extension `b'"). Drop the redundant "b".
-set(RV_ARCH "rv32imafdc" CACHE STRING "RISC-V arch")
-set(RV_ABI "ilp32d" CACHE STRING "RISC-V ABI")
+#
+# Soft-float on purpose (was rv32imafdc / ilp32d): the firmware and core use no
+# floating point anywhere, yet with a hard-float ABI the SDK's preemptive ISR
+# wrapper saves/restores 20 caller-saved FP registers as doubles on EVERY
+# interrupt entry/exit (SAVE_FPU_CONTEXT in hpm_interrupt.h) -- pure forwarding
+# latency spent on nothing. Without F/D, __riscv_flen is undefined and the FPU
+# context code vanishes. Revert if on-board float math ever becomes necessary.
+set(RV_ARCH "rv32imac" CACHE STRING "RISC-V arch")
+set(RV_ABI "ilp32" CACHE STRING "RISC-V ABI")
 set(BOARD_BOOTLOADER_MODE "auto" CACHE STRING "Bootloader mode (auto / manual)")
 set_property(CACHE BOARD_BOOTLOADER_MODE PROPERTY STRINGS auto manual)
 

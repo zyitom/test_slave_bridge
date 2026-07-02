@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 
 #include <hpm_common.h>
@@ -38,9 +39,14 @@ constexpr GpioPin kLedBluePin = make_gpio_pin<gpiom_soc_gpio0, 'A', 26, false>()
 constexpr GpioPin kLedGreenPin = make_gpio_pin<gpiom_soc_gpio0, 'A', 27, false>();
 constexpr GpioPin kLedRedPin = make_gpio_pin<gpiom_soc_gpio0, 'A', 28, false>();
 
-// CAN bus indicator LEDs — one per CAN controller, active-high (LED anode to pin).
-constexpr GpioPin kCan0IndicatorPin = make_gpio_pin<gpiom_soc_gpio0, 'B', 14, true>();
-constexpr GpioPin kCan1IndicatorPin = make_gpio_pin<gpiom_soc_gpio0, 'B', 15, true>();
+// CAN bus indicator LEDs -- one per CAN controller, in the same logical order
+// as kCanPorts; active-high (LED anode to pin). The shared Led driver builds
+// the indicator logic from this table, so a board without indicator LEDs just
+// provides an empty table.
+constexpr std::array kCanIndicatorPins{
+    make_gpio_pin<gpiom_soc_gpio0, 'B', 14, true>(),
+    make_gpio_pin<gpiom_soc_gpio0, 'B', 15, true>(),
+};
 
 void init_led_pins();
 void init_can_indicator_pins();

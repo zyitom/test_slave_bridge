@@ -1,5 +1,6 @@
 #include "firmware/mc02/app/src/can/can.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -100,11 +101,17 @@ void Can::handle_uplink(data::DataId field_id, core::protocol::Serializer& seria
         size_t can_data_length = (rdtr & 0x000F0000U) >> 16;
         if (can_data.is_remote_transmission)
             can_data_length = 0;
-        // This bus never carries more than 8 data bytes. Clamp defensively: an
-        // unexpected FD length (DLC code 9..15 -> 12..64 bytes) must not overrun the
-        // 8-byte staging buffer below.
-        else if (can_data_length > 8)
-            can_data_length = 8;
+        // The DLC arrives raw from the wire. An FD frame with DLC 9..15 holds
+        // 12..64 data bytes, but the RX element stores only 8 of them
+        // (FDCAN_DATA_BYTES_8) and the wire protocol caps at 8 anyway, so
+        // forwarding would deliver silently truncated data -- drop the frame
+        // instead, but keep draining the FIFO. A classic frame with DLC 9..15
+        // is legal and means 8 data bytes per the CAN spec.
+        if (can_data.is_fdcan && can_data_length > 8) [[unlikely]] {
+            hal_can_instance->RXF0A = get_index;
+            continue;
+        }
+        can_data_length = std::min<size_t>(can_data_length, 8);
 
         alignas(uint32_t) std::array<std::byte, 8> payload{};
         const uint32_t rdlr = rx_mailbox->RDLR;

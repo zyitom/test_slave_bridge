@@ -51,11 +51,19 @@ private:
         constexpr auto ok = HAL_OK;
         core::utility::assert_always(HAL_FDCAN_ConfigFilter(hal_can_handle_, &filter_config) == ok);
 
-        filter_config.IdType = FDCAN_EXTENDED_ID;
-        filter_config.FilterIndex = hal_filter_index + 1;
-        filter_config.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
-
-        core::utility::assert_always(HAL_FDCAN_ConfigFilter(hal_can_handle_, &filter_config) == ok);
+        // Extended-ID frames are accepted through the global filter below, NOT a
+        // dedicated filter element: CubeMX configures ExtFiltersNbr = 0, so no
+        // extended filter list exists in the message RAM -- the HAL validates the
+        // index only via assert_param (compiled out), so a ConfigFilter call here
+        // would silently scribble the element into RX FIFO0's RAM area and never
+        // take effect. Making the accept-all policy explicit in GFC also stops
+        // relying on the register's reset value. Remote frames keep passing
+        // through normal filtering; handle_uplink() normalizes them to empty.
+        core::utility::assert_always(
+            HAL_FDCAN_ConfigGlobalFilter(
+                hal_can_handle_, FDCAN_ACCEPT_IN_RX_FIFO0, FDCAN_ACCEPT_IN_RX_FIFO0,
+                FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE)
+            == ok);
 
         // Hardware RX timestamping: internal 16-bit counter, one tick = one nominal
         // CAN bit time = 1 us at the 1 Mbit/s arbitration rate. Must be configured

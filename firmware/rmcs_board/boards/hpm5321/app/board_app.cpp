@@ -66,6 +66,10 @@ void init_led_pins() {
     }
 }
 
+void init_can_indicator_pins() {
+    // No per-CAN indicator LEDs on this board.
+}
+
 bool usb_use_high_speed() { return true; }
 
 SDK_DECLARE_EXT_ISR_M(IRQn_MCAN0, can0_isr)

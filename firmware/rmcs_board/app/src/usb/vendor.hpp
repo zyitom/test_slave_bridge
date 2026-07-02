@@ -57,6 +57,10 @@ public:
 
     void deactivate_session() { session_established_ = false; }
 
+    // True once the host session handshake (kStart nonce + keepalive lease) is up
+    // and data is actually being forwarded -- distinct from mere USB enumeration.
+    bool session_established() const { return session_established_; }
+
     void handle_downlink(std::span<const std::byte> buffer, bool finished) {
         deserializer_.feed(buffer);
         if (finished)

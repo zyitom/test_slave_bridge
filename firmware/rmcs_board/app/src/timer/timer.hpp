@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 #include <hpm_clock_drv.h>
@@ -7,7 +8,6 @@
 #include <hpm_soc.h>
 
 #include "core/src/utility/assert.hpp"
-#include "firmware/rmcs_board/app/src/led/led.hpp"
 #include "firmware/rmcs_board/app/src/utility/lazy.hpp"
 
 namespace librmcs::firmware::timer {
@@ -32,15 +32,23 @@ public:
         enable_mchtmr_irq();
     }
 
+    // Deliberately minimal: the machine timer interrupt (MTIP) bypasses the
+    // PLIC priority threshold, so once the nested-IRQ wrapper re-enables
+    // mstatus.MIE it can preempt even the priority-3 CAN ISR. Any work done
+    // here is worst-case latency added to the forwarding hot path -- the LED
+    // bookkeeping is therefore driven from the main loop off tick_count().
     void irq_handler() {
-        tick_counter_ = tick_counter_ + 1;
-        led::led->update(tick_counter_);
+        tick_counter_.store(
+            tick_counter_.load(std::memory_order::relaxed) + 1, std::memory_order::relaxed);
 
         do {
             next_tick_compare_value_ += kTickPeriodTicks;
         } while (next_tick_compare_value_ <= timestamp64_quarter_us());
         mchtmr_set_compare_value(HPM_MCHTMR, next_tick_compare_value_);
     }
+
+    // 1 kHz tick counter for main-loop paced work (LED patterns).
+    uint32_t tick_count() const { return tick_counter_.load(std::memory_order::relaxed); }
 
     static uint32_t timestamp_quarter_us() {
         // Read only the lower 32 bits of MTIME with a single 32-bit load.
@@ -68,7 +76,8 @@ public:
 
 private:
     uint64_t next_tick_compare_value_ = 0;
-    uint32_t tick_counter_ = 0;
+    std::atomic<uint32_t> tick_counter_{0};
+    static_assert(std::atomic<uint32_t>::is_always_lock_free);
 };
 
 inline constinit Timer::Lazy timer;

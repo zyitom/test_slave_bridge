@@ -15,7 +15,8 @@
 # re-enumerate it into DFU mode automatically.
 #
 # Usage:
-#   ./flash-dual.sh
+#   ./flash-dual.sh                 # builds the release preset, then flashes
+#   PRESET=debug ./flash-dual.sh    # build/flash a debuggable (-O0) image instead
 #
 set -euo pipefail
 
@@ -28,9 +29,17 @@ command -v dfu-util >/dev/null 2>&1 || {
     exit 1
 }
 
+# Build the exact image about to be flashed. Flashing is deployment, so this
+# defaults to the release preset (optimized + NDEBUG). The presets share one
+# build dir, so switching PRESET triggers a full reconfigure.
+PRESET="${PRESET:-release}"
+: "${GNURISCV_TOOLCHAIN_PATH:?GNURISCV_TOOLCHAIN_PATH must point to the RISC-V toolchain root}"
+echo ">> Building rmcs_board_app (preset: $PRESET, BOARD=hpm5321_dual_can)"
+cmake --preset "$PRESET" -S "$SCRIPT_DIR/firmware/rmcs_board" -DBOARD=hpm5321_dual_can
+cmake --build "$SCRIPT_DIR/firmware/rmcs_board/build" --target rmcs_board_app
+
 if [[ ! -f "$DFU_IMAGE" ]]; then
-    echo "error: $DFU_IMAGE not found." >&2
-    echo "build it first:  cmake --build firmware/rmcs_board/build" >&2
+    echo "error: $DFU_IMAGE not found after the build." >&2
     exit 1
 fi
 

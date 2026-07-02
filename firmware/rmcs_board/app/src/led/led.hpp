@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 #include "firmware/rmcs_board/app/src/led/gpio_led.hpp"
@@ -72,8 +74,8 @@ public:
         // brightness). Color language mirrors the c_board indicator so both
         // boards read the same; yellow is red+green and cyan is green+blue, and
         // all three channels are never lit at once so the status stays readable:
-        //   steady green     = healthy, host connected
-        //   slow green blink  = alive, waiting for host
+        //   steady green     = host session established (data forwarding)
+        //   slow green blink  = alive, waiting for host session
         //   yellow blink      = uplink (board -> host) buffer full
         //   cyan blink        = downlink (host -> board) buffer full
         //   yellow/cyan alt   = both directions congested
@@ -85,15 +87,16 @@ public:
         } else if (downlink_full) {
             led_backend->set_value(0, on ? 255 : 0, on ? 255 : 0);
         } else if (host_connected_.load(std::memory_order::relaxed)) {
-            // Connected to the host and healthy: steady green.
+            // Host session established and healthy: steady green.
             led_backend->set_value(0, 255, 0);
         } else {
-            // No host yet: slow green blink (~1Hz) = alive, waiting for host.
+            // No host session yet: slow green blink (~1Hz) = alive, waiting for host.
             led_backend->set_value(0, (tick & 512U) ? 255 : 0, 0);
         }
 
         // CAN bus indicator light language — one independent LED per CAN
-        // controller (PB14=CAN0, PB15=CAN1).  Four states the controller can
+        // controller, taken from the board's kCanIndicatorPins table (empty on
+        // boards without indicator LEDs).  Four states the controller can
         // actually distinguish, each a clearly different, easy-to-read pattern:
         //   off          = healthy / no errors
         //   slow blink   = NO-ACK: nobody acknowledged -- alone on the bus, the
@@ -105,7 +108,7 @@ public:
         //   solid on     = BUS-OFF: too many errors; controller recovering/offline
         // The CAN ISR refreshes the per-controller fault on every error
         // interrupt; it decays here ~5 s after the last error, returning to off.
-        for (uint8_t i = 0; i < 2; ++i) {
+        for (size_t i = 0; i < kCanIndicatorCount; ++i) {
             uint16_t timeout = can_fault_timeout_[i].load(std::memory_order::relaxed);
             if (timeout) {
                 --timeout;
@@ -125,8 +128,7 @@ public:
             case CanFault::kBusOff: led_on = true; break;  // solid
             case CanFault::kNone: led_on = false; break;
             }
-            (i == 0 ? board::kCan0IndicatorPin : board::kCan1IndicatorPin)
-                .set_active(led_on);
+            board::kCanIndicatorPins[i].set_active(led_on);
         }
     }
 
@@ -141,7 +143,7 @@ public:
     // bus state change (warning/passive) carrying no fresh LEC does not blank a
     // fault that was reported moments earlier.
     void report_can_fault(uint8_t can_index, CanFault fault) {
-        if (can_index >= 2)
+        if (can_index >= kCanIndicatorCount)
             return;
         can_fault_timeout_[can_index].store(kCanFaultTimeoutTicks, std::memory_order::relaxed);
         if (fault != CanFault::kNone)
@@ -149,12 +151,14 @@ public:
     }
 
 private:
+    static constexpr size_t kCanIndicatorCount = board::kCanIndicatorPins.size();
+
     // CAN fault indicator state — ISR-safe via atomic stores.  Each CAN
     // controller gets its own fault/timeout pair, refreshed by the CAN ISR on
     // every error interrupt.
     static constexpr uint16_t kCanFaultTimeoutTicks = 5000;  // 5 s at 1 kHz
-    std::atomic<uint16_t> can_fault_timeout_[2]{};
-    std::atomic<CanFault> can_fault_[2]{};
+    std::array<std::atomic<uint16_t>, kCanIndicatorCount> can_fault_timeout_{};
+    std::array<std::atomic<CanFault>, kCanIndicatorCount> can_fault_{};
 
     std::atomic<uint16_t> uplink_full_reset_counter_{0};
     std::atomic<uint16_t> downlink_full_reset_counter_{0};

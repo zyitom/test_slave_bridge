@@ -5,6 +5,7 @@
 
 #include <common/tusb_types.h>
 #include <device/usbd.h>
+#include <hpm_interrupt.h>
 
 #include "core/src/protocol/serializer.hpp"
 #include "firmware/rmcs_board/app/src/utility/boot_mailbox.hpp"
@@ -15,6 +16,15 @@ core::protocol::Serializer& get_serializer() { return vendor->serializer(); }
 
 // TinyUSB device callbacks
 extern "C" {
+
+// USB0 interrupt vector. The HPM SDK leaves the concrete ISR in the example
+// family.c (which this project does not build), so bind it here in app code
+// instead of patching the SDK's dcd_hpm.c -- this keeps the hpm_sdk submodule
+// pristine across version bumps. dcd_int_handler is tinyusb's device ISR entry.
+void dcd_int_handler(uint8_t rhport);
+
+SDK_DECLARE_EXT_ISR_M(IRQn_USB0, rmcs_usb0_isr)
+void rmcs_usb0_isr(void) { dcd_int_handler(0); }
 
 void tud_vendor_rx_cb(uint8_t itf, const uint8_t* buffer, uint16_t size) {
     if (itf != 0) [[unlikely]]

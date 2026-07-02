@@ -74,7 +74,7 @@ void init_led_pins() {
 }
 
 void init_can_indicator_pins() {
-    for (const auto& pin : {kCan0IndicatorPin, kCan1IndicatorPin}) {
+    for (const auto& pin : kCanIndicatorPins) {
         pin.configure_controller();
         pin.configure_ioc_function();
         pin.configure_pad_control(IOC_PAD_PAD_CTL_PE_SET(1) | IOC_PAD_PAD_CTL_PS_SET(0));

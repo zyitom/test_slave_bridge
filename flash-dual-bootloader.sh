@@ -18,7 +18,8 @@
 # Wiring: connect the J-Link to the board's JTAG header (TCK/TMS/TDI/TDO/nRST/GND).
 #
 # Usage:
-#   ./flash-dual-bootloader.sh
+#   ./flash-dual-bootloader.sh                 # builds the release preset, then flashes
+#   PRESET=debug ./flash-dual-bootloader.sh    # flash a debuggable bootloader instead
 #   OPENOCD=/path/to/openocd ./flash-dual-bootloader.sh
 #
 set -euo pipefail
@@ -35,9 +36,17 @@ command -v "$OPENOCD_BIN" >/dev/null 2>&1 || {
     echo "       set OPENOCD=/path/to/openocd (e.g. the one shipped with the HPM toolchain)." >&2
     exit 1
 }
+
+# Build the exact bootloader about to be flashed (release by default; the
+# presets share one build dir, so switching PRESET triggers a full reconfigure).
+PRESET="${PRESET:-release}"
+: "${GNURISCV_TOOLCHAIN_PATH:?GNURISCV_TOOLCHAIN_PATH must point to the RISC-V toolchain root}"
+echo ">> Building rmcs_board_bootloader (preset: $PRESET, BOARD=hpm5321_dual_can)"
+cmake --preset "$PRESET" -S "$SCRIPT_DIR/firmware/rmcs_board" -DBOARD=hpm5321_dual_can
+cmake --build "$SCRIPT_DIR/firmware/rmcs_board/build" --target rmcs_board_bootloader
+
 if [[ ! -f "$BL_BIN" ]]; then
-    echo "error: $BL_BIN not found." >&2
-    echo "build it first:  cmake --build firmware/rmcs_board/build" >&2
+    echo "error: $BL_BIN not found after the build." >&2
     exit 1
 fi
 

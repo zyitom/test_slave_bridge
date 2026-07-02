@@ -1,5 +1,6 @@
 #include "firmware/rmcs_board/app/src/can/can.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
 
@@ -50,13 +51,30 @@ void Can::handle_downlink(const data::CanDataView& data) {
 }
 
 ATTR_PLACE_AT(".fast")
-void Can::handle_uplink(
+bool Can::handle_uplink(
     core::protocol::FieldId field_id, core::protocol::Serializer& serializer) {
     mcan_rx_message_t rx;
-    core::utility::assert_always(mcan_read_rxfifo(can_base_, 0, &rx) == status_success);
+    if (mcan_read_rxfifo(can_base_, 0, &rx) != status_success)
+        return false;
+
+    // rx.dlc is the raw 4-bit DLC from the wire, not a byte count, and every
+    // value 0-15 can legally arrive from other bus nodes -- so it must be
+    // normalized here instead of trusted downstream (the serializer rejects
+    // out-of-contract views, and that rejection must not translate into an
+    // assert on externally-controlled input):
+    //   - Remote frames carry no data field; their DLC encodes the requested
+    //     length, which the wire protocol cannot express. Forward them empty.
+    //   - Classic frames may carry DLC 9-15, which the CAN spec says to treat
+    //     as 8 data bytes.
+    //   - FD frames with DLC > 8 hold 12-64 data bytes. The RX element data
+    //     field is 8 bytes, so the hardware stored the payload truncated, and
+    //     the wire protocol caps at 8 bytes anyway -- forwarding would deliver
+    //     silently corrupted data. Drop the frame (but keep draining).
+    if (rx.canfd_frame && rx.dlc > 8) [[unlikely]]
+        return true;
+    const size_t data_length = rx.rtr ? 0 : std::min<size_t>(rx.dlc, 8);
 
     data::CanDataView data;
-    const size_t data_length = rx.dlc;
     data.is_fdcan = rx.canfd_frame;
     data.is_extended_can_id = rx.use_ext_id;
     data.is_remote_transmission = rx.rtr;
@@ -65,28 +83,39 @@ void Can::handle_uplink(
 
     // 64-bit TSU timestamp captured at SOF from the shared PTPC0 timebase.
     // PTPC delivers an IEEE-1588 {seconds:nanoseconds} pair (high 32 bits =
-    // seconds, low 32 bits = nanoseconds in [0, 1e9)); recombine into a
-    // single nanosecond count, then divide by ts_ns_per_us_ (= 960 at
-    // 160 MHz, not 1000) to convert to microseconds and undo the PTPC
-    // digital-step error in one step. The result is truncated to 32 bits for
-    // the wire: it wraps every ~71.6 min, but the host only uses deltas,
-    // which are wrap-safe. status_mcan_timestamp_not_exist (frame not matched
-    // by a sync filter) leaves the field as std::nullopt.
+    // seconds, low 32 bits = nanoseconds in [0, 1e9)); dividing reported
+    // nanoseconds by kTsNsPerUs (= 960 at 160 MHz, not 1000) converts to
+    // microseconds and undoes the PTPC digital-step error in one step.
+    //
+    // The conversion is deliberately 32-bit only: RV32 has no 64-bit divide
+    // instruction, so a 64/32 division here would become a __udivdi3 library
+    // loop (~hundreds of cycles) inside the highest-priority ISR. With the
+    // seconds and nanoseconds words kept apart,
+    //   us = sec * (1e9 / 960) + sec * (640 / 960 == 2/3) + ns / 960
+    // needs only constant divisions, which GCC lowers to multiply-and-shift.
+    // Versus the exact quotient this truncates at most 1 us per conversion
+    // and the error does not accumulate. The result wraps every ~71.6 min;
+    // the host only uses deltas, which are wrap-safe.
+    // status_mcan_timestamp_not_exist (frame not matched by a sync filter)
+    // leaves the field as std::nullopt.
     mcan_timestamp_value_t ts_value;
     if (mcan_get_timestamp_from_received_message(can_base_, &rx, &ts_value) == status_success
         && ts_value.is_64bit) {
-        const uint64_t raw = ts_value.ts_64bit;
-        const uint64_t reported_ns =
-            static_cast<uint64_t>(static_cast<uint32_t>(raw >> 32)) * 1'000'000'000ULL
-            + static_cast<uint32_t>(raw);
-        data.timestamp_us = static_cast<uint32_t>(reported_ns / ts_ns_per_us_);
+        const auto sec = static_cast<uint32_t>(ts_value.ts_64bit >> 32);
+        const auto ns = static_cast<uint32_t>(ts_value.ts_64bit);
+        data.timestamp_us = sec * (1'000'000'000U / kTsNsPerUs) + (sec * 2U) / 3U
+                          + ns / kTsNsPerUs;
     }
 
     const auto result = serializer.write_can(field_id, data);
     if (result == core::protocol::Serializer::SerializeResult::kBadAlloc) [[unlikely]]
         led::led->uplink_buffer_full();
+    // Unreachable for wire input after the normalization above; guards only
+    // against internal contract regressions.
     core::utility::assert_always(
         result != core::protocol::Serializer::SerializeResult::kInvalidArgument);
+
+    return true;
 }
 
 ATTR_PLACE_AT(".fast")
@@ -96,8 +125,20 @@ void Can::irq_handler() {
     if (!flags) [[unlikely]]
         return;
 
-    if (flags & MCAN_INT_RXFIFO0_NEW_MSG) [[likely]]
-        handle_uplink(data_id_, usb::get_serializer());
+    // Clear the flags before draining: IR is write-1-to-clear, and RF0N set by
+    // a frame arriving mid-handler would be wiped by a clear at the end while
+    // the frame stays in the FIFO -- stranded until the next frame happens to
+    // arrive. Cleared up front, such a frame re-pends the interrupt and the
+    // ISR simply runs again.
+    mcan_clear_interrupt_flags(can_base_, flags);
+
+    if (flags & MCAN_INT_RXFIFO0_NEW_MSG) [[likely]] {
+        // Drain the FIFO completely: RF0N is a status bit, not a counter, so
+        // one interrupt may stand for several buffered frames.
+        auto& serializer = usb::get_serializer();
+        while (handle_uplink(data_id_, serializer)) {
+        }
+    }
 
     if (flags & (MCAN_INT_BUS_OFF_STATUS | MCAN_INT_WARNING_STATUS
                  | MCAN_INT_ERROR_PASSIVE
@@ -131,8 +172,6 @@ void Can::irq_handler() {
         const uint8_t can_idx = (data_id_ == data::DataId::kCan0) ? 0U : 1U;
         led::led->report_can_fault(can_idx, fault);
     }
-
-    mcan_clear_interrupt_flags(can_base_, flags);
 }
 
 } // namespace librmcs::firmware::can

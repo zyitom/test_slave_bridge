@@ -81,6 +81,13 @@ public:
             size_t can_data_length = (CAN_RDT0R_DLC & rdtr) >> CAN_RDT0R_DLC_Pos;
             if (data.is_remote_transmission)
                 can_data_length = 0;
+            // The DLC arrives raw from the wire and other nodes may legally send
+            // classic frames with DLC 9-15, which the CAN spec says to treat as 8
+            // data bytes. Clamp so a foreign frame cannot push an out-of-contract
+            // view into the serializer -- its rejection would trip the assert
+            // below and halt the whole board on externally-controlled input.
+            else if (can_data_length > 8)
+                can_data_length = 8;
 
             alignas(uint32_t) std::array<std::byte, 8> can_data{};
             const uint32_t rdlr = hal_can_instance->sFIFOMailBox[CAN_RX_FIFO0].RDLR;
