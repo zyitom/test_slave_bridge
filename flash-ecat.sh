@@ -11,8 +11,10 @@
 # interface is detached automatically.
 #
 # Usage:
-#   ./flash-ecat.sh                   # builds the debug preset, then flashes
-#   PRESET=release ./flash-ecat.sh    # optimized image
+#   ./flash-ecat.sh                   # builds the release preset, then flashes
+#   PRESET=debug ./flash-ecat.sh      # debuggable (-O0/-Og) image -- NOTE: the
+#                                     # PDI ISR and SSC stack get several times
+#                                     # slower; never measure latency on debug
 #   LOOPBACK=1 ./flash-ecat.sh        # P1 bring-up image (core1 = lossless echo,
 #                                     # pairs with host/build/examples/ecat_stream_latency)
 #
@@ -28,7 +30,7 @@ command -v dfu-util >/dev/null 2>&1 || {
     exit 1
 }
 
-PRESET="${PRESET:-debug}"
+PRESET="${PRESET:-release}"
 : "${GNURISCV_TOOLCHAIN_PATH:?GNURISCV_TOOLCHAIN_PATH must point to the RISC-V toolchain root}"
 LOOPBACK_FLAG="OFF"
 [[ "${LOOPBACK:-0}" != "0" ]] && LOOPBACK_FLAG="ON"
@@ -50,7 +52,8 @@ echo ">> DFU devices currently visible:"
 dfu-util -l 2>/dev/null | grep -i "a11c:a903" || \
     echo "   (none in DFU mode yet; dfu-util will try to detach a running app)"
 
-dfu-util -d "$DFU_ID" -a 0 -D "$DFU_IMAGE"
+echo ">> Flashing needs root to access the DFU USB device; you may be asked for your password."
+sudo dfu-util -d "$DFU_ID" -a 0 -D "$DFU_IMAGE"
 
 echo ">> Done. The bootloader verifies the image and resets into the app."
 echo "   (A 'lost device' / status-read error from dfu-util at the end is normal.)"

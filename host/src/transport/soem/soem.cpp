@@ -25,6 +25,7 @@
 
 # include <algorithm>
 # include <atomic>
+# include <chrono>
 # include <cstddef>
 # include <cstdint>
 # include <cstring>
@@ -38,6 +39,7 @@
 # include <string_view>
 # include <thread>
 # include <utility>
+# include <vector>
 
 # include <soem/ethercat.h>
 
@@ -60,7 +62,7 @@ constexpr std::size_t kChunkSize = librmcs::ecat::kPdChunkSize;
 // takes it once per poll.
 class LockedByteRing {
 public:
-    static constexpr std::size_t kSize = 64 * 1024; // power of two
+    static constexpr std::size_t kSize = std::size_t{64} * 1024; // power of two
 
     bool try_push(std::span<const std::byte> data) noexcept {
         const std::scoped_lock guard{mutex_};
@@ -165,9 +167,9 @@ public:
                 "EtherCAT slave refused OPERATIONAL (AL status 0x{:04X})",
                 ec_slave[1].ALstatuscode)};
 
-        expected_wkc_ = ec_group[0].outputsWKC * 2 + ec_group[0].inputsWKC;
+        expected_wkc_ = (ec_group[0].outputsWKC * 2) + ec_group[0].inputsWKC;
         logger_.info(
-            "EtherCAT link up on \"{}\": slave \"{}\", {}B chunks, expected WKC {}", ifname,
+            R"(EtherCAT link up on "{}": slave "{}", {}B chunks, expected WKC {})", ifname,
             ec_slave[1].name, kChunkSize, expected_wkc_);
 
         if (options.thread_setup) {
@@ -195,12 +197,23 @@ public:
         stop_.store(true, std::memory_order_relaxed);
         if (cycle_thread_.joinable())
             cycle_thread_.join();
+        logger_.info(
+            "EtherCAT link closing: {} cycles total, {} wkc errors", total_cycles_,
+            total_wkc_errors_);
         ec_slave[0].state = EC_STATE_INIT;
         ec_writestate(0);
         ec_close();
     }
 
     std::unique_ptr<TransportBuffer> acquire_transmit_buffer() noexcept override {
+        {
+            const std::scoped_lock guard{buffer_pool_mutex_};
+            if (!buffer_pool_.empty()) {
+                auto buffer = std::move(buffer_pool_.back());
+                buffer_pool_.pop_back();
+                return buffer;
+            }
+        }
         return std::make_unique<SoemBuffer>();
     }
 
@@ -217,10 +230,11 @@ public:
                 return;
             std::this_thread::yield();
         }
+        recycle_buffer(std::move(buffer));
     }
 
     void release_transmit_buffer(std::unique_ptr<TransportBuffer> buffer) override {
-        buffer.reset();
+        recycle_buffer(std::move(buffer));
     }
 
     void receive(std::function<void(std::span<const std::byte>)> callback) override {
@@ -234,12 +248,28 @@ public:
     }
 
 private:
+    void recycle_buffer(std::unique_ptr<TransportBuffer> buffer) {
+        if (!buffer)
+            return;
+        const std::scoped_lock guard{buffer_pool_mutex_};
+        if (buffer_pool_.size() < kBufferPoolLimit)
+            buffer_pool_.push_back(std::move(buffer));
+    }
+
     void cycle_loop() {
-        int wkc_error_streak = 0;
+        using Clock = std::chrono::steady_clock;
+
+        uint32_t wkc_error_streak = 0;
+        Clock::time_point window_start = Clock::now();
+        uint64_t window_cycles = 0;
+        uint64_t window_wkc_errors = 0;
+
         while (!stop_.load(std::memory_order_relaxed)) {
             endpoint_.build_own_chunk(outputs_, transmit_ring_);
             ec_send_processdata();
             const int wkc = ec_receive_processdata(EC_TIMEOUTRET);
+            total_cycles_++;
+            window_cycles++;
 
             if (wkc >= expected_wkc_) {
                 wkc_error_streak = 0;
@@ -247,17 +277,95 @@ private:
                     CallbackSink sink{receive_callback_};
                     endpoint_.on_peer_chunk(inputs_, sink);
                 }
-            } else if (++wkc_error_streak == kWkcErrorReportThreshold) {
-                // The ARQ keeps the stream intact across dropped cycles; log
-                // once per streak so a broken link is visible.
-                logger_.warn(
-                    "EtherCAT working counter low ({} < {}) for {} consecutive cycles", wkc,
-                    expected_wkc_, wkc_error_streak);
+            } else {
+                total_wkc_errors_++;
+                window_wkc_errors++;
+                ++wkc_error_streak;
+                if (wkc_error_streak == kWkcErrorReportThreshold) {
+                    // The ARQ keeps the stream intact across dropped cycles;
+                    // log once per streak so a broken link is visible.
+                    logger_.warn(
+                        "EtherCAT working counter low ({} < {}) for {} consecutive cycles", wkc,
+                        expected_wkc_, wkc_error_streak);
+                }
+                if (wkc_error_streak >= kRecoveryThresholdCycles) {
+                    supervise_and_recover();
+                    wkc_error_streak = 0;
+                }
+            }
+
+            // Achieved poll rate is THE latency diagnostic (frame RTT is a
+            // small multiple of the cycle period, see pd_stream.hpp), so make
+            // it visible. The clock is only sampled every 1024 cycles to keep
+            // the hot loop clean.
+            if ((window_cycles & 0x3FFU) == 0) {
+                const Clock::time_point now = Clock::now();
+                const auto elapsed =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now - window_start);
+                if (elapsed >= kStatsInterval) {
+                    logger_.info(
+                        "EtherCAT cycle rate: {:.1f} kHz ({} wkc errors in the last {} s)",
+                        static_cast<double>(window_cycles) / static_cast<double>(elapsed.count()),
+                        window_wkc_errors, elapsed.count() / 1000);
+                    window_start = now;
+                    window_cycles = 0;
+                    window_wkc_errors = 0;
+                }
             }
         }
     }
 
+    // Master-side AL state supervision (the SOEM "ecatcheck" duty, folded into
+    // the cycle thread): acknowledge slave errors, bring the slave back to OP,
+    // reconfigure it after a link loss. Called only when the working counter
+    // has been bad for a while, so it never runs on the healthy path.
+    void supervise_and_recover() {
+        ec_readstate();
+
+        if (ec_slave[1].state != EC_STATE_OPERATIONAL) {
+            slave_left_op_ = true;
+
+            if (ec_slave[1].state == (EC_STATE_SAFE_OP + EC_STATE_ERROR)) {
+                logger_.warn(
+                    "EtherCAT slave in SAFE-OP+ERROR (AL status 0x{:04X}), acknowledging",
+                    ec_slave[1].ALstatuscode);
+                ec_slave[1].state = EC_STATE_SAFE_OP + EC_STATE_ACK;
+                ec_writestate(1);
+            } else if (ec_slave[1].state == EC_STATE_SAFE_OP) {
+                logger_.warn("EtherCAT slave fell back to SAFE-OP, requesting OP");
+                ec_slave[1].state = EC_STATE_OPERATIONAL;
+                ec_writestate(1);
+            } else if (ec_slave[1].state == EC_STATE_NONE) {
+                // Lost (cable pull / power cycle): try to bring it back.
+                if (ec_recover_slave(1, EC_TIMEOUTRET3) != 0)
+                    logger_.warn("EtherCAT slave recovered after link loss, reconfiguring");
+                (void)ec_reconfig_slave(1, EC_TIMEOUTRET3);
+            } else {
+                (void)ec_reconfig_slave(1, EC_TIMEOUTRET3);
+            }
+
+            ec_statecheck(1, EC_STATE_OPERATIONAL, EC_TIMEOUTRET3);
+        }
+
+        if (slave_left_op_ && ec_slave[1].state == EC_STATE_OPERATIONAL) {
+            // The slave resets its stream ARQ endpoint on every SAFEOP -> OP
+            // transition (firmware APPL_StartOutputHandler); mirror it here so
+            // both sides restart from seq/ack 0. Bytes that were in flight
+            // across the outage are gone -- the protocol session layer above
+            // is responsible for resynchronizing.
+            endpoint_.reset();
+            std::memset(outputs_, 0, kChunkSize);
+            slave_left_op_ = false;
+            logger_.warn("EtherCAT slave back to OP; stream endpoint reset");
+        }
+    }
+
     static constexpr int kWkcErrorReportThreshold = 16;
+    // ~a few ms of consecutive bad cycles before running the (slow, blocking)
+    // state supervision -- transient frame drops never trigger it.
+    static constexpr int kRecoveryThresholdCycles = 256;
+    static constexpr std::chrono::milliseconds kStatsInterval{5000};
+    static constexpr std::size_t kBufferPoolLimit = 64;
 
     logging::Logger& logger_;
 
@@ -270,6 +378,14 @@ private:
 
     librmcs::ecat::PdStreamEndpoint endpoint_;
     LockedByteRing transmit_ring_;
+
+    // Cycle-thread-only state (no synchronization needed).
+    uint64_t total_cycles_ = 0;
+    uint64_t total_wkc_errors_ = 0;
+    bool slave_left_op_ = false;
+
+    std::mutex buffer_pool_mutex_;
+    std::vector<std::unique_ptr<TransportBuffer>> buffer_pool_;
 
     std::mutex receive_callback_mutex_;
     std::function<void(std::span<const std::byte>)> receive_callback_;

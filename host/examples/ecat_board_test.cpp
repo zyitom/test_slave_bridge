@@ -39,8 +39,18 @@ public:
     std::atomic<uint64_t> uart_bytes{0};
 
 private:
+    // These callbacks run on the EtherCAT busy-poll cycle thread: a printf per
+    // frame would throttle the cycle (and with it the whole link) to console
+    // speed under CAN load. Print the first few for eyeballing, then count.
+    static constexpr uint64_t kPrintLimit = 20;
+
     void can0_receive_callback(const librmcs::data::CanDataView& data) override {
-        can_frames.fetch_add(1, std::memory_order_relaxed);
+        const uint64_t n = can_frames.fetch_add(1, std::memory_order_relaxed);
+        if (n >= kPrintLimit) {
+            if (n == kPrintLimit)
+                printf("[CAN0 RX] ... (further frames counted silently)\n");
+            return;
+        }
         printf(
             "[CAN0 RX] id=0x%X%s dlc=%zu data=", data.can_id, data.is_extended_can_id ? " ext" : "",
             data.can_data.size());
@@ -49,7 +59,14 @@ private:
     }
 
     void uart0_receive_callback(const librmcs::data::UartDataView& data) override {
-        uart_bytes.fetch_add(data.uart_data.size(), std::memory_order_relaxed);
+        const uint64_t total =
+            uart_bytes.fetch_add(data.uart_data.size(), std::memory_order_relaxed);
+        if (total >= kPrintLimit * 16) {
+            static std::atomic<bool> announced{false};
+            if (!announced.exchange(true))
+                printf("[UART0 RX] ... (further bytes counted silently)\n");
+            return;
+        }
         printf("[UART0 RX] %zu bytes: ", data.uart_data.size());
         print_bytes(data.uart_data);
         printf("| \"");

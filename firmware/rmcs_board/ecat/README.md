@@ -72,12 +72,22 @@ host 侧配套工具(SOEM v1.4.0,可选组件;若 SOEM 未装系统目录,先
 `cmake -B build && cmake --install build` 装到本地前缀并用 CMAKE_PREFIX_PATH 指过去):
 
 ```bash
-cmake --preset linux-debug -S host -DLIBRMCS_ENABLE_SOEM=ON \
+cmake --preset linux-release -S host -DLIBRMCS_ENABLE_SOEM=ON -DBUILD_EXAMPLES=ON \
       -DCMAKE_PREFIX_PATH=$HOME/3rd_party/soem-1.4.0/install
 cmake --build host/build
-sudo ./host/build/examples/ecat_stream_latency <网口名> [秒数]
-# 输出:回环字节校验 + RTT p50/p90/p99 + 吞吐
+sudo ./host/build/examples/ecat_stream_latency <网口名> [秒数] [绑定核] [在途帧数]
+# 输出:回环字节校验 + RTT p50/p90/p99 + 吞吐;transport 每 5s 打印实际轮询率
 ```
+
+测延迟前的检查单(帧 RTT ≈ 2-3 个轮询周期,轮询率低 = 延迟差的直接原因):
+
+1. 固件与 host 都必须是 release 构建(-O0 的 PDI ISR 慢数倍);
+2. 看 transport 打印的 cycle rate:直连 i226 应达 10-20kHz;若只有 1-2kHz,
+   查 NIC 中断合并(`ethtool -C <if> rx-usecs 0 tx-usecs 0`)、EEE
+   (`ethtool --set-eee <if> off`)、CPU governor(performance)、
+   是否 USB 网卡(USB 适配器按 USB 微帧批处理,天生毫秒级,不可用);
+3. 绑定核参数 + `isolcpus` 隔离核压尾延迟;在途帧数用默认 1 才是纯 RTT,
+   调大测的是停等 ARQ 上的排队吞吐。
 
 transport 实现:`host/src/transport/soem/soem.cpp`(实现 `transport::Transport`
 接口,独立 busy-poll 线程,与固件共用 `librmcs::ecat::PdStreamEndpoint`);

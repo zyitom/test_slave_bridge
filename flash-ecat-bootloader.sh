@@ -37,7 +37,7 @@ command -v "$OPENOCD_BIN" >/dev/null 2>&1 || {
     exit 1
 }
 
-PRESET="${PRESET:-debug}"
+PRESET="${PRESET:-release}"
 : "${GNURISCV_TOOLCHAIN_PATH:?GNURISCV_TOOLCHAIN_PATH must point to the RISC-V toolchain root}"
 echo ">> Building rmcs_ecat_bootloader (preset: $PRESET, BOARD=hpm6e80ivm1)"
 cmake --preset "$PRESET" -S "$ECAT_DIR"
