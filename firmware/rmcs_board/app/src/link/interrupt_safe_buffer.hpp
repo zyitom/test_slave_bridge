@@ -14,8 +14,12 @@
 #include "core/src/utility/immovable.hpp"
 #include "firmware/rmcs_board/app/src/led/led.hpp"
 
-namespace librmcs::firmware::usb {
+namespace librmcs::firmware::link {
 
+// Transport-neutral serializer sink: ISR producers (CAN/UART uplink) allocate
+// through the protocol Serializer while the transport's main-loop consumer
+// pops whole batches. Shared by the USB vendor application and the EtherCAT
+// bridge's fieldbus core.
 class InterruptSafeBuffer final
     : public core::protocol::SerializeBuffer
     , private core::utility::Immovable {
@@ -135,4 +139,4 @@ private:
     Batch batches_[kBatchCount];
 };
 
-} // namespace librmcs::firmware::usb
+} // namespace librmcs::firmware::link

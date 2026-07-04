@@ -135,7 +135,7 @@ void Can::irq_handler() {
     if (flags & MCAN_INT_RXFIFO0_NEW_MSG) [[likely]] {
         // Drain the FIFO completely: RF0N is a status bit, not a counter, so
         // one interrupt may stand for several buffered frames.
-        auto& serializer = usb::get_serializer();
+        auto& serializer = link::uplink_serializer();
         while (handle_uplink(data_id_, serializer)) {
         }
     }

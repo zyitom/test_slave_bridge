@@ -149,4 +149,23 @@ std::unique_ptr<Transport> create_transport(
 
 } // namespace usb
 
+namespace soem {
+
+using ConnectionOptions = board::AdvancedOptions;
+
+/**
+ * @brief EtherCAT transport over the rmcs_board stream bridge, using SOEM.
+ *
+ * Only available when the SDK is built with -DLIBRMCS_ENABLE_SOEM=ON (the
+ * symbol is absent otherwise). interface_name is the raw network interface
+ * connected to the slave (e.g. "enp2s0" on an i226 port); opening it requires
+ * CAP_NET_RAW. The transport busy-polls process data on a dedicated thread;
+ * use options.thread_setup to pin/prioritize that thread for the lowest
+ * latency.
+ */
+std::unique_ptr<Transport>
+    create_transport(std::string_view interface_name, const ConnectionOptions& options);
+
+} // namespace soem
+
 } // namespace librmcs::host::transport

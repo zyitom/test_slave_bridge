@@ -21,3 +21,8 @@ target_link_libraries(can_error_test PRIVATE librmcs-sdk)
 
 add_executable(can_loopback_latency can_loopback_latency.cpp)
 target_link_libraries(can_loopback_latency PRIVATE librmcs-sdk)
+
+if(LIBRMCS_ENABLE_SOEM)
+    add_executable(ecat_stream_latency ecat_stream_latency.cpp)
+    target_link_libraries(ecat_stream_latency PRIVATE librmcs-sdk)
+endif()

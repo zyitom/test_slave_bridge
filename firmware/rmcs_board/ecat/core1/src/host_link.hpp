@@ -1,124 +1,111 @@
 #pragma once
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
-#include <class/vendor/vendor_device.h>
-#include <common/tusb_types.h>
-#include <device/usbd.h>
-#include <tusb.h>
-
-#include "board_app.hpp"
 #include "core/include/librmcs/data/datas.hpp"
-#include "core/include/librmcs/spec/gpio.hpp"
 #include "core/src/protocol/deserializer.hpp"
 #include "core/src/protocol/protocol.hpp"
 #include "core/src/protocol/serializer.hpp"
 #include "core/src/utility/assert.hpp"
 #include "core/src/utility/immovable.hpp"
 #include "firmware/rmcs_board/app/src/can/can.hpp"
+#include "firmware/rmcs_board/app/src/link/interrupt_safe_buffer.hpp"
 #include "firmware/rmcs_board/app/src/timer/timer.hpp"
 #include "firmware/rmcs_board/app/src/uart/uart.hpp"
-#include "firmware/rmcs_board/app/src/link/interrupt_safe_buffer.hpp"
-#include "firmware/rmcs_board/app/src/usb/usb_descriptors.hpp"
 #include "firmware/rmcs_board/app/src/utility/lazy.hpp"
 
-namespace librmcs::firmware::usb {
+#include "xcore_channel.hpp"
 
-class Vendor
+namespace librmcs::firmware::ecat {
+
+// Host-facing protocol endpoint of the fieldbus core: the EtherCAT analog of
+// usb::Vendor. Downlink bytes arrive from the SHARE_RAM down ring (fed by the
+// core0 PD stream, which the stop-and-wait ARQ makes lossless and ordered) and
+// go through the librmcs deserializer to the CAN/UART drivers; uplink frames
+// are serialized into the interrupt-safe batch buffer by the driver ISRs and
+// pumped into the up ring by the main loop.
+//
+// The session handshake (kStart nonce + keepalive lease) is byte-identical to
+// the USB transport, so the host SDK works unchanged on top of the SOEM
+// transport. The dispatch/session logic intentionally mirrors usb::Vendor;
+// unifying both behind app/src/link is a known follow-up refactor.
+class HostLink
     : private core::protocol::DeserializeCallback
     , private core::utility::Immovable {
 public:
-    using Lazy = utility::Lazy<Vendor>;
+    using Lazy = utility::Lazy<HostLink>;
 
-    Vendor() {
-        usb::usb_descriptors.init();
+    HostLink() = default;
 
-        const tusb_rhport_init_t init_config{
-            .role = TUSB_ROLE_DEVICE,
-            .speed = board::usb_use_high_speed() ? TUSB_SPEED_HIGH : TUSB_SPEED_FULL,
-        };
-        core::utility::assert_always(tusb_rhport_init(0, &init_config));
-
-        // tusb_rhport_init -> dcd_init already enabled the USB IRQ; pin its
-        // priority explicitly so the CAN(3) > USB(2) > UART(1) preemption
-        // hierarchy is owned here and cannot silently regress if the SDK default
-        // changes. With preemptive interrupts on, this lets a CAN RX (3) preempt
-        // a running USB ISR (2) -- keeping motor feedback off the USB ISR's tail.
-        intc_m_enable_irq_with_priority(IRQn_USB0, 2);
-    }
-
-    // 1000 ms session lease, in 0.25 us/tick units (4 MHz mchtmr): 1000 ms * 4000 ticks/ms.
+    // 1000 ms session lease, in 0.25 us ticks (4 MHz mchtmr).
     static constexpr uint64_t kSessionLeaseQuarterUs = 4'000'000U;
 
     core::protocol::Serializer& serializer() { return serializer_; }
 
-    void deactivate_session() { session_established_ = false; }
-
-    // True once the host session handshake (kStart nonce + keepalive lease) is up
-    // and data is actually being forwarded -- distinct from mere USB enumeration.
     bool session_established() const { return session_established_; }
 
-    void handle_downlink(std::span<const std::byte> buffer, bool finished) {
-        deserializer_.feed(buffer);
-        if (finished)
-            deserializer_.finish_transfer();
+    // Main loop, step 1: bytes popped from the down ring. The PD stream has no
+    // transfer boundaries (unlike USB), so the deserializer is fed
+    // continuously; framing recovery happens on link restart only.
+    void handle_downlink(std::span<const std::byte> buffer) { deserializer_.feed(buffer); }
+
+    // Main loop, step 2: core0 bumped link_epoch (SAFEOP -> OP re-entry, i.e.
+    // the master restarted the PD stream). Session policy: drop the session
+    // and any partially deserialized frame; the host re-handshakes on top of
+    // the fresh ARQ stream, and stale uplink batches are cleared on the next
+    // kStart. Ring contents are left alone (core0 owns the other end).
+    void handle_link_restart() {
+        deserializer_.finish_transfer();
+        deactivate_session();
     }
 
-    void finish_downlink_transfer() { deserializer_.finish_transfer(); }
-
-    bool try_transmit() {
+    // Main loop, step 3: pump serialized uplink batches into the up ring.
+    // XcoreRing::try_push is all-or-nothing, so a batch that does not fit
+    // simply stays pending until the PD stream drains the ring (end-to-end
+    // backpressure, nothing is dropped).
+    void try_transmit(XcoreRing<kXcoreUpRingSize>& up_ring) {
         refresh_session_state();
 
-        if (!session_established_) {
-            return false;
-        }
-
-        if (!tud_vendor_n_write_available(0))
-            return false;
+        if (!session_established_)
+            return;
 
         if (!transmitting_batch_) {
             transmitting_batch_ = transmit_buffer_.pop_batch();
-        }
-        if (!transmitting_batch_)
-            return false;
-
-        const auto data = transmitting_batch_->data();
-
-        const std::size_t max_packet_size = (tud_speed_get() == TUSB_SPEED_HIGH) ? 512 : 64;
-        const auto target_size = std::min(data.size() - transmitted_size_, max_packet_size);
-
-        if (target_size) {
-            const auto* src = reinterpret_cast<const uint8_t*>(data.data() + transmitted_size_);
-            core::utility::assert_debug(tud_vendor_n_write(0, src, target_size) == target_size);
-        } else {
-            core::utility::assert_debug(tud_vendor_n_write_zlp(0));
+            if (!transmitting_batch_)
+                return;
         }
 
-        transmitted_size_ += target_size;
-        if (transmitted_size_ == data.size() && target_size < max_packet_size) {
-            transmit_buffer_.release_batch(transmitting_batch_);
+        if (up_ring.try_push(transmitting_batch_->data())) {
+            link::InterruptSafeBuffer::release_batch(transmitting_batch_);
             transmitting_batch_ = nullptr;
-            transmitted_size_ = 0;
         }
-
-        return true;
     }
+
+    void deactivate_session() { session_established_ = false; }
 
 private:
     void activate_session(uint32_t nonce) {
         if (transmitting_batch_) {
-            transmit_buffer_.release_batch(transmitting_batch_);
+            link::InterruptSafeBuffer::release_batch(transmitting_batch_);
             transmitting_batch_ = nullptr;
-            transmitted_size_ = 0;
         }
         transmit_buffer_.clear();
 
         current_session_nonce_ = nonce;
         last_session_refresh_ = timer::Timer::timestamp64_quarter_us();
         session_established_ = true;
+    }
+
+    void refresh_session_state() {
+        if (!session_established_)
+            return;
+
+        if (timer::Timer::timestamp64_quarter_us() - last_session_refresh_ < kSessionLeaseQuarterUs)
+            return;
+
+        deactivate_session();
     }
 
     bool can_deserialized_callback(
@@ -229,17 +216,8 @@ private:
     }
 
     void error_callback() override {
-        // TODO: Report USB downlink deserialization errors through a dedicated error path.
-    }
-
-    void refresh_session_state() {
-        if (!session_established_)
-            return;
-
-        if (timer::Timer::timestamp64_quarter_us() - last_session_refresh_ < kSessionLeaseQuarterUs)
-            return;
-
-        deactivate_session();
+        // The ARQ link never corrupts bytes; a deserialization error implies a
+        // host/firmware framing bug. Recovery happens on link restart.
     }
 
     core::protocol::Deserializer deserializer_{*this};
@@ -248,12 +226,11 @@ private:
     core::protocol::Serializer serializer_{transmit_buffer_};
 
     const link::InterruptSafeBuffer::Batch* transmitting_batch_ = nullptr;
-    size_t transmitted_size_ = 0;
     bool session_established_ = false;
     uint32_t current_session_nonce_ = 0;
     uint64_t last_session_refresh_ = 0;
 };
 
-inline constinit Vendor::Lazy vendor;
+inline constinit HostLink::Lazy host_link;
 
-} // namespace librmcs::firmware::usb
+} // namespace librmcs::firmware::ecat

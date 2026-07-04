@@ -3,7 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "pd_stream.hpp"
+#include <librmcs/ecat/pd_stream.hpp>
+
 #include "xcore_channel.hpp"
 
 namespace ecat = librmcs::firmware::ecat;
@@ -11,13 +12,13 @@ namespace ecat = librmcs::firmware::ecat;
 namespace {
 
 static_assert(
-    RMCS_PD_CHUNK_SIZE == ecat::kPdChunkSize,
+    RMCS_PD_CHUNK_SIZE == librmcs::ecat::kPdChunkSize,
     "SSC/ESI process data size and the stream chunk layout must agree");
 
 // Core0-local state. The channel pointer is set once by rmcs_pd_init()
 // before core1 release and before the SSC stack starts calling the hooks.
 ecat::XcoreChannel* channel = nullptr;
-ecat::PdStreamEndpoint endpoint;
+librmcs::ecat::PdStreamEndpoint endpoint;
 
 } // namespace
 

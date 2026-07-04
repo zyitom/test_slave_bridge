@@ -5,7 +5,9 @@
 #include <cstring>
 #include <span>
 
-namespace librmcs::firmware::ecat {
+// Shared between the rmcs_board EtherCAT firmware (core0 PDO callbacks) and
+// the host SOEM transport; both sides run the same symmetric algorithm.
+namespace librmcs::ecat {
 
 // Stop-and-wait ARQ framing that carries the librmcs byte stream over
 // EtherCAT process data.
@@ -113,4 +115,4 @@ private:
     std::byte staging_[kPdChunkPayloadSize]{};
 };
 
-} // namespace librmcs::firmware::ecat
+} // namespace librmcs::ecat

@@ -7,6 +7,7 @@
 #include <hpm_mchtmr_drv.h>
 #include <hpm_soc.h>
 
+#include "board_app.hpp"
 #include "core/src/utility/assert.hpp"
 #include "firmware/rmcs_board/app/src/utility/lazy.hpp"
 
@@ -23,7 +24,11 @@ public:
         (static_cast<uint64_t>(kTimerFrequencyHz) + (kTickFrequencyHz / 2U)) / kTickFrequencyHz;
 
     Timer() {
-        core::utility::assert_always(clock_get_frequency(clock_mchtmr0) == kTimerFrequencyHz);
+        // The running core's machine timer (mchtmr0 on core0 boards, mchtmr1
+        // on the ECAT bridge's fieldbus core) must be clocked at 4 MHz; every
+        // board configures the divider accordingly.
+        core::utility::assert_always(
+            clock_get_frequency(board::kMchtmrClockName) == kTimerFrequencyHz);
 
         // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
         next_tick_compare_value_ = timestamp64_quarter_us() + kTickPeriodTicks;

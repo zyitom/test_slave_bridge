@@ -24,7 +24,7 @@
 #include "core/src/utility/assert.hpp"
 #include "core/src/utility/immovable.hpp"
 #include "firmware/rmcs_board/app/src/led/led.hpp"
-#include "firmware/rmcs_board/app/src/usb/helper.hpp"
+#include "firmware/rmcs_board/app/src/link/uplink.hpp"
 #include "firmware/rmcs_board/app/src/utility/lazy.hpp"
 
 namespace librmcs::firmware::can {
@@ -34,23 +34,22 @@ using board::CanPort;
 
 class Can : private core::utility::Immovable {
 public:
-    using Lazy = utility::Lazy<Can, data::DataId, CanPort, uint32_t (*const)[], uint32_t>;
+    using Lazy = utility::Lazy<Can, data::DataId, CanPort, size_t>;
 
     // Baudrates are compile-time constants; the mode is fixed per board via
     // the CanPort table in board_app.hpp.
     static constexpr uint32_t kArbitrationBaudrate = 1'000'000;
     static constexpr uint32_t kCanFdDataBaudrate = 5'000'000;
 
-    explicit Can(
-        data::DataId data_id, CanPort port, uint32_t (*const ram_base)[], uint32_t ram_size)
+    explicit Can(data::DataId data_id, CanPort port, size_t board_can_index)
         : data_id_(data_id)
         , can_base_(reinterpret_cast<MCAN_Type*>(port.base))
         , canfd_(port.mode == CanMode::kCanFd) {
 
-        const mcan_msg_buf_attr_t attr = {
-            .ram_base = reinterpret_cast<uintptr_t>(ram_base),
-            .ram_size = ram_size,
-        };
+        // Message RAM placement is board business: SoCs differ in where MCAN
+        // buffers may live (dedicated AHB RAM vs a section-placed array), so
+        // the board hands out the region (board_app.cpp).
+        const mcan_msg_buf_attr_t attr = board::can_message_ram(board_can_index);
         auto status = mcan_set_msg_buf_attr(can_base_, &attr);
         core::utility::assert_always(status == status_success);
 
@@ -184,10 +183,12 @@ private:
     }
 
     // Divisor that turns a PTPC reported-nanosecond count into true
-    // microseconds; fixed at compile time (960 = 160 MHz AHB * 6 ns step) so
-    // the ISR-side conversion uses only constant divisions (multiply-and-shift
-    // after GCC), and asserted against the real clock tree in the constructor.
-    static constexpr uint32_t kTsNsPerUs = 960;
+    // microseconds; fixed at compile time so the ISR-side conversion uses only
+    // constant divisions (multiply-and-shift after GCC), and asserted against
+    // the real clock tree in the constructor. The value depends on the board's
+    // PTPC (AHB) clock -- e.g. 960 = 160 MHz * 6 ns step on HPM5321, 1000 =
+    // 200 MHz * 5 ns step on HPM6E80 -- so each board_app.hpp provides it.
+    static constexpr uint32_t kTsNsPerUs = board::kCanTimestampNsPerUs;
 
     const data::DataId data_id_;
     MCAN_Type* can_base_;
@@ -196,23 +197,18 @@ private:
 
 // Everything below is built from the board's CAN port table (board::kCanPorts),
 // so there are no per-port macros: the count, the FD mode and the dispatch all
-// follow the table.
+// follow the table. Message RAM comes from board::can_message_ram().
 constexpr size_t kCanCount = std::size(board::kCanPorts);
 static_assert(kCanCount >= 1 && kCanCount <= 4);
 
 constexpr data::DataId kCanDataIds[] = {
     data::DataId::kCan0, data::DataId::kCan1, data::DataId::kCan2, data::DataId::kCan3};
 
-ATTR_PLACE_AT(".ahb_sram")
-inline constinit uint32_t can_msg_buffer[kCanCount][MCAN_MSG_BUF_SIZE_IN_WORDS]{};
-static_assert(MCAN_SOC_MSG_BUF_IN_AHB_RAM == 1);
-
 namespace internal {
 
 template <std::size_t I>
 consteval Can::Lazy make_can() {
-    return Can::Lazy{
-        kCanDataIds[I], board::kCanPorts[I], &can_msg_buffer[I], sizeof(can_msg_buffer[I])};
+    return Can::Lazy{kCanDataIds[I], board::kCanPorts[I], I};
 }
 
 template <std::size_t... I>

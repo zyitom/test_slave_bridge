@@ -3,20 +3,35 @@
 # Owns the integrated ESC and the Beckhoff SSC stack, bridges the process
 # data stream chunks to the fieldbus core through the SHARE_RAM rings, and
 # loads/releases the core1 image at boot. Build ../core1 FIRST -- it emits
-# src/sec_core_img.c consumed here (see ../README.md).
+# src/sec_core_img.c consumed here -- or use the ecat superbuild
+# (../CMakeLists.txt), which orders everything.
+#
+# Linked as a flash_uf2 image at offset 0x20000 behind the shared rmcs_board
+# bootloader (../../bootloader), exactly like the USB app; a .dfu artifact is
+# produced for bootloader-based flashing.
 
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.28)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 if("${HPM_BUILD_TYPE}" STREQUAL "")
-    set(HPM_BUILD_TYPE flash_xip)
+    set(HPM_BUILD_TYPE flash_uf2)
 endif()
+
+set(BOARD "hpm6e80ivm1" CACHE STRING "Target board")
+set(BOARD_SEARCH_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../boards" CACHE PATH "Board search path")
 
 # Enables the SDK flash-EEPROM-emulation component (must precede find_package).
 set(CONFIG_EEPROM_EMULATION 1)
 
-find_package(hpm-sdk REQUIRED HINTS $ENV{HPM_SDK_BASE})
+set(ENV{HPM_SDK_BASE} "${CMAKE_CURRENT_SOURCE_DIR}/../../bsp/hpm_sdk")
+find_package(hpm-sdk REQUIRED HINTS "$ENV{HPM_SDK_BASE}")
 
-project(rmcs_ecat_core0)
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../../common/cmake/librmcs_firmware.cmake")
+librmcs_setup_project_context(PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../..")
+
+project(rmcs_ecat_core0 LANGUAGES C CXX ASM)
+
+set(APP_NAME "rmcs_ecat_bridge_${BOARD}")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,15 +42,33 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/SSC/Src/ecatslv.c")
     message(FATAL_ERROR
         "Beckhoff SSC sources not found at ecat/core0/SSC/Src.\n"
-        "Generate them with the Beckhoff SSC Tool (ETG membership required), apply the\n"
-        "SDK patch, and re-run CMake. Exact steps: firmware/rmcs_board/ecat/README.md.")
+        "Generate them with the Beckhoff SSC Tool (ETG membership required), then run\n"
+        "ecat/tools/import_ssc.sh. Exact steps: firmware/rmcs_board/ecat/README.md.")
 endif()
+
+# import_ssc.sh installs the stream-bridge object dictionary and SII over the
+# generated files; a raw SSC Tool output would build but describe 4-byte
+# counter PDOs. Catch that before compiling.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/SSC/Src/digital_ioObjects.h" _rmcs_od_header)
+if(NOT _rmcs_od_header MATCHES "RMCS_STREAM_OBJECTS")
+    message(FATAL_ERROR
+        "SSC/Src contains the raw SSC Tool output (stock object dictionary).\n"
+        "Run ecat/tools/import_ssc.sh <generated-Src-dir> to install the stream-bridge\n"
+        "overrides. Steps: firmware/rmcs_board/ecat/README.md.")
+endif()
+unset(_rmcs_od_header)
 
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sec_core_img.c")
     message(FATAL_ERROR
         "src/sec_core_img.c missing: build ../core1 first (it generates the core1 image\n"
         "array consumed by this project). Steps: firmware/rmcs_board/ecat/README.md.")
 endif()
+
+# Process data buffer sizes for the SSC (guarded by #ifndef in the generated
+# ecat_def.h). One 128-byte stream chunk per direction; must equal
+# RMCS_PD_CHUNK_SIZE (src/rmcs_pd.h) -- ecat_appl.c static-asserts it. Applied
+# SDK-wide so every stack translation unit sees the same buffer layout.
+sdk_compile_definitions(-DMAX_PD_INPUT_SIZE=0x80 -DMAX_PD_OUTPUT_SIZE=0x80)
 
 # Beckhoff SSC (generated).
 sdk_inc(SSC/Src)
@@ -60,7 +93,9 @@ endif()
 # (compiled into the SDK library target), hence sdk_inc rather than app-only.
 sdk_inc(src)
 
-sdk_app_inc(src ../common ${HPM_SDK_BASE}/samples/multicore/common)
+# ../../../../core/include: shared librmcs headers (the pd_stream chunk
+# layout lives there because the host SOEM transport uses the same code).
+sdk_app_inc(src ../common ../../../../core/include ${HPM_SDK_BASE}/samples/multicore/common)
 sdk_app_src(${HPM_SDK_BASE}/samples/multicore/common/multicore_common.c)
 sdk_app_src(src/ecat_main.c)
 sdk_app_src(src/ecat_appl.c)
@@ -69,5 +104,26 @@ sdk_app_src(src/sec_core_img.c)
 
 set_property(TARGET app PROPERTY CXX_STANDARD 23)
 set_property(TARGET app PROPERTY CXX_STANDARD_REQUIRED ON)
+
+# Leave room for the shared rmcs_board bootloader (flash_xip at 0x80000000,
+# 124 KiB + 4 KiB metadata); the app image starts at flash offset 0x20000.
+if("${HPM_BUILD_TYPE}" STREQUAL "flash_uf2")
+    sdk_linker_global_symbols("_uf2_bl_length=0x20000")
+
+    get_property(LIBRMCS_USB_PID GLOBAL PROPERTY LIBRMCS_USB_PID)
+    if("${LIBRMCS_USB_PID}" STREQUAL "")
+        message(FATAL_ERROR "LIBRMCS_USB_PID must be set by the selected board")
+    endif()
+
+    librmcs_add_dfu_image(
+        TARGET ${APP_ELF_NAME}
+        INPUT_BINARY "${EXECUTABLE_OUTPUT_PATH}/${APP_BIN_NAME}"
+        OUTPUT_DFU "${EXECUTABLE_OUTPUT_PATH}/${APP_NAME}.dfu"
+        VENDOR_ID 0xA11C
+        PRODUCT_ID ${LIBRMCS_USB_PID}
+        DEVICE_ID 0x0300
+        COMMENT "Generating ${APP_NAME}.dfu"
+    )
+endif()
 
 generate_ide_projects()

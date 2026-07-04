@@ -1,17 +1,26 @@
 #include "board_app.hpp"
 
 #include <cstdint>
+#include <iterator>
 
 #include <hpm_clock_drv.h>
+#include <hpm_common.h>
 #include <hpm_ioc_regs.h>
 #include <hpm_iomux.h>
 #include <hpm_mcan_regs.h>
+#include <hpm_mcan_soc.h>
 #include <hpm_soc.h>
+#include <hpm_soc_feature.h>
 #include <hpm_soc_irq.h>
 #include <hpm_uart_regs.h>
 
 namespace librmcs::firmware::board {
 namespace {
+
+// MCAN message RAM must live in AHB SRAM on this SoC.
+static_assert(MCAN_SOC_MSG_BUF_IN_AHB_RAM == 1);
+ATTR_PLACE_AT(".ahb_sram")
+constinit uint32_t can_msg_buffer[std::size(kCanPorts)][MCAN_MSG_BUF_SIZE_IN_WORDS]{};
 
 uint32_t init_can_clock(MCAN_Type* ptr) {
     if (ptr == HPM_MCAN0) {
@@ -38,6 +47,13 @@ uint32_t init_can(MCAN_Type* ptr) {
         HPM_IOC->PAD[IOC_PAD_PA00].FUNC_CTL = IOC_PA00_FUNC_CTL_MCAN0_TXD;
     }
     return init_can_clock(ptr);
+}
+
+mcan_msg_buf_attr_t can_message_ram(size_t can_index) {
+    return {
+        .ram_base = reinterpret_cast<uintptr_t>(&can_msg_buffer[can_index]),
+        .ram_size = sizeof(can_msg_buffer[can_index]),
+    };
 }
 
 uint32_t init_uart(UART_Type* ptr) {

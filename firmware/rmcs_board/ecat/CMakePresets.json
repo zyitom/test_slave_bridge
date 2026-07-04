@@ -1,0 +1,33 @@
+{
+    "version": 4,
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build"
+        },
+        {
+            "name": "debug",
+            "inherits": "base",
+            "cacheVariables": {
+                "HOST_DEBUGGER": "OFF",
+                "CMAKE_BUILD_TYPE": "debug"
+            }
+        },
+        {
+            "name": "debug-loopback",
+            "inherits": "debug",
+            "cacheVariables": {
+                "RMCS_ECAT_CORE1_LOOPBACK": "ON"
+            }
+        },
+        {
+            "name": "release",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "release"
+            }
+        }
+    ]
+}

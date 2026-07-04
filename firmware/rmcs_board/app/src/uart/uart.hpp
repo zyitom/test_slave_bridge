@@ -22,7 +22,7 @@
 #include "firmware/rmcs_board/app/src/uart/rx_buffer.hpp"
 #include "firmware/rmcs_board/app/src/uart/uart_port.hpp"
 #include "firmware/rmcs_board/app/src/uart/tx_buffer.hpp"
-#include "firmware/rmcs_board/app/src/usb/helper.hpp"
+#include "firmware/rmcs_board/app/src/link/uplink.hpp"
 #include "firmware/rmcs_board/app/src/utility/lazy.hpp"
 
 namespace librmcs::firmware::uart {
@@ -88,7 +88,7 @@ private:
 
     void handle_uplink(
         std::span<const std::byte> payload, std::span<const std::byte> payload2, bool is_idle) {
-        auto& serializer = usb::get_serializer();
+        auto& serializer = link::uplink_serializer();
         core::utility::assert_debug(
             serializer.write_uart(
                 data_id_, {.uart_data = payload, .idle_delimited = is_idle}, payload2)
@@ -99,7 +99,8 @@ private:
     UART_Type* uart_base_;
 
 public:
-    // DMA buffer storage in AHB SRAM (0xF0400000): naturally non-cached,
+    // DMA buffer storage in a board-chosen non-cached region (AHB SRAM on
+    // HPM5321, the AXI-SRAM non-cacheable window on HPM6E80 core1),
     // eliminating manual l1c_dc_flush/invalidate overhead on the UART data path.
     struct RxStorage {
         alignas(HPM_L1C_CACHELINE_SIZE) std::array<std::byte, RxBuffer<Uart>::kBufferSize> data;
@@ -115,9 +116,9 @@ public:
 
 constexpr size_t kUartCount = std::size(board::kUartPorts);
 
-ATTR_PLACE_AT(".ahb_sram")
+ATTR_PLACE_AT(LIBRMCS_DMA_BUFFER_SECTION)
 inline constinit Uart::RxStorage uart_rx_storage_[kUartCount]{};
-ATTR_PLACE_AT(".ahb_sram")
+ATTR_PLACE_AT(LIBRMCS_DMA_BUFFER_SECTION)
 inline constinit Uart::TxStorage uart_tx_storage_[kUartCount]{};
 
 inline Uart::Uart(UartPort port, size_t storage_index)

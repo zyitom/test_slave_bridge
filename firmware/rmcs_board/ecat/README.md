@@ -1,6 +1,7 @@
 # RMCS EtherCAT Stream Bridge (HPM6E00EVK, dual-core)
 
 将 librmcs 协议字节流通过 EtherCAT 过程数据转发的从站固件（P1 阶段：回环验证）。
+同步模式/协议选型论证与延迟优化路线见 `DESIGN.md`。
 
 ## 架构
 
@@ -17,7 +18,10 @@ CPU0 (EtherCAT 域)                     CPU1 (现场总线域)
 ```
 
 - **stream-over-PDO**:双向各一个 128 字节 PDO(`[seq:u8][ack:u8][len:u16][payload:124B]`),
-  停等 ARQ 补偿 SyncManager 三缓冲的 latest-wins 语义(见 `common/pd_stream.hpp` 头注释)。
+  停等 ARQ 补偿 SyncManager 三缓冲的 latest-wins 语义(见
+  `core/include/librmcs/ecat/pd_stream.hpp` 头注释,host SOEM transport 与固件共用)。
+  CoE 对象字典将其描述为 32 x UNSIGNED32 数组(0x6000 输入 / 0x7010 输出,单条 PDO
+  映射项最大 255 bit,故拆分);SM 长度由 SSC 严格校验(必须精确等于 128)。
 - **主站模式**:free-run + busy-poll(SOEM,建议 8-16kHz 轮询 + 2-3 帧流水线)。不需要 DC。
 - **跨核环**:真 acquire/release 原子(`common/xcore_ring.hpp`),不同于 app/src 单核版的
   signal_fence 方案;依赖 board_init_pmp() 将 SHARE_RAM 配为非缓存 + AMO。
@@ -30,14 +34,20 @@ CPU0 (EtherCAT 域)                     CPU1 (现场总线域)
    export HPM_SDK_BASE=$(pwd)/firmware/rmcs_board/bsp/hpm_sdk
    ```
 2. **生成 Beckhoff SSC 代码**(许可限制,不入库):
-   - ETG 会员账号下载 SSC Tool(免费);
-   - 以 SDK 例程配置为底 (`$HPM_SDK_BASE/samples/ethercat/ecat_io/SSC/digital_io.xlsx`),
-     将 PDO 映射改为两个 128 字节字节数组对象:0x6000(TxPDO 输入)/0x7010(RxPDO 输出),
-     从站名建议 `rmcs_stream`;
-   - 生成代码放入 `core0/SSC/Src/`;
-   - 打 SDK 补丁:`$HPM_SDK_BASE/samples/ethercat/ecat_io/SSC/ssc_pdi_mask.patch`;
-   - 同步修改 ESI(EEPROM)中的 PDO 尺寸并按例程文档烧入仿真 EEPROM。
-     开发期可沿用 HPMicro 示例 Vendor ID;产品化需申请 ETG Vendor ID。
+   - ETG 会员账号下载 SSC Tool(免费),按 SDK 例程文档
+     (`$HPM_SDK_BASE/samples/ethercat/ecat_io/README_zh.rst`)用 **原样的例程配置**
+     (`SSC/ECAT_IO.esp`,无需修改 PDO/对象字典)生成从站代码;
+   - 运行导入脚本完成全部项目适配(复制/CRLF 归一化、打 SDK PDI 补丁、
+     安装 128 字节流对象字典覆盖、重写 SII/EEPROM 镜像):
+     ```bash
+     firmware/rmcs_board/ecat/tools/import_ssc.sh <生成的 Src 目录>
+     # 默认路径 ~/Downloads/ecat_io/SSC/Src
+     ```
+   - 项目特有内容全部在版本库内(`core0/ssc_overrides/digital_ioObjects.h`、
+     `tools/patch_sii.py`),重新生成 SSC 时无需再改 SSC Tool 工程;
+   - SII 中 Revision 由脚本抬升(当前为 2),已烧过旧镜像的板卡上电后会自动
+     刷新仿真 EEPROM。开发期沿用 HPMicro 示例 Vendor ID;产品化需申请 ETG
+     Vendor ID。
 
 ## 构建(先 core1 后 core0)
 
@@ -58,9 +68,23 @@ core1 是无损回环:主站(SOEM busy-poll)通过 RxPDO 发送任意字节流,�
 双核启动、跨核环。吞吐≈124B × 有效轮询率;将 SOEM 轮询间隔与 PD 尺寸做参数
 扫描即可得出延迟/吞吐曲线,与 USB 版对比。
 
+host 侧配套工具(SOEM v1.4.0,可选组件):
+
+```bash
+cmake --preset linux-debug -S host -DLIBRMCS_ENABLE_SOEM=ON
+cmake --build host/build
+sudo ./host/build/examples/ecat_stream_latency <网口名> [秒数]
+# 输出:回环字节校验 + RTT p50/p90/p99 + 吞吐
+```
+
+transport 实现:`host/src/transport/soem/soem.cpp`(实现 `transport::Transport`
+接口,独立 busy-poll 线程,与固件共用 `librmcs::ecat::PdStreamEndpoint`);
+上位机侧建议用 `options.thread_setup` 绑定隔离核并设 SCHED_FIFO。
+
 ## 尚未决定/后续阶段
 
 - **session policy**:OP 重入时环内残留数据的取舍(冲刷需要跨核握手,当前仅
   bump `link_epoch` 通知 core1)——与协议会话层一起在 P2 定。
-- P2:core1 接入 librmcs core 协议 + MCAN 表;host SDK 增加 SOEM transport。
+- P2:core1 接入 librmcs core 协议 + MCAN 表;`protocol::Handler` 增加 EtherCAT
+  构造入口(transport 层已就绪,见上)。
 - P3:按实测决定 SM-synchron(PDI ISR)与中断优先级微调;FoE 固件升级。

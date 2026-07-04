@@ -12,7 +12,29 @@
 
 #include "applInterface.h"
 
+/* Instantiate the application object dictionary (ApplicationObjDic variables)
+ * exactly once, in this translation unit. digital_io.h is the generated
+ * application header whose object content is replaced at import time by
+ * ssc_overrides/digital_ioObjects.h (see tools/import_ssc.sh); the generated
+ * digital_io.c application template is not compiled. */
+#define _DIGITAL_IO_ 1
+#include "digital_io.h"
+#undef _DIGITAL_IO_
+
 #include "rmcs_pd.h"
+
+/* The override header defines this marker; a stock generated header would
+ * declare 4-byte counter PDOs that silently disagree with the stream chunk. */
+#ifndef RMCS_STREAM_OBJECTS
+#error "Stock digital_ioObjects.h detected; run ecat/tools/import_ssc.sh"
+#endif
+
+_Static_assert(
+    RMCS_STREAM_ENTRY_COUNT * 4 == RMCS_PD_CHUNK_SIZE,
+    "object dictionary PDO mapping and stream chunk size must agree");
+_Static_assert(
+    MAX_PD_INPUT_SIZE >= RMCS_PD_CHUNK_SIZE && MAX_PD_OUTPUT_SIZE >= RMCS_PD_CHUNK_SIZE,
+    "SSC process data buffers too small; check core0/CMakeLists.txt definitions");
 
 /* Called when an error state was acknowledged by the master. */
 void APPL_AckErrorInd(UINT16 stateTrans) { (void)stateTrans; }

@@ -96,6 +96,28 @@ elseif(UNIX)
     target_link_libraries(${PROJECT_NAME} PUBLIC Threads::Threads)
 endif()
 
+# Optional EtherCAT transport (talks to the rmcs_board EtherCAT stream bridge
+# through SOEM). Default OFF: src/transport/soem/soem.cpp compiles to an empty
+# translation unit unless enabled, keeping the dependency optional.
+option(LIBRMCS_ENABLE_SOEM "Build the EtherCAT (SOEM) transport" OFF)
+if(LIBRMCS_ENABLE_SOEM)
+    find_package(soem CONFIG QUIET)
+    if(soem_FOUND)
+        target_link_libraries(${PROJECT_NAME} PUBLIC soem)
+    else()
+        # SOEM v1.4.0 installs flat headers into include/soem without a CMake
+        # package; its umbrella header uses sibling angled includes, so both
+        # directories go on the search path.
+        find_path(SOEM_INCLUDE_DIR soem/ethercat.h REQUIRED)
+        find_library(SOEM_LIBRARY soem REQUIRED)
+        target_include_directories(
+            ${PROJECT_NAME} SYSTEM PRIVATE ${SOEM_INCLUDE_DIR} ${SOEM_INCLUDE_DIR}/soem)
+        target_link_libraries(${PROJECT_NAME} PUBLIC ${SOEM_LIBRARY})
+    endif()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE LIBRMCS_ENABLE_SOEM=1)
+    message(STATUS "EtherCAT (SOEM) transport enabled")
+endif()
+
 # Enable LTO optimization
 set_target_properties(${PROJECT_NAME} PROPERTIES
     INTERPROCEDURAL_OPTIMIZATION TRUE

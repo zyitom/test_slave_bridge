@@ -8,11 +8,17 @@
 #include <hpm_interrupt.h>
 
 #include "core/src/protocol/serializer.hpp"
+#include "firmware/rmcs_board/app/src/link/uplink.hpp"
 #include "firmware/rmcs_board/app/src/utility/boot_mailbox.hpp"
 
-namespace librmcs::firmware::usb {
+namespace librmcs::firmware::link {
 
-core::protocol::Serializer& get_serializer() { return vendor->serializer(); }
+// The USB vendor class is the host transport of this application.
+core::protocol::Serializer& uplink_serializer() { return usb::vendor->serializer(); }
+
+} // namespace librmcs::firmware::link
+
+namespace librmcs::firmware::usb {
 
 // TinyUSB device callbacks
 extern "C" {
