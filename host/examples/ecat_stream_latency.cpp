@@ -12,6 +12,9 @@
 // scheduling-preemption jitter that shows up as tail latency. Pair it with an
 // isolcpus/nohz_full-isolated core for the full effect. The cycle thread also
 // requests SCHED_FIFO unconditionally (harmless no-op without privileges).
+// The SENDER (main) thread busy-spins too; for the last microseconds pin it
+// on the command line to a second isolated core, e.g.:
+//   sudo taskset -c 14 ./ecat_stream_latency enp44s0 10 15
 //
 // inflight (default 1) is the number of unacknowledged frames kept in the
 // pipe: 1 measures pure link round-trip latency; larger values measure
@@ -54,19 +57,22 @@ struct Stats {
     std::uint64_t corrupt = 0;
 };
 
-double percentile(std::vector<double>& v, double p) {
-    if (v.empty())
+// Index into an ALREADY SORTED sample vector. (An earlier version ran
+// nth_element per percentile; combined with unspecified argument evaluation
+// order that produced inconsistent output like max < p99. Sorting once is
+// unambiguous and O(n log n) once instead of three partial selects.)
+double percentile(const std::vector<double>& sorted, double p) {
+    if (sorted.empty())
         return 0.0;
-    const auto i = static_cast<std::size_t>(p * static_cast<double>(v.size() - 1));
-    std::nth_element(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(i), v.end());
-    return v[i];
+    const auto i = static_cast<std::size_t>(p * static_cast<double>(sorted.size() - 1));
+    return sorted[i];
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::println(stderr, "usage: {} <interface> [seconds] [pin_core]", argv[0]);
+        std::println(stderr, "usage: {} <interface> [seconds] [pin_core] [inflight]", argv[0]);
         return 1;
     }
     const int duration_s = argc > 2 ? std::atoi(argv[2]) : 10;
@@ -141,10 +147,11 @@ int main(int argc, char** argv) {
     while (std::chrono::steady_clock::now() < deadline) {
         // Bound the number of unacknowledged frames: 1 = pure RTT, more =
         // queueing on top of the stop-and-wait ARQ (see the header comment).
-        if (seq - acked.load(std::memory_order_relaxed) >= inflight) {
-            std::this_thread::yield();
+        // Busy-spin (no yield): yield() parks this thread for a scheduler
+        // quantum, and that wake-up latency lands INSIDE the next frame's
+        // RTT -- it measurably added whole poll cycles per frame.
+        if (seq - acked.load(std::memory_order_relaxed) >= inflight)
             continue;
-        }
         auto buffer = link->acquire_transmit_buffer();
         if (!buffer)
             continue;
@@ -166,11 +173,11 @@ int main(int argc, char** argv) {
         "frames {}  corrupt {}  throughput {:.1f} KiB/s per direction", stats.frames, stats.corrupt,
         static_cast<double>(stats.bytes) / 1024.0 / duration_s);
     if (!stats.rtts_us.empty()) {
+        std::sort(stats.rtts_us.begin(), stats.rtts_us.end());
         std::println(
             "rtt us: p50 {:.1f}  p90 {:.1f}  p99 {:.1f}  max {:.1f}  (n={})",
             percentile(stats.rtts_us, 0.50), percentile(stats.rtts_us, 0.90),
-            percentile(stats.rtts_us, 0.99),
-            *std::max_element(stats.rtts_us.begin(), stats.rtts_us.end()), stats.rtts_us.size());
+            percentile(stats.rtts_us, 0.99), stats.rtts_us.back(), stats.rtts_us.size());
     }
     return stats.corrupt == 0 ? 0 : 2;
 }

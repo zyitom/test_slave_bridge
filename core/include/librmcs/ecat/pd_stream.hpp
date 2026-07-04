@@ -78,6 +78,13 @@ public:
         // flight and retries on every poll -- backpressure without loss.
     }
 
+    // True when build_own_chunk() could stage NEW payload right now: nothing
+    // sent yet, or the in-flight chunk has been acknowledged. Cheap peek for
+    // out-of-cycle rebuild decisions (slave: refresh the ESC inputs as soon
+    // as the fieldbus core delivers, instead of waiting for the next PDI
+    // event); the authoritative check remains inside build_own_chunk().
+    bool ready_to_advance() const noexcept { return tx_seq_ == 0 || peer_ack_ == tx_seq_; }
+
     // (Re)build the local chunk image (slave: the TxPDO inputs read by the
     // master). Must write exactly kPdChunkSize bytes. transmit_ring is the
     // local stream source (slave: the cross-core ring from the fieldbus core).

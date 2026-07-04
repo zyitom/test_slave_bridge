@@ -23,6 +23,12 @@ set(BOARD_SEARCH_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../boards" CACHE PATH "Boa
 # Enables the SDK flash-EEPROM-emulation component (must precede find_package).
 set(CONFIG_EEPROM_EMULATION 1)
 
+# Hot-path linker script: EtherCAT data-path objects execute from ILM instead
+# of XIP flash (see the .ld header). Must precede find_package.
+if("${HPM_BUILD_TYPE}" STREQUAL "flash_uf2")
+    set(CUSTOM_GCC_LINKER_FILE "${CMAKE_CURRENT_SOURCE_DIR}/hpm6e80_flash_uf2_ilm_hot.ld")
+endif()
+
 set(ENV{HPM_SDK_BASE} "${CMAKE_CURRENT_SOURCE_DIR}/../../bsp/hpm_sdk")
 find_package(hpm-sdk REQUIRED HINTS "$ENV{HPM_SDK_BASE}")
 

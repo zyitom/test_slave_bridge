@@ -25,6 +25,19 @@ CPU0 (EtherCAT 域)                     CPU1 (现场总线域)
 - **主站模式**:free-run + busy-poll(SOEM,建议 8-16kHz 轮询 + 2-3 帧流水线)。不需要 DC。
 - **跨核环**:真 acquire/release 原子(`common/xcore_ring.hpp`),不同于 app/src 单核版的
   signal_fence 方案;依赖 board_init_pmp() 将 SHARE_RAM 配为非缓存 + AMO。
+- **热路径在 ILM**:core0 用定制链接脚本(`core0/hpm6e80_flash_uf2_ilm_hot.ld`)
+  把 EtherCAT 数据面(PDI ISR、SSC 周期层、ESC 访问、PD glue、memcpy/memset)
+  放进 ILM 执行(启动时从 flash 拷贝),消除 XIP 取指 cache miss 造成的周转
+  抖动;CoE/mailbox/SDO 冷路径留在 flash。SDK 迁移后需与原版 flash_uf2.ld 对比。
+- **从站同步模式**:主站不写 0x1C32/0x1C33 且不开 DC 时,SSC 自动进入
+  SM-synchron(`ecatslv.c` StartInputHandler):SM2 写事件触发 PDI 中断,
+  出站消费 + ack + 上行重建全部在 ISR 内完成——无需主站任何配置。
+- **上行即时刷新**:SM-synchron 只在 SM2 ISR 里映射输入,而 core1 的回复总是
+  晚于该 ISR 几微秒才就绪,固定错过一班轮询。core0 经 `pAPPL_MainLoop` 钩子
+  (`ecat_appl.c` rmcs_input_refresh)在 SSC 主循环里轮询上行环,回复一就绪
+  立即写入 ESC(屏蔽 ESC 中断防与 ISR 交错;三缓冲 SM 保证原子交换),
+  主站下一帧即可带走——每次请求/应答省一个轮询周期。host 侧 soem transport
+  对称地在交付回调后留 ~3us 响应窗口,再省一个周期。
 
 ## 构建前提
 

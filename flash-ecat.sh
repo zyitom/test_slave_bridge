@@ -31,6 +31,11 @@ command -v dfu-util >/dev/null 2>&1 || {
 }
 
 PRESET="${PRESET:-release}"
+# Default to the known local toolchain install when the env var is not set.
+DEFAULT_TOOLCHAIN="$HOME/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux"
+if [[ -z "${GNURISCV_TOOLCHAIN_PATH:-}" && -d "$DEFAULT_TOOLCHAIN" ]]; then
+    export GNURISCV_TOOLCHAIN_PATH="$DEFAULT_TOOLCHAIN"
+fi
 : "${GNURISCV_TOOLCHAIN_PATH:?GNURISCV_TOOLCHAIN_PATH must point to the RISC-V toolchain root}"
 LOOPBACK_FLAG="OFF"
 [[ "${LOOPBACK:-0}" != "0" ]] && LOOPBACK_FLAG="ON"

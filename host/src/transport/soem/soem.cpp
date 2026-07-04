@@ -20,6 +20,10 @@
 //    drains it 124 bytes per acknowledged chunk. When the ring is full the
 //    caller spins briefly -- end-to-end backpressure, frames are never
 //    dropped (the protocol layer has no retransmission of its own).
+//  * Cycles that delivered payload to the receive callback grant the
+//    application a short response window before the next poll is built, so
+//    an immediate answer rides this cycle instead of the next one (a full
+//    poll period saved per request/response round trip).
 
 #if defined(LIBRMCS_ENABLE_SOEM)
 
@@ -89,6 +93,11 @@ public:
         return count;
     }
 
+    bool empty() noexcept {
+        const std::scoped_lock guard{mutex_};
+        return in_ == out_;
+    }
+
 private:
     std::mutex mutex_;
     std::size_t in_ = 0;
@@ -98,10 +107,14 @@ private:
 
 // Receive-side sink handed to PdStreamEndpoint::on_peer_chunk(): delivers the
 // payload straight to the user callback, so the ack is never withheld.
+// delivered flags cycles that handed fresh payload to the application -- the
+// cycle loop grants those a short response window (see cycle_loop()).
 struct CallbackSink {
     std::function<void(std::span<const std::byte>)>& callback;
+    bool& delivered;
 
     bool try_push(std::span<const std::byte> data) const {
+        delivered = true;
         if (callback)
             callback(data);
         return true;
@@ -271,10 +284,11 @@ private:
             total_cycles_++;
             window_cycles++;
 
+            bool delivered = false;
             if (wkc >= expected_wkc_) {
                 wkc_error_streak = 0;
                 if (receive_callback_registered_.load(std::memory_order_acquire)) {
-                    CallbackSink sink{receive_callback_};
+                    CallbackSink sink{.callback = receive_callback_, .delivered = delivered};
                     endpoint_.on_peer_chunk(inputs_, sink);
                 }
             } else {
@@ -292,6 +306,19 @@ private:
                     supervise_and_recover();
                     wkc_error_streak = 0;
                 }
+            }
+
+            // Response window. An application answering a just-delivered
+            // chunk needs about a microsecond to serialize and push, but the
+            // next build_own_chunk() runs nanoseconds after the callback
+            // returns -- the answer misses the poll it could have ridden and
+            // waits out a FULL cycle. Spinning here briefly lets the answer
+            // catch this cycle: request/response traffic saves ~one cycle of
+            // RTT, pure downlink streams never pay (no delivery, no spin),
+            // and the worst case stretches delivering cycles by the window.
+            if (delivered && transmit_ring_.empty()) {
+                const Clock::time_point response_deadline = Clock::now() + kResponseWindow;
+                while (transmit_ring_.empty() && Clock::now() < response_deadline) {}
             }
 
             // Achieved poll rate is THE latency diagnostic (frame RTT is a
@@ -359,6 +386,11 @@ private:
             logger_.warn("EtherCAT slave back to OP; stream endpoint reset");
         }
     }
+
+    // Post-delivery wait for the application's answer; a multiple of the
+    // observed callback-to-transmit turnaround (~1us), still small against
+    // the ~46us poll cycle it saves.
+    static constexpr std::chrono::microseconds kResponseWindow{3};
 
     static constexpr int kWkcErrorReportThreshold = 16;
     // ~a few ms of consecutive bad cycles before running the (slow, blocking)

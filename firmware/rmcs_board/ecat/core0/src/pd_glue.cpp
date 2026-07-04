@@ -43,4 +43,12 @@ void rmcs_pd_build_inputs(uint8_t* pd) {
     endpoint.build_own_chunk(reinterpret_cast<std::byte*>(pd), channel->up);
 }
 
+bool rmcs_pd_uplink_pending(void) {
+    // Racy against the PDI ISR by design: both operands are single-word
+    // reads, and a stale answer only skips or adds one poll -- the
+    // authoritative re-check runs inside build_own_chunk() with the ESC
+    // interrupt masked by the caller.
+    return endpoint.ready_to_advance() && channel->up.readable() != 0;
+}
+
 } // extern "C"

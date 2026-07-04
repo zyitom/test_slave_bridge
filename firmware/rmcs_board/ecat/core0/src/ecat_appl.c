@@ -46,16 +46,42 @@ UINT16 APPL_StartMailboxHandler(void) { return ALSTATUSCODE_NOERROR; }
 /* PREOP -> INIT: stop the mailbox handler. */
 UINT16 APPL_StopMailboxHandler(void) { return ALSTATUSCODE_NOERROR; }
 
+/* Out-of-cycle input refresh, run from the SSC main loop via pAPPL_MainLoop.
+ *
+ * In SM-synchron mode the SSC maps inputs only inside the SM2-event ISR,
+ * which runs BEFORE the fieldbus core has produced its reply to the chunk
+ * consumed in that very ISR: the reply then sits in the cross-core ring for
+ * a full master poll cycle. Publishing it from the main loop as soon as it
+ * exists lets the master's next frame pick it up -- one poll cycle less
+ * end-to-end latency on every request/response exchange.
+ *
+ * The ESC interrupt is masked around the copy so the ISR's own
+ * PDO_InputMapping cannot interleave; the 3-buffer SyncManager swaps
+ * atomically, so the extra write is invisible to a mid-read master. The
+ * pending check keeps the fast path to two shared-memory loads and bounds
+ * the extra ESC traffic to one write per acknowledged chunk. */
+static void rmcs_input_refresh(void) {
+    if (bEcatInputUpdateRunning && rmcs_pd_uplink_pending()) {
+        DISABLE_ESC_INT();
+        PDO_InputMapping();
+        ENABLE_ESC_INT();
+    }
+}
+
 /* PREOP -> SAFEOP: start the input handler. The non-const pointer signature
  * is the SSC contract (stacks may adjust the AL event mask through it). */
 /* NOLINTNEXTLINE(readability-non-const-parameter) */
 UINT16 APPL_StartInputHandler(UINT16* pIntMask) {
     (void)pIntMask;
+    pAPPL_MainLoop = rmcs_input_refresh;
     return ALSTATUSCODE_NOERROR;
 }
 
 /* SAFEOP -> PREOP: stop the input handler. */
-UINT16 APPL_StopInputHandler(void) { return ALSTATUSCODE_NOERROR; }
+UINT16 APPL_StopInputHandler(void) {
+    pAPPL_MainLoop = NULL;
+    return ALSTATUSCODE_NOERROR;
+}
 
 /* SAFEOP -> OP: outputs become valid -- the host link is (re)starting.
  * Reset the stream ARQ state; the master resets its own endpoint before

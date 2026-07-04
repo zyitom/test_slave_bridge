@@ -1,6 +1,7 @@
 #ifndef FIRMWARE_RMCS_BOARD_ECAT_CORE0_SRC_RMCS_PD_H
 #define FIRMWARE_RMCS_BOARD_ECAT_CORE0_SRC_RMCS_PD_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -32,6 +33,13 @@ void rmcs_pd_reset(void);
  * safe there. pd points at RMCS_PD_CHUNK_SIZE bytes. */
 void rmcs_pd_on_outputs(const uint8_t* pd);
 void rmcs_pd_build_inputs(uint8_t* pd);
+
+/* True when a rebuild of the input chunk would stage fresh uplink payload:
+ * the in-flight chunk (if any) is acknowledged AND the cross-core uplink
+ * ring holds bytes. Cheap peek used by the SSC main-loop hook to publish
+ * fieldbus replies to the ESC without waiting for the next PDI event (see
+ * ecat_appl.c, rmcs_input_refresh). */
+bool rmcs_pd_uplink_pending(void);
 
 #ifdef __cplusplus
 }
