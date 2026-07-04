@@ -1,5 +1,6 @@
 #include "board_app.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 
@@ -59,13 +60,13 @@ mcan_msg_buf_attr_t can_message_ram(size_t can_index) {
     // Fixed slices of the 32 KiB AHB RAM (0xF0200000), which nothing else in
     // this firmware uses; see the declaration for why this is not a
     // section-placed array. One default-sized message buffer per controller.
-    constexpr uint32_t kSliceSize = MCAN_MSG_BUF_SIZE_IN_WORDS * sizeof(uint32_t);
+    constexpr uint32_t slice_size = MCAN_MSG_BUF_SIZE_IN_WORDS * sizeof(uint32_t);
     static_assert(
-        std::size(kCanPorts) * kSliceSize
+        std::size(kCanPorts) * slice_size
         <= MCAN_MSG_BUF_BASE_VALID_END - MCAN_MSG_BUF_BASE_VALID_START);
     return {
-        .ram_base = MCAN_MSG_BUF_BASE_VALID_START + can_index * kSliceSize,
-        .ram_size = kSliceSize,
+        .ram_base = MCAN_MSG_BUF_BASE_VALID_START + (can_index * slice_size),
+        .ram_size = slice_size,
     };
 }
 

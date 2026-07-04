@@ -34,8 +34,7 @@ int main() {
         const std::span<const std::byte> chunk{buffer, received};
         // Spin until the uplink ring has room: the echo must be lossless for
         // the end-to-end ARQ test to be meaningful.
-        while (!channel.up.try_push(chunk)) {
-        }
+        while (!channel.up.try_push(chunk)) {}
     }
 
     return 0;
@@ -43,15 +42,15 @@ int main() {
 
 #else
 
-#include <hpm_dma_mgr.h>
-#include <hpm_l1c_drv.h>
+# include <hpm_dma_mgr.h>
+# include <hpm_l1c_drv.h>
 
-#include "firmware/rmcs_board/app/src/can/can.hpp"
-#include "firmware/rmcs_board/app/src/led/led.hpp"
-#include "firmware/rmcs_board/app/src/timer/timer.hpp"
-#include "firmware/rmcs_board/app/src/uart/uart.hpp"
-#include "firmware/rmcs_board/app/src/utility/interrupt_lock.hpp"
-#include "host_link.hpp"
+# include "firmware/rmcs_board/app/src/can/can.hpp"
+# include "firmware/rmcs_board/app/src/led/led.hpp"
+# include "firmware/rmcs_board/app/src/timer/timer.hpp"
+# include "firmware/rmcs_board/app/src/uart/uart.hpp"
+# include "firmware/rmcs_board/app/src/utility/interrupt_lock.hpp"
+# include "host_link.hpp"
 
 int main() {
     using namespace librmcs::firmware; // NOLINT(google-build-using-namespace)

@@ -6,8 +6,10 @@ sdk_src(board.c)
 # mchtmr1, ...).
 sdk_compile_definitions_ifdef(BUILD_FOR_SECONDARY_CORE BOARD_RUNNING_CORE=HPM_CORE1)
 
-set_property(GLOBAL PROPERTY LIBRMCS_USB_PID 0xA902)
-sdk_compile_definitions(LIBRMCS_USB_PID=0xA902)
+# Unique per board: the DFU bootloader enumerates with this PID and dfu-util
+# matches images against it (0xA901 hpm5321, 0xA902 hpm5321_dual_can).
+set_property(GLOBAL PROPERTY LIBRMCS_USB_PID 0xA903)
+sdk_compile_definitions(LIBRMCS_USB_PID=0xA903)
 
 # The fieldbus application (EtherCAT bridge core1) reuses the shared app-layer
 # drivers; this board directory provides their port tables and pin hooks.

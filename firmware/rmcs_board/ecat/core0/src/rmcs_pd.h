@@ -30,8 +30,8 @@ void rmcs_pd_reset(void);
 /* SSC PDO mapping hooks. Called from whatever context the SSC dispatches
  * them in (main loop in free-run, PDI ISR in SM-synchron mode); both are
  * safe there. pd points at RMCS_PD_CHUNK_SIZE bytes. */
-void rmcs_pd_on_outputs(const uint8_t *pd);
-void rmcs_pd_build_inputs(uint8_t *pd);
+void rmcs_pd_on_outputs(const uint8_t* pd);
+void rmcs_pd_build_inputs(uint8_t* pd);
 
 #ifdef __cplusplus
 }

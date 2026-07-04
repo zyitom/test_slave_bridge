@@ -57,8 +57,7 @@ void board_init_console(void) {
     cfg.baudrate = BOARD_CONSOLE_BAUDRATE;
 
     if (console_init(&cfg) != status_success) {
-        while (1) {
-        }
+        while (1) {}
     }
 }
 
@@ -125,9 +124,11 @@ void board_init_pmp(void) {
         PMP_CFG(READ_EN, WRITE_EN, EXECUTE_EN, ADDR_MATCH_NAPOT, REG_UNLOCK);
     index++;
 
-    /* Non-cacheable data region (DMA buffers). */
+    /* Non-cacheable data region (DMA buffers). Linker-script symbol names.
+     * NOLINTBEGIN(bugprone-reserved-identifier, readability-identifier-naming) */
     extern uint32_t __noncacheable_start__[];
     extern uint32_t __noncacheable_end__[];
+    /* NOLINTEND(bugprone-reserved-identifier, readability-identifier-naming) */
     start_addr = (uint32_t)__noncacheable_start__;
     end_addr = (uint32_t)__noncacheable_end__;
     length = end_addr - start_addr;
@@ -144,9 +145,11 @@ void board_init_pmp(void) {
     }
 
     /* SHARE_RAM: non-cacheable + AMO on BOTH cores -- the cross-core rings of
-     * the EtherCAT bridge (ecat/common/xcore_ring.hpp) rely on this. */
+     * the EtherCAT bridge (ecat/common/xcore_ring.hpp) rely on this.
+     * NOLINTBEGIN(bugprone-reserved-identifier, readability-identifier-naming) */
     extern uint32_t __share_mem_start__[];
     extern uint32_t __share_mem_end__[];
+    /* NOLINTEND(bugprone-reserved-identifier, readability-identifier-naming) */
     start_addr = (uint32_t)__share_mem_start__;
     end_addr = (uint32_t)__share_mem_end__;
     length = end_addr - start_addr;
@@ -242,7 +245,7 @@ void board_init_usb(void) {
     board_delay_ms(100);
 }
 
-void board_init_ethercat(ESC_Type *ptr) {
+void board_init_ethercat(ESC_Type* ptr) {
     (void)ptr;
 
     clock_add_to_group(clock_esc0, 0);

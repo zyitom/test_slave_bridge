@@ -15,7 +15,6 @@
 #include "firmware/rmcs_board/app/src/timer/timer.hpp"
 #include "firmware/rmcs_board/app/src/uart/uart.hpp"
 #include "firmware/rmcs_board/app/src/utility/lazy.hpp"
-
 #include "xcore_channel.hpp"
 
 namespace librmcs::firmware::ecat {

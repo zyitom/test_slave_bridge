@@ -50,8 +50,9 @@ public:
     void rx_idle_callback() { try_dequeue(true); }
 
 private:
-    RxBuffer(UART_Type* uart_base, uint32_t dmamux_src, std::byte* data_buffer,
-             dma_mgr_linked_descriptor_t* linked_descriptors)
+    RxBuffer(
+        UART_Type* uart_base, uint32_t dmamux_src, std::byte* data_buffer,
+        dma_mgr_linked_descriptor_t* linked_descriptors)
         : uart_base_(uart_base)
         , data_buffer_(data_buffer)
         , dma_linked_descriptors_(linked_descriptors) {
@@ -122,8 +123,7 @@ private:
             // No cache inval: data_buffer_ is in AHB SRAM.
 
             if (slice == readable) {
-                static_cast<T*>(this)->handle_uplink(
-                    {data_buffer_ + offset, slice}, {}, is_idle);
+                static_cast<T*>(this)->handle_uplink({data_buffer_ + offset, slice}, {}, is_idle);
             } else {
                 static_cast<T*>(this)->handle_uplink(
                     {data_buffer_ + offset, slice}, {data_buffer_, readable - slice}, is_idle);
@@ -140,8 +140,8 @@ private:
     BufferIndexType update_in() {
         const auto in = in_.load(std::memory_order::relaxed);
 
-        const size_t current_offset = dma_.base->CHCTRL[dma_.channel].DSTADDR
-                                    - reinterpret_cast<uintptr_t>(data_buffer_);
+        const size_t current_offset =
+            dma_.base->CHCTRL[dma_.channel].DSTADDR - reinterpret_cast<uintptr_t>(data_buffer_);
         core::utility::assert_debug(current_offset < kBufferSize);
 
         auto new_in = static_cast<BufferIndexType>((in & ~kBufferMask) | current_offset);

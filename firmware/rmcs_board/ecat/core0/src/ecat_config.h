@@ -7,6 +7,8 @@
  * Values follow the ecat_io sample for the hpm6e00evk board.
  */
 
+#include <hpm_clock_drv.h> /* clock_gptmr0 (our board.h stays minimal) */
+
 #include "board.h"
 
 #define FLASH_ADDR_BASE   BOARD_FLASH_BASE_ADDRESS

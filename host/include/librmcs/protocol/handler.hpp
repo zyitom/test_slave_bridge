@@ -45,6 +45,24 @@ public:
         uint16_t usb_vid, int32_t usb_pid, std::string_view serial_filter,
         const board::AdvancedOptions& options, data::DataCallback& callback);
 
+    /**
+     * @brief Connects to a board over EtherCAT (the rmcs_board EtherCAT stream
+     * bridge) instead of USB.
+     *
+     * @param ethercat_interface_name Raw network interface wired to the slave
+     *        (e.g. "enp2s0"); opening it requires CAP_NET_RAW (or root).
+     * @throws std::runtime_error when the SDK was built without the optional
+     *         SOEM component (cmake -DLIBRMCS_ENABLE_SOEM=ON), or when the
+     *         slave cannot be brought to OPERATIONAL.
+     *
+     * The session handshake and all data semantics are identical to the USB
+     * transport; use options.thread_setup to pin the EtherCAT busy-poll
+     * thread to an isolated core for the lowest latency.
+     */
+    Handler(
+        std::string_view ethercat_interface_name, const board::AdvancedOptions& options,
+        data::DataCallback& callback);
+
     Handler(const Handler&) = delete;
     Handler& operator=(const Handler&) = delete;
     Handler(Handler&& other) noexcept;

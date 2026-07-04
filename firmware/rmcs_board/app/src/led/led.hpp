@@ -21,14 +21,14 @@ inline auto& led_backend = gpio_led;
 // instead of pretending to distinguish them.  Each state renders as a distinct,
 // easy-to-read indicator-LED pattern (see the table in Led::update()).
 enum class CanFault : uint8_t {
-    kNone = 0,     // healthy / no error
-    kNoAck,        // ACK error -- alone on the bus / partner unpowered / TX wire cut
-    kWiringFault,  // Bit0 error: cannot drive the bus dominant -- CAN_H/L shorted
-                   // together, reversed, or open (the common physical wiring mistakes)
-    kSignalError,  // stuff/form/CRC (and the rare Bit1 "stuck dominant"): corrupted
-                   // bits whose causes -- missing 120R termination, baudrate mismatch,
-                   // noise -- fluctuate frame to frame and cannot be told apart
-    kBusOff,       // controller bus-off -- too many errors, recovering/offline
+    kNone = 0,    // healthy / no error
+    kNoAck,       // ACK error -- alone on the bus / partner unpowered / TX wire cut
+    kWiringFault, // Bit0 error: cannot drive the bus dominant -- CAN_H/L shorted
+                  // together, reversed, or open (the common physical wiring mistakes)
+    kSignalError, // stuff/form/CRC (and the rare Bit1 "stuck dominant"): corrupted
+                  // bits whose causes -- missing 120R termination, baudrate mismatch,
+                  // noise -- fluctuate frame to frame and cannot be told apart
+    kBusOff,      // controller bus-off -- too many errors, recovering/offline
 };
 
 class Led {
@@ -118,14 +118,14 @@ public:
                 timeout ? can_fault_[i].load(std::memory_order::relaxed) : CanFault::kNone;
             bool led_on = false;
             switch (fault) {
-            case CanFault::kNoAck: led_on = (tick % 1000U) < 500U; break;  // ~1 Hz
-            case CanFault::kWiringFault: led_on = (tick % 200U) < 100U; break;  // ~5 Hz
-            case CanFault::kSignalError: {  // two quick flashes, then a pause
+            case CanFault::kNoAck: led_on = (tick % 1000U) < 500U; break;      // ~1 Hz
+            case CanFault::kWiringFault: led_on = (tick % 200U) < 100U; break; // ~5 Hz
+            case CanFault::kSignalError: { // two quick flashes, then a pause
                 const uint32_t phase = tick % 1200U;
                 led_on = phase < 120U || (phase >= 240U && phase < 360U);
                 break;
             }
-            case CanFault::kBusOff: led_on = true; break;  // solid
+            case CanFault::kBusOff: led_on = true; break; // solid
             case CanFault::kNone: led_on = false; break;
             }
             board::kCanIndicatorPins[i].set_active(led_on);
@@ -156,7 +156,7 @@ private:
     // CAN fault indicator state — ISR-safe via atomic stores.  Each CAN
     // controller gets its own fault/timeout pair, refreshed by the CAN ISR on
     // every error interrupt.
-    static constexpr uint16_t kCanFaultTimeoutTicks = 5000;  // 5 s at 1 kHz
+    static constexpr uint16_t kCanFaultTimeoutTicks = 5000; // 5 s at 1 kHz
     std::array<std::atomic<uint16_t>, kCanIndicatorCount> can_fault_timeout_{};
     std::array<std::atomic<CanFault>, kCanIndicatorCount> can_fault_{};
 

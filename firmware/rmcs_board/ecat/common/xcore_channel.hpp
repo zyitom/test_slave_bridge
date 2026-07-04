@@ -51,12 +51,11 @@ namespace internal {
 extern "C" {
 // Linker-provided SHARE_RAM boundary; identical in the core0 and core1
 // scripts, so both images resolve to the same physical address.
+// NOLINTNEXTLINE(bugprone-reserved-identifier, readability-identifier-naming)
 extern unsigned char __share_mem_start__[];
 }
 
-inline void* xcore_channel_memory() noexcept {
-    return static_cast<void*>(__share_mem_start__);
-}
+inline void* xcore_channel_memory() noexcept { return static_cast<void*>(__share_mem_start__); }
 
 } // namespace internal
 
@@ -72,8 +71,7 @@ inline XcoreChannel& xcore_channel_init() noexcept {
 // Core1 only. Blocks until core0 has published the channel.
 inline XcoreChannel& xcore_channel_wait() noexcept {
     auto* channel = static_cast<XcoreChannel*>(internal::xcore_channel_memory());
-    while (channel->magic.load(std::memory_order::acquire) != kXcoreChannelMagic) {
-    }
+    while (channel->magic.load(std::memory_order::acquire) != kXcoreChannelMagic) {}
     return *channel;
 }
 

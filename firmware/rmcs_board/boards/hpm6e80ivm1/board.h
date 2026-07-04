@@ -19,6 +19,10 @@
 #define BOARD_NAME          "RMCS_ECAT_Bridge_HPM6E80"
 #define BOARD_UF2_SIGNATURE (0x0A4D5048UL)
 
+/* Load/entry address of the secondary-core image (SDK board convention,
+ * consumed by multicore_release_cpu in core0's ecat_main.c). */
+#define SEC_CORE_IMG_START CORE1_ILM_LOCAL_BASE
+
 #define BOARD_FLASH_BASE_ADDRESS (0x80000000UL)
 #define BOARD_FLASH_SIZE         (16 * SIZE_1MB)
 /* The app image must end below the EtherCAT flash-emulated EEPROM region at
@@ -83,7 +87,7 @@ void board_init_core1(void);
 void board_init_console(void);
 void board_init_pmp(void);
 void board_init_usb(void);
-void board_init_ethercat(ESC_Type *ptr);
+void board_init_ethercat(ESC_Type* ptr);
 
 /* Bootloader-specific helper: hold the user key (PB24, pressed = low) through
  * reset to force the bootloader to stay in DFU mode. */

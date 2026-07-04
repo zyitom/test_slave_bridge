@@ -8,9 +8,10 @@
  * C-compilable (which they are by construction).
  */
 
-#include "ecat_def.h"
+#include <stdint.h>
 
 #include "applInterface.h"
+#include "ecat_def.h"
 
 /* Instantiate the application object dictionary (ApplicationObjDic variables)
  * exactly once, in this translation unit. digital_io.h is the generated
@@ -26,7 +27,7 @@
 /* The override header defines this marker; a stock generated header would
  * declare 4-byte counter PDOs that silently disagree with the stream chunk. */
 #ifndef RMCS_STREAM_OBJECTS
-#error "Stock digital_ioObjects.h detected; run ecat/tools/import_ssc.sh"
+# error "Stock digital_ioObjects.h detected; run ecat/tools/import_ssc.sh"
 #endif
 
 _Static_assert(
@@ -45,8 +46,10 @@ UINT16 APPL_StartMailboxHandler(void) { return ALSTATUSCODE_NOERROR; }
 /* PREOP -> INIT: stop the mailbox handler. */
 UINT16 APPL_StopMailboxHandler(void) { return ALSTATUSCODE_NOERROR; }
 
-/* PREOP -> SAFEOP: start the input handler. */
-UINT16 APPL_StartInputHandler(UINT16 *pIntMask) {
+/* PREOP -> SAFEOP: start the input handler. The non-const pointer signature
+ * is the SSC contract (stacks may adjust the AL event mask through it). */
+/* NOLINTNEXTLINE(readability-non-const-parameter) */
+UINT16 APPL_StartInputHandler(UINT16* pIntMask) {
     (void)pIntMask;
     return ALSTATUSCODE_NOERROR;
 }
@@ -69,17 +72,17 @@ UINT16 APPL_StopOutputHandler(void) { return ALSTATUSCODE_NOERROR; }
 /* Process data sizes. Fixed-size stream chunks in both directions; MUST
  * match the byte-array PDOs configured in the SSC Tool project and the ESI
  * file (see ../README.md). */
-UINT16 APPL_GenerateMapping(UINT16 *pInputSize, UINT16 *pOutputSize) {
+UINT16 APPL_GenerateMapping(UINT16* pInputSize, UINT16* pOutputSize) {
     *pInputSize = RMCS_PD_CHUNK_SIZE;
     *pOutputSize = RMCS_PD_CHUNK_SIZE;
     return ALSTATUSCODE_NOERROR;
 }
 
 /* Copy the input stream chunk (slave -> master) into the ESC image. */
-void APPL_InputMapping(UINT16 *pData) { rmcs_pd_build_inputs((uint8_t *)pData); }
+void APPL_InputMapping(UINT16* pData) { rmcs_pd_build_inputs((uint8_t*)pData); }
 
 /* Consume the output stream chunk (master -> slave) from the ESC image. */
-void APPL_OutputMapping(UINT16 *pData) { rmcs_pd_on_outputs((const uint8_t *)pData); }
+void APPL_OutputMapping(UINT16* pData) { rmcs_pd_on_outputs((const uint8_t*)pData); }
 
 /* Cyclic application hook: unused, the stream is fully handled by the two
  * mapping callbacks above. */

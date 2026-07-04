@@ -35,8 +35,9 @@ public:
 
     static constexpr size_t kMaxIdleCount = 256;
 
-    TxBuffer(UART_Type* uart_base, uint32_t dmamux_src, std::byte* data_buffer,
-             dma_mgr_linked_descriptor_t* linked_descriptor)
+    TxBuffer(
+        UART_Type* uart_base, uint32_t dmamux_src, std::byte* data_buffer,
+        dma_mgr_linked_descriptor_t* linked_descriptor)
         : uart_base_(uart_base)
         , data_buffer_(data_buffer)
         , linked_descriptor_(linked_descriptor) {

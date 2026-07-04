@@ -18,11 +18,11 @@
 
 #include "board_app.hpp"
 #include "core/include/librmcs/data/datas.hpp"
-#include "firmware/rmcs_board/app/src/can/can_port.hpp"
 #include "core/src/protocol/protocol.hpp"
 #include "core/src/protocol/serializer.hpp"
 #include "core/src/utility/assert.hpp"
 #include "core/src/utility/immovable.hpp"
+#include "firmware/rmcs_board/app/src/can/can_port.hpp"
 #include "firmware/rmcs_board/app/src/led/led.hpp"
 #include "firmware/rmcs_board/app/src/link/uplink.hpp"
 #include "firmware/rmcs_board/app/src/utility/lazy.hpp"
@@ -83,7 +83,7 @@ public:
         config.tsu_config.ext_timebase_src = MCAN_TSU_EXT_TIMEBASE_SRC_TBSEL_0;
         config.tsu_config.tbsel_option = MCAN_TSU_TBSEL_PTPC0;
         config.tsu_config.capture_on_sof = true;
-        config.tsu_config.prescaler = 1;  // unused for an external timebase
+        config.tsu_config.prescaler = 1; // unused for an external timebase
         config.timestamp_cfg.counter_prescaler = 1;
         config.timestamp_cfg.timestamp_selection = MCAN_TIMESTAMP_SEL_EXT_TS_VAL_USED;
 
@@ -135,13 +135,9 @@ public:
 
         mcan_init(can_base_, &config, can_source_clock_freq);
         mcan_enable_interrupts(
-            can_base_,
-            MCAN_INT_RXFIFO0_NEW_MSG
-                | MCAN_INT_BUS_OFF_STATUS
-                | MCAN_INT_WARNING_STATUS
-                | MCAN_INT_ERROR_PASSIVE
-                | MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE
-                | MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE);
+            can_base_, MCAN_INT_RXFIFO0_NEW_MSG | MCAN_INT_BUS_OFF_STATUS | MCAN_INT_WARNING_STATUS
+                           | MCAN_INT_ERROR_PASSIVE | MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE
+                           | MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE);
         // CAN RX is the forwarding-critical path (motor feedback -> host).
         // Priority 3: above USB (2) and UART (1) — ensures CAN frames are
         // never delayed by bulk USB transfers or DMA callbacks.
@@ -156,8 +152,7 @@ public:
     // handle_uplink reads (at most) one frame from RX FIFO0 and returns whether
     // a frame was consumed, so the ISR can drain the FIFO in a loop.
     void handle_downlink(const data::CanDataView& data);
-    bool handle_uplink(
-        core::protocol::FieldId field_id, core::protocol::Serializer& serializer);
+    bool handle_uplink(core::protocol::FieldId field_id, core::protocol::Serializer& serializer);
     void irq_handler();
 
 private:
@@ -178,7 +173,7 @@ private:
         case mcan_last_error_code_no_change: return led::CanFault::kNone;
         case mcan_last_error_code_ack_error: return led::CanFault::kNoAck;
         case mcan_last_error_code_bit0_error: return led::CanFault::kWiringFault;
-        default: return led::CanFault::kSignalError;  // stuff / format / bit1 / crc
+        default: return led::CanFault::kSignalError; // stuff / format / bit1 / crc
         }
     }
 
@@ -218,7 +213,6 @@ consteval std::array<Can::Lazy, sizeof...(I)> make_can_array(std::index_sequence
 
 } // namespace internal
 
-inline constinit auto can_array =
-    internal::make_can_array(std::make_index_sequence<kCanCount>{});
+inline constinit auto can_array = internal::make_can_array(std::make_index_sequence<kCanCount>{});
 
 } // namespace librmcs::firmware::can

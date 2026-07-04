@@ -34,6 +34,7 @@ public:
     XcoreRing& operator=(const XcoreRing&) = delete;
     XcoreRing(XcoreRing&&) = delete;
     XcoreRing& operator=(XcoreRing&&) = delete;
+    ~XcoreRing() = default;
 
     // Owner-side initialization only (core0, before core1 is released).
     void reset() noexcept {

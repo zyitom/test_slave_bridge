@@ -19,10 +19,10 @@
 #include "core/src/utility/assert.hpp"
 #include "core/src/utility/immovable.hpp"
 #include "firmware/rmcs_board/app/src/led/led.hpp"
-#include "firmware/rmcs_board/app/src/uart/rx_buffer.hpp"
-#include "firmware/rmcs_board/app/src/uart/uart_port.hpp"
-#include "firmware/rmcs_board/app/src/uart/tx_buffer.hpp"
 #include "firmware/rmcs_board/app/src/link/uplink.hpp"
+#include "firmware/rmcs_board/app/src/uart/rx_buffer.hpp"
+#include "firmware/rmcs_board/app/src/uart/tx_buffer.hpp"
+#include "firmware/rmcs_board/app/src/uart/uart_port.hpp"
 #include "firmware/rmcs_board/app/src/utility/lazy.hpp"
 
 namespace librmcs::firmware::uart {
@@ -104,9 +104,8 @@ public:
     // eliminating manual l1c_dc_flush/invalidate overhead on the UART data path.
     struct RxStorage {
         alignas(HPM_L1C_CACHELINE_SIZE) std::array<std::byte, RxBuffer<Uart>::kBufferSize> data;
-        alignas(HPM_L1C_CACHELINE_SIZE)
-            std::array<dma_mgr_linked_descriptor_t, RxBuffer<Uart>::kDmaDescriptorCount>
-                descriptors;
+        alignas(HPM_L1C_CACHELINE_SIZE) std::array<
+            dma_mgr_linked_descriptor_t, RxBuffer<Uart>::kDmaDescriptorCount> descriptors;
     };
     struct TxStorage {
         alignas(HPM_L1C_CACHELINE_SIZE) std::array<std::byte, TxBuffer::kBufferSize> data;
@@ -122,12 +121,13 @@ ATTR_PLACE_AT(LIBRMCS_DMA_BUFFER_SECTION)
 inline constinit Uart::TxStorage uart_tx_storage_[kUartCount]{};
 
 inline Uart::Uart(UartPort port, size_t storage_index)
-    : TxBuffer(reinterpret_cast<UART_Type*>(port.base), port.dma_src_tx,
-               uart_tx_storage_[storage_index].data.data(),
-               &uart_tx_storage_[storage_index].descriptor)
-    , RxBuffer(reinterpret_cast<UART_Type*>(port.base), port.dma_src_rx,
-               uart_rx_storage_[storage_index].data.data(),
-               uart_rx_storage_[storage_index].descriptors.data())
+    : TxBuffer(
+          reinterpret_cast<UART_Type*>(port.base), port.dma_src_tx,
+          uart_tx_storage_[storage_index].data.data(), &uart_tx_storage_[storage_index].descriptor)
+    , RxBuffer(
+          reinterpret_cast<UART_Type*>(port.base), port.dma_src_rx,
+          uart_rx_storage_[storage_index].data.data(),
+          uart_rx_storage_[storage_index].descriptors.data())
     , data_id_(port.data_id)
     , uart_base_(reinterpret_cast<UART_Type*>(port.base)) {
     init_uart(port.irq_num, port.baudrate, port.parity);

@@ -19,9 +19,9 @@
 #include "core/src/utility/assert.hpp"
 #include "core/src/utility/immovable.hpp"
 #include "firmware/rmcs_board/app/src/can/can.hpp"
+#include "firmware/rmcs_board/app/src/link/interrupt_safe_buffer.hpp"
 #include "firmware/rmcs_board/app/src/timer/timer.hpp"
 #include "firmware/rmcs_board/app/src/uart/uart.hpp"
-#include "firmware/rmcs_board/app/src/link/interrupt_safe_buffer.hpp"
 #include "firmware/rmcs_board/app/src/usb/usb_descriptors.hpp"
 #include "firmware/rmcs_board/app/src/utility/lazy.hpp"
 

@@ -35,15 +35,27 @@ public:
     static constexpr size_t kSessionAckRetryCount = 5;
     static constexpr auto kSessionRefreshInterval = std::chrono::milliseconds{250};
 
-    explicit Impl(std::unique_ptr<transport::Transport> transport, data::DataCallback& callback)
+    // How receive() callbacks relate to protocol frame boundaries:
+    // - kDatagram (USB): every callback is one complete transfer, so a
+    //   truncated frame at its end can never complete -- finish the transfer
+    //   after each feed for framing recovery.
+    // - kStream (EtherCAT process data): callbacks are arbitrary slices of a
+    //   continuous byte stream; frames routinely span callbacks, so the
+    //   deserializer must keep its partial state (mirrors the firmware side,
+    //   ecat/core1/host_link.hpp).
+    enum class TransferFraming : uint8_t { kDatagram, kStream };
+
+    explicit Impl(
+        std::unique_ptr<transport::Transport> transport, data::DataCallback& callback,
+        TransferFraming framing = TransferFraming::kDatagram)
         : callback_(callback)
         , deserializer_(*this)
         , expected_session_nonce_(generate_session_nonce())
         , transport_(std::move(transport)) {
-        transport_->receive([this](std::span<const std::byte> buffer) {
-            // Operating system automatically assembles the packet
+        transport_->receive([this, framing](std::span<const std::byte> buffer) {
             deserializer_.feed(buffer);
-            deserializer_.finish_transfer();
+            if (framing == TransferFraming::kDatagram)
+                deserializer_.finish_transfer();
         });
 
         establish_session();
@@ -402,6 +414,25 @@ Handler::Handler(
     const board::AdvancedOptions& options, data::DataCallback& callback)
     : impl_(new Impl(
           transport::usb::create_transport(usb_vid, usb_pid, serial_filter, options), callback)) {}
+
+#if defined(LIBRMCS_ENABLE_SOEM)
+Handler::Handler(
+    std::string_view ethercat_interface_name, const board::AdvancedOptions& options,
+    data::DataCallback& callback)
+    : impl_(new Impl(
+          transport::soem::create_transport(ethercat_interface_name, options), callback,
+          Impl::TransferFraming::kStream)) {}
+#else
+Handler::Handler(
+    std::string_view ethercat_interface_name, const board::AdvancedOptions& options,
+    data::DataCallback& callback) {
+    (void)ethercat_interface_name;
+    (void)options;
+    (void)callback;
+    throw std::runtime_error{"librmcs-sdk was built without the EtherCAT transport; "
+                             "reconfigure with -DLIBRMCS_ENABLE_SOEM=ON"};
+}
+#endif
 
 Handler::Handler(Handler&& other) noexcept
     : impl_(std::exchange(other.impl_, nullptr)) {}

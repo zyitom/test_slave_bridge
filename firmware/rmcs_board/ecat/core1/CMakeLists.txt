@@ -19,11 +19,13 @@ set(BOARD_SEARCH_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../boards" CACHE PATH "Boa
 # (pairs with the host tool ecat_stream_latency for byte-exact validation).
 option(RMCS_ECAT_CORE1_LOOPBACK "Build the loopback bring-up image" OFF)
 
-# Component/board selection must precede find_package.
+# Component/board selection must precede find_package. The loopback image is
+# a pure ring echo with zero peripheral code, so it must not pull in the board
+# application layer (ISR table) either.
 if(NOT RMCS_ECAT_CORE1_LOOPBACK)
     set(CONFIG_DMA_MGR 1)
+    set(LIBRMCS_BUILDING_ECAT_CORE1 1)
 endif()
-set(LIBRMCS_BUILDING_ECAT_CORE1 1)
 
 set(ENV{HPM_SDK_BASE} "${CMAKE_CURRENT_SOURCE_DIR}/../../bsp/hpm_sdk")
 find_package(hpm-sdk REQUIRED HINTS "$ENV{HPM_SDK_BASE}")

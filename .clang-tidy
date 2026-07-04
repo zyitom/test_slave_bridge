@@ -123,7 +123,10 @@ CheckOptions:
 
   cppcoreguidelines-special-member-functions.AllowImplicitlyDeletedCopyOrMove: true
   cppcoreguidelines-special-member-functions.AllowMissingMoveFunctionsWhenCopyIsDeleted: true
-  misc-include-cleaner.IgnoreHeaders: "bits/.+h" # https://github.com/llvm/llvm-project/issues/68213
+  # bits/: https://github.com/llvm/llvm-project/issues/68213
+  # hpm_: the HPM SDK is umbrella-header based (hpm_soc.h et al.); its symbols
+  # cannot satisfy direct-include analysis.
+  misc-include-cleaner.IgnoreHeaders: "bits/.+h;hpm_.+h;.*/hpm_.+h"
   misc-const-correctness.AnalyzeParameters: false # Handled by `readability-non-const-parameter`
   readability-simplify-boolean-expr.IgnoreMacros: true
   readability-simplify-boolean-expr.ChainedConditionalReturn: true

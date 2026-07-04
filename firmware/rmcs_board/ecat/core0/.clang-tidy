@@ -1,0 +1,8 @@
+InheritParentConfig: true
+
+# core0 is the C boundary to the Beckhoff SSC stack: APPL_* signatures,
+# parameter names and instantiation macros (_DIGITAL_IO_) are dictated by the
+# generated SSC headers, so identifier-style checks cannot apply here.
+Checks: >
+  -bugprone-reserved-identifier,
+  -readability-identifier-naming,

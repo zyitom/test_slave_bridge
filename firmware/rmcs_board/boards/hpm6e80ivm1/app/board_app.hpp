@@ -27,7 +27,7 @@ namespace librmcs::firmware::board {
 // CAN ports in logical order. CAN0 = MCAN4, classic 1 Mbps for bring-up; the
 // on-board transceiver's STB pin is driven low (normal mode) by init_can().
 constexpr CanPort kCanPorts[] = {
-    {HPM_MCAN4_BASE, IRQn_MCAN4, CanMode::kClassic},
+    {.base = HPM_MCAN4_BASE, .irq_num = IRQn_MCAN4, .mode = CanMode::kClassic},
 };
 
 uint32_t init_can(MCAN_Type* ptr);
@@ -47,8 +47,13 @@ constexpr uint32_t kCanTimestampNsPerUs = 1000;
 
 // UART ports in logical order: one test data UART (UART1, PY06/PY07 header).
 constexpr UartPort kUartPorts[] = {
-    {HPM_UART1_BASE, IRQn_UART1, HPM_DMA_SRC_UART1_TX, HPM_DMA_SRC_UART1_RX,
-     data::DataId::kUart0, 921600, parity_none},
+    {.base = HPM_UART1_BASE,
+     .irq_num = IRQn_UART1,
+     .dma_src_tx = HPM_DMA_SRC_UART1_TX,
+     .dma_src_rx = HPM_DMA_SRC_UART1_RX,
+     .data_id = data::DataId::kUart0,
+     .baudrate = 921600,
+     .parity = parity_none},
 };
 
 uint32_t init_uart(UART_Type* ptr);

@@ -11,7 +11,7 @@ namespace librmcs::firmware::flash {
 // flash-emulated ESC EEPROM at offset 2 MiB) by capping the accepted image
 // region with BOARD_APP_FLASH_END_OFFSET; the default is the whole flash.
 #ifndef BOARD_APP_FLASH_END_OFFSET
-#define BOARD_APP_FLASH_END_OFFSET BOARD_FLASH_SIZE
+# define BOARD_APP_FLASH_END_OFFSET BOARD_FLASH_SIZE
 #endif
 
 inline constexpr uintptr_t kFlashBaseAddress = BOARD_FLASH_BASE_ADDRESS;

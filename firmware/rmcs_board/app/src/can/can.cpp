@@ -51,8 +51,7 @@ void Can::handle_downlink(const data::CanDataView& data) {
 }
 
 ATTR_PLACE_AT(".fast")
-bool Can::handle_uplink(
-    core::protocol::FieldId field_id, core::protocol::Serializer& serializer) {
+bool Can::handle_uplink(core::protocol::FieldId field_id, core::protocol::Serializer& serializer) {
     mcan_rx_message_t rx;
     if (mcan_read_rxfifo(can_base_, 0, &rx) != status_success)
         return false;
@@ -103,8 +102,7 @@ bool Can::handle_uplink(
         && ts_value.is_64bit) {
         const auto sec = static_cast<uint32_t>(ts_value.ts_64bit >> 32);
         const auto ns = static_cast<uint32_t>(ts_value.ts_64bit);
-        data.timestamp_us = sec * (1'000'000'000U / kTsNsPerUs) + (sec * 2U) / 3U
-                          + ns / kTsNsPerUs;
+        data.timestamp_us = sec * (1'000'000'000U / kTsNsPerUs) + (sec * 2U) / 3U + ns / kTsNsPerUs;
     }
 
     const auto result = serializer.write_can(field_id, data);
@@ -136,14 +134,12 @@ void Can::irq_handler() {
         // Drain the FIFO completely: RF0N is a status bit, not a counter, so
         // one interrupt may stand for several buffered frames.
         auto& serializer = link::uplink_serializer();
-        while (handle_uplink(data_id_, serializer)) {
-        }
+        while (handle_uplink(data_id_, serializer)) {}
     }
 
-    if (flags & (MCAN_INT_BUS_OFF_STATUS | MCAN_INT_WARNING_STATUS
-                 | MCAN_INT_ERROR_PASSIVE
-                 | MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE
-                 | MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE)) {
+    if (flags
+        & (MCAN_INT_BUS_OFF_STATUS | MCAN_INT_WARNING_STATUS | MCAN_INT_ERROR_PASSIVE
+           | MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE | MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE)) {
         // Any error interrupt refreshes the indicator LED so it stays
         // visible while errors keep occurring.  Bus-off is the fatal state
         // and wins outright; otherwise the Last Error Code (LEC) names the

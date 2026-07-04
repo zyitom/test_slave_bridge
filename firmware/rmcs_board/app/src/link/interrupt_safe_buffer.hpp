@@ -82,8 +82,7 @@ public:
 
     private:
         std::atomic<size_t> written_size_ = 0;
-        alignas(HPM_L1C_CACHELINE_SIZE)
-            std::byte data_[core::protocol::kProtocolBufferSize]{};
+        alignas(HPM_L1C_CACHELINE_SIZE) std::byte data_[core::protocol::kProtocolBufferSize]{};
     };
 
     const Batch* pop_batch() {

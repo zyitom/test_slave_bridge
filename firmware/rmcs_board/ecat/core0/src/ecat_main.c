@@ -10,16 +10,14 @@
 
 #include <stdio.h>
 
-#include "board.h"
-
-#include "ecat_def.h"
-
 #include "applInterface.h"
+#include "board.h"
+#include "digital_io.h" /* APPL_* prototypes (implemented in ecat_appl.c) */
+#include "ecat_def.h"
 #include "ecatappl.h"
 #include "ecatslv.h"
 #include "hpm_ecat_hw.h"
 #include "multicore_common.h"
-
 #include "rmcs_pd.h"
 
 int main(void) {

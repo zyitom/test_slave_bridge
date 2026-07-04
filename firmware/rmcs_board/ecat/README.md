@@ -68,10 +68,12 @@ core1 是无损回环:主站(SOEM busy-poll)通过 RxPDO 发送任意字节流,�
 双核启动、跨核环。吞吐≈124B × 有效轮询率;将 SOEM 轮询间隔与 PD 尺寸做参数
 扫描即可得出延迟/吞吐曲线,与 USB 版对比。
 
-host 侧配套工具(SOEM v1.4.0,可选组件):
+host 侧配套工具(SOEM v1.4.0,可选组件;若 SOEM 未装系统目录,先
+`cmake -B build && cmake --install build` 装到本地前缀并用 CMAKE_PREFIX_PATH 指过去):
 
 ```bash
-cmake --preset linux-debug -S host -DLIBRMCS_ENABLE_SOEM=ON
+cmake --preset linux-debug -S host -DLIBRMCS_ENABLE_SOEM=ON \
+      -DCMAKE_PREFIX_PATH=$HOME/3rd_party/soem-1.4.0/install
 cmake --build host/build
 sudo ./host/build/examples/ecat_stream_latency <网口名> [秒数]
 # 输出:回环字节校验 + RTT p50/p90/p99 + 吞吐
@@ -81,10 +83,31 @@ transport 实现:`host/src/transport/soem/soem.cpp`(实现 `transport::Transport
 接口,独立 busy-poll 线程,与固件共用 `librmcs::ecat::PdStreamEndpoint`);
 上位机侧建议用 `options.thread_setup` 绑定隔离核并设 SCHED_FIFO。
 
+## 烧录(hpm6e80ivm1)
+
+双核芯片不需要特殊烧录:flash 里只有 core0 一个镜像,core1 程序以 C 数组内嵌
+其中,由 core0 上电拷入 core1 ILM 后释放。仓库根目录:
+
+```bash
+./flash-ecat-bootloader.sh   # 一次性:OpenOCD + 板载 FT2232 烧 DFU bootloader
+./flash-ecat.sh              # 日常:USB DFU 烧应用(协议镜像)
+LOOPBACK=1 ./flash-ecat.sh   # P1 回环镜像(配 ecat_stream_latency)
+```
+
+## P2 全协议栈(已实现,待上板)
+
+固件侧:core1 默认镜像即 librmcs 协议应用(MCAN4 + UART1 + RGB LED,会话
+握手与 USB 版字节一致)。host 侧:`protocol::Handler` 已有 EtherCAT 构造
+入口(传网口名),板卡类 `librmcs/board/rmcs_board_ecat_bridge.hpp`
+(CAN0/UART0,API 形态与 USB 板一致):
+
+```bash
+sudo ./host/build/examples/ecat_board_test <网口名> [秒数]
+# 会话建立 + 周期发送 CAN0/UART0;PY06<->PY07 短接可见 UART 回显
+```
+
 ## 尚未决定/后续阶段
 
 - **session policy**:OP 重入时环内残留数据的取舍(冲刷需要跨核握手,当前仅
-  bump `link_epoch` 通知 core1)——与协议会话层一起在 P2 定。
-- P2:core1 接入 librmcs core 协议 + MCAN 表;`protocol::Handler` 增加 EtherCAT
-  构造入口(transport 层已就绪,见上)。
+  bump `link_epoch` 通知 core1)——与协议会话层一起在 P2 上板时定。
 - P3:按实测决定 SM-synchron(PDI ISR)与中断优先级微调;FoE 固件升级。

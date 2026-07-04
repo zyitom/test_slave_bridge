@@ -1,5 +1,5 @@
-#ifndef _USER_CONFIG_H
-#define _USER_CONFIG_H
+#ifndef USER_CONFIG_H
+#define USER_CONFIG_H
 
 /* Configuration for the SDK flash-EEPROM-emulation component, consumed by
  * samples/ethercat/port/hpm_ecat_e2p_emulation.h. Values follow the ecat_io
@@ -18,4 +18,4 @@ extern "C" {
 }
 #endif
 
-#endif /* _USER_CONFIG_H */
+#endif /* USER_CONFIG_H */

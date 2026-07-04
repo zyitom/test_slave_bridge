@@ -1,10 +1,10 @@
-#include "rmcs_pd.h"
-
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
 #include <librmcs/ecat/pd_stream.hpp>
 
+#include "rmcs_pd.h"
 #include "xcore_channel.hpp"
 
 namespace ecat = librmcs::firmware::ecat;
