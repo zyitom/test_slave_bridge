@@ -116,6 +116,17 @@ if(LIBRMCS_ENABLE_SOEM)
     endif()
     target_compile_definitions(${PROJECT_NAME} PRIVATE LIBRMCS_ENABLE_SOEM=1)
     message(STATUS "EtherCAT (SOEM) transport enabled")
+
+    # When SOEM was rebuilt against the AF_XDP nicdrv overlay
+    # (host/third_party/soem-afxdp/nicdrv.c) it references libxdp/libbpf; pull
+    # them into the final link. No librmcs source changes -- see that README.
+    option(LIBRMCS_SOEM_AFXDP "Link libxdp/libbpf for the AF_XDP SOEM nicdrv" OFF)
+    if(LIBRMCS_SOEM_AFXDP)
+        find_library(XDP_LIBRARY xdp REQUIRED)
+        find_library(BPF_LIBRARY bpf REQUIRED)
+        target_link_libraries(${PROJECT_NAME} PUBLIC ${XDP_LIBRARY} ${BPF_LIBRARY})
+        message(STATUS "SOEM AF_XDP nicdrv: linking ${XDP_LIBRARY} ${BPF_LIBRARY}")
+    endif()
 endif()
 
 # Enable LTO optimization

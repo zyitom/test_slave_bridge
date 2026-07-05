@@ -4,8 +4,38 @@
 #include <span>
 
 #include <board.h>
+#include <hpm_mbx_drv.h>
 
 #include "xcore_channel.hpp"
+
+namespace {
+
+// Cross-core uplink doorbell (core1 -> core0). After core1 publishes a
+// telemetry batch into the up ring, it pokes HPM_MBX0B; core0 takes the
+// matching HPM_MBX0A interrupt and maps the reply into the ESC input image at
+// once, instead of waiting for the next SSC MainLoop pass -- collapsing the
+// produce-to-ESC turnaround from that loop's slow-path granularity (tens of
+// us) to interrupt latency. See ecat_appl.c (rmcs_uplink_doorbell_isr) and
+// ../README.md ("uplink refresh").
+//
+// core0 owns the shared MBX0 clock (rmcs_uplink_doorbell_init runs before this
+// core is released), so here only the HPM_MBX0B port needs resetting.
+void uplink_doorbell_init() { mbx_init(HPM_MBX0B); }
+
+void uplink_doorbell_ring() {
+    // Publish the ring bytes BEFORE the doorbell. XcoreRing::try_push ends in a
+    // release store, which orders the payload before the index but does NOT
+    // order that non-cacheable store ahead of the following device-register
+    // write on RISC-V. A full fence (memory + I/O, both directions) guarantees
+    // core0 observes the pushed bytes once it sees the mailbox word.
+    __asm__ volatile("fence" ::: "memory");
+    // Send failure means a poke is already pending in the single-word mailbox;
+    // ignore it -- one interrupt is enough, and the up ring is the source of
+    // truth the handler re-reads.
+    (void)mbx_send_message(HPM_MBX0B, 0);
+}
+
+} // namespace
 
 // Core1: the fieldbus core of the EtherCAT stream bridge.
 //
@@ -22,6 +52,7 @@
 
 int main() {
     board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
+    uplink_doorbell_init();
 
     auto& channel = librmcs::firmware::ecat::xcore_channel_wait();
 
@@ -35,6 +66,9 @@ int main() {
         // Spin until the uplink ring has room: the echo must be lossless for
         // the end-to-end ARQ test to be meaningful.
         while (!channel.up.try_push(chunk)) {}
+        // Wake core0 to publish the echo now, so the RTT scan measures the
+        // doorbell path rather than the MainLoop poll granularity.
+        uplink_doorbell_ring();
     }
 
     return 0;
@@ -59,6 +93,7 @@ int main() {
         const utility::InterruptLockGuard guard;
 
         board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
+        uplink_doorbell_init();
         dma_mgr_init();
 
         // Same rationale as the USB app: streaming writes bypass D-cache
@@ -98,8 +133,11 @@ int main() {
             ecat::host_link->handle_link_restart();
         }
 
-        // Fieldbus -> host: pump serialized batches into the up ring.
-        ecat::host_link->try_transmit(channel.up);
+        // Fieldbus -> host: pump serialized batches into the up ring, and poke
+        // core0 the instant one lands so it maps the reply into the ESC without
+        // waiting for the next SSC MainLoop pass.
+        if (ecat::host_link->try_transmit(channel.up))
+            uplink_doorbell_ring();
 
         for (auto& board_uart : uart::uart_array)
             board_uart->try_transmit();

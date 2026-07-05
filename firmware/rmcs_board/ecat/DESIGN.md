@@ -90,7 +90,14 @@ MCAN 发送(1Mbps 经典帧)       ~110us                <- 物理下限,占大�
 
 - soft-float ABI(免去每次中断 20 个 FP 寄存器保存,见顶层 CMakeLists 注释);
 - ESC 复位随 MCU 整体复位(避免半复位状态);
-- host transport 独立 busy-poll 线程 + `thread_setup` 钩子(绑核/RT 优先级由调用方注入)。
+- host transport 独立 busy-poll 线程 + `thread_setup` 钩子(绑核/RT 优先级由调用方注入);
+- **跨核上行敲钟(MBX 事件驱动)**:core1 回复就绪即敲 `HPM_MBX0B`,core0 在
+  `HPM_MBX0A` ISR 里立即映射上行,把"回复就绪 -> 写进 ESC"的周转从 SSC 主循环
+  粒度(混有 mailbox/CoE 慢路径,几十 us 抖动)压到中断延迟(~1-2us)。这正是
+  第 3 节抖动隔离的收尾:瓶颈曾从 core1 的慢路径转移到"core0 主循环粒度拖累了
+  转发时机",敲钟把上行发布改为事件驱动后消除了这层抖动。MBX 优先级低于 ESC
+  PDI、刷新路径 `DISABLE_ESC_INT` 双向互斥、ISR 落 ILM;`pAPPL_MainLoop` 钩子
+  保留为兜底(实现见 `README.md` "上行即时刷新")。
 
 **低垂果实(P1 实测后立即做)**
 

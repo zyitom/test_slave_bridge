@@ -32,12 +32,20 @@ CPU0 (EtherCAT 域)                     CPU1 (现场总线域)
 - **从站同步模式**:主站不写 0x1C32/0x1C33 且不开 DC 时,SSC 自动进入
   SM-synchron(`ecatslv.c` StartInputHandler):SM2 写事件触发 PDI 中断,
   出站消费 + ack + 上行重建全部在 ISR 内完成——无需主站任何配置。
-- **上行即时刷新**:SM-synchron 只在 SM2 ISR 里映射输入,而 core1 的回复总是
-  晚于该 ISR 几微秒才就绪,固定错过一班轮询。core0 经 `pAPPL_MainLoop` 钩子
-  (`ecat_appl.c` rmcs_input_refresh)在 SSC 主循环里轮询上行环,回复一就绪
-  立即写入 ESC(屏蔽 ESC 中断防与 ISR 交错;三缓冲 SM 保证原子交换),
-  主站下一帧即可带走——每次请求/应答省一个轮询周期。host 侧 soem transport
-  对称地在交付回调后留 ~3us 响应窗口,再省一个周期。
+- **上行即时刷新(跨核事件驱动)**:SM-synchron 只在 SM2 ISR 里映射输入,而
+  core1 的回复总是晚于该 ISR 几微秒才就绪,固定错过一班轮询。为把"回复就绪
+  到写进 ESC"的周转从 SSC 主循环粒度(混有 mailbox/CoE 慢路径,几十 us 抖动)
+  压到中断延迟,core1 每次向上行环 push 成功后即敲 `HPM_MBX0B`
+  (`core1/src/main.cpp` uplink_doorbell_ring,push 与敲钟之间加 full `fence`
+  保证非缓存环写先于设备写可见);core0 收到 `HPM_MBX0A` 中断
+  (`ecat_appl.c` rmcs_uplink_doorbell_isr)立即映射上行——回复几微秒内进
+  ESC,主站下一帧即可带走。MBX 优先级(1)严格低于 ESC PDI(4),敲钟绝不
+  抢占在途 EtherCAT 帧;`rmcs_input_refresh` 内 `DISABLE_ESC_INT` 反向挡住
+  PDI ISR,两处 `PDO_InputMapping` 不交错;三缓冲 SM 保证原子交换。
+  `pAPPL_MainLoop` 钩子(rmcs_input_refresh_mainloop,敲钟中断被屏蔽以防抢占)
+  保留为兜底,覆盖"ack 刚放开 ARQ 但无新敲钟"这类无在途事件可复触发的边角。
+  该 ISR 与刷新路径经 core0 定制链接脚本落在 ILM,免 XIP 取指抖动。host 侧
+  soem transport 对称地在交付回调后留 ~3us 响应窗口,再省一个周期。
 
 ## 构建前提
 

@@ -63,23 +63,28 @@ public:
     // Main loop, step 3: pump serialized uplink batches into the up ring.
     // XcoreRing::try_push is all-or-nothing, so a batch that does not fit
     // simply stays pending until the PD stream drains the ring (end-to-end
-    // backpressure, nothing is dropped).
-    void try_transmit(XcoreRing<kXcoreUpRingSize>& up_ring) {
+    // backpressure, nothing is dropped). Returns true iff a batch was pushed
+    // this call, so the caller can ring the cross-core doorbell exactly once
+    // per publication (see core1/src/main.cpp) instead of on every empty pass.
+    bool try_transmit(XcoreRing<kXcoreUpRingSize>& up_ring) {
         refresh_session_state();
 
         if (!session_established_)
-            return;
+            return false;
 
         if (!transmitting_batch_) {
             transmitting_batch_ = transmit_buffer_.pop_batch();
             if (!transmitting_batch_)
-                return;
+                return false;
         }
 
         if (up_ring.try_push(transmitting_batch_->data())) {
             link::InterruptSafeBuffer::release_batch(transmitting_batch_);
             transmitting_batch_ = nullptr;
+            return true;
         }
+
+        return false;
     }
 
     void deactivate_session() { session_established_ = false; }

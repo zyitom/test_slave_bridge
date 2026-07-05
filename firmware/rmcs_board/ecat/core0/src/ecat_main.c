@@ -27,9 +27,12 @@ int main(void) {
     board_init_ethercat(HPM_ESC);
     printf("RMCS EtherCAT stream bridge (core0)\n");
 
-    /* Publish the shared-memory channel, then start the fieldbus core. Order
-     * matters: core1 spins on the channel magic, which must be stored first. */
+    /* Publish the shared-memory channel and arm the cross-core uplink doorbell,
+     * then start the fieldbus core. Order matters: core1 spins on the channel
+     * magic (stored by rmcs_pd_init) and poll-free uplink relies on the MBX0
+     * clock being up (enabled by rmcs_uplink_doorbell_init) before core1 runs. */
     rmcs_pd_init();
+    rmcs_uplink_doorbell_init();
     multicore_release_cpu(HPM_CORE1, SEC_CORE_IMG_START);
 
     stat = ecat_hardware_init(HPM_ESC);

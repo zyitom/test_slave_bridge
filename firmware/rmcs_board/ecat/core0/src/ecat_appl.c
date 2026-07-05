@@ -24,6 +24,12 @@
 
 #include "rmcs_pd.h"
 
+/* Cross-core uplink doorbell transport (see rmcs_uplink_doorbell_init). */
+#include "board.h"
+#include "hpm_clock_drv.h"
+#include "hpm_interrupt.h"
+#include "hpm_mbx_drv.h"
+
 /* The override header defines this marker; a stock generated header would
  * declare 4-byte counter PDOs that silently disagree with the stream chunk. */
 #ifndef RMCS_STREAM_OBJECTS
@@ -46,16 +52,27 @@ UINT16 APPL_StartMailboxHandler(void) { return ALSTATUSCODE_NOERROR; }
 /* PREOP -> INIT: stop the mailbox handler. */
 UINT16 APPL_StopMailboxHandler(void) { return ALSTATUSCODE_NOERROR; }
 
-/* Out-of-cycle input refresh, run from the SSC main loop via pAPPL_MainLoop.
+/* Cross-core uplink doorbell (see rmcs_uplink_doorbell_init). The fieldbus
+ * core pokes HPM_MBX0B right after pushing a reply into the up ring; core0
+ * takes the matching HPM_MBX0A interrupt here. Priority stays strictly BELOW
+ * the ESC PDI interrupt (4) so the doorbell can never preempt an in-flight
+ * EtherCAT frame; the reverse preemption is fenced by DISABLE_ESC_INT inside
+ * rmcs_input_refresh, so the two PDO_InputMapping sites never interleave. */
+#define RMCS_UPLINK_MBX          HPM_MBX0A
+#define RMCS_UPLINK_MBX_IRQ      IRQn_MBX0A
+#define RMCS_UPLINK_MBX_PRIORITY 1
+
+/* Publish freshly staged uplink into the ESC input image. Shared by the
+ * doorbell ISR (fast path) and the pAPPL_MainLoop fallback below.
  *
  * In SM-synchron mode the SSC maps inputs only inside the SM2-event ISR,
  * which runs BEFORE the fieldbus core has produced its reply to the chunk
- * consumed in that very ISR: the reply then sits in the cross-core ring for
- * a full master poll cycle. Publishing it from the main loop as soon as it
- * exists lets the master's next frame pick it up -- one poll cycle less
- * end-to-end latency on every request/response exchange.
+ * consumed in that very ISR: the reply then sits in the cross-core ring
+ * until something republishes it. Doing so as soon as it exists lets the
+ * master's next frame pick it up -- one poll cycle less end-to-end latency
+ * on every request/response exchange.
  *
- * The ESC interrupt is masked around the copy so the ISR's own
+ * The ESC interrupt is masked around the copy so the PDI ISR's own
  * PDO_InputMapping cannot interleave; the 3-buffer SyncManager swaps
  * atomically, so the extra write is invisible to a mid-read master. The
  * pending check keeps the fast path to two shared-memory loads and bounds
@@ -68,12 +85,49 @@ static void rmcs_input_refresh(void) {
     }
 }
 
+/* Doorbell handler: publish the reply the instant the fieldbus core produced
+ * it, so the master's very next frame carries it -- the event-driven
+ * counterpart of the pAPPL_MainLoop poll, without that loop's mailbox/CoE
+ * slow-path granularity gating the turnaround. */
+SDK_DECLARE_EXT_ISR_M(RMCS_UPLINK_MBX_IRQ, rmcs_uplink_doorbell_isr)
+void rmcs_uplink_doorbell_isr(void) {
+    /* Drain the poke word to deassert RWMV and re-arm the interrupt; its value
+     * carries no information (the up ring is the source of truth). */
+    uint32_t doorbell = 0;
+    (void)mbx_retrieve_message(RMCS_UPLINK_MBX, &doorbell);
+    (void)doorbell;
+    rmcs_input_refresh();
+}
+
+/* MainLoop fallback around the same publish. The doorbell ISR handles the
+ * common case; this still runs every SSC MainLoop pass to cover an uplink
+ * that became publishable with no in-cycle event left to re-trigger it (e.g.
+ * the doorbell arrived while the ARQ still had a chunk in flight). Mask the
+ * doorbell IRQ so it cannot preempt this thread-context mapping and interleave
+ * a second PDO_InputMapping. */
+static void rmcs_input_refresh_mainloop(void) {
+    intc_m_disable_irq(RMCS_UPLINK_MBX_IRQ);
+    rmcs_input_refresh();
+    intc_m_enable_irq(RMCS_UPLINK_MBX_IRQ);
+}
+
+/* Arm the cross-core uplink doorbell on core0. Enables the shared MBX0 clock
+ * (which also powers HPM_MBX0B on the fieldbus core), resets the mailbox, and
+ * unmasks the word-received interrupt. MUST run BEFORE core1 is released so
+ * the clock is up before core1 first touches HPM_MBX0B. */
+void rmcs_uplink_doorbell_init(void) {
+    clock_add_to_group(clock_mbx0, 0);
+    mbx_init(RMCS_UPLINK_MBX);
+    mbx_enable_intr(RMCS_UPLINK_MBX, MBX_CR_RWMVIE_MASK);
+    intc_m_enable_irq_with_priority(RMCS_UPLINK_MBX_IRQ, RMCS_UPLINK_MBX_PRIORITY);
+}
+
 /* PREOP -> SAFEOP: start the input handler. The non-const pointer signature
  * is the SSC contract (stacks may adjust the AL event mask through it). */
 /* NOLINTNEXTLINE(readability-non-const-parameter) */
 UINT16 APPL_StartInputHandler(UINT16* pIntMask) {
     (void)pIntMask;
-    pAPPL_MainLoop = rmcs_input_refresh;
+    pAPPL_MainLoop = rmcs_input_refresh_mainloop;
     return ALSTATUSCODE_NOERROR;
 }
 
