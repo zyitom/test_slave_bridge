@@ -168,4 +168,28 @@ std::unique_ptr<Transport>
 
 } // namespace soem
 
+namespace igh {
+
+using ConnectionOptions = board::AdvancedOptions;
+
+/**
+ * @brief EtherCAT transport over the rmcs_board stream bridge, using the IgH
+ *        EtherCAT Master native driver stack.
+ *
+ * Only available when the SDK is built with -DLIBRMCS_ENABLE_IGH=ON (the symbol
+ * is absent otherwise). Unlike the SOEM backend, the target device is selected
+ * by the installed IgH master (ethercat.conf / master index 0), not by binding
+ * an interface: interface_name is advisory (logged for parity). The IgH master
+ * kernel module must own the NIC first (sudo ethercatctl start); the process
+ * needs write access to /dev/EtherCAT0 (root by default). This backend bypasses
+ * the socket/AF_XDP/BPF layer entirely and measures ~4x lower round-trip
+ * latency than SOEM on the same hardware (see host/src/transport/igh/). The
+ * transport busy-polls process data on a dedicated thread; use
+ * options.thread_setup to pin/prioritize that thread for the lowest latency.
+ */
+std::unique_ptr<Transport>
+    create_transport(std::string_view interface_name, const ConnectionOptions& options);
+
+} // namespace igh
+
 } // namespace librmcs::host::transport

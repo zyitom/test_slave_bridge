@@ -51,6 +51,13 @@ file(GLOB_RECURSE PROJECT_SOURCE CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.c
 )
 
+# The IgH reference bench (src/transport/igh/reference/) is a standalone
+# copy-paste program: it has its own main() and includes <ecrt.h>
+# unconditionally, so it must never be swept into the library by the glob
+# above (doing so would leak the ecrt dependency into the default,
+# zero-dependency build). It is documentation, not a build target.
+list(FILTER PROJECT_SOURCE EXCLUDE REGEX "/transport/igh/reference/")
+
 option(BUILD_STATIC_LIBRMCS "Build static librmcs" ON)
 if(BUILD_STATIC_LIBRMCS)
     add_library(
@@ -127,6 +134,28 @@ if(LIBRMCS_ENABLE_SOEM)
         target_link_libraries(${PROJECT_NAME} PUBLIC ${XDP_LIBRARY} ${BPF_LIBRARY})
         message(STATUS "SOEM AF_XDP nicdrv: linking ${XDP_LIBRARY} ${BPF_LIBRARY}")
     endif()
+endif()
+
+# Optional EtherCAT transport through the IgH EtherCAT Master native driver
+# (ecrt userspace API + in-kernel igc master). Independent of, and combinable
+# with, LIBRMCS_ENABLE_SOEM: a separate backend in a separate namespace. Default
+# OFF: src/transport/igh/igh.cpp compiles to an empty translation unit unless
+# enabled. Requires the IgH master installed (see host/src/transport/igh/).
+option(LIBRMCS_ENABLE_IGH "Build the EtherCAT (IgH) transport" OFF)
+if(LIBRMCS_ENABLE_IGH)
+    # IgH installs /usr/local/lib/cmake/ethercat/ethercat-config.cmake, which
+    # exports the imported target EtherLab::ethercat.
+    find_package(ethercat CONFIG QUIET)
+    if(TARGET EtherLab::ethercat)
+        target_link_libraries(${PROJECT_NAME} PUBLIC EtherLab::ethercat)
+    else()
+        find_path(ETHERCAT_INCLUDE_DIR ecrt.h REQUIRED)
+        find_library(ETHERCAT_LIBRARY ethercat REQUIRED)
+        target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${ETHERCAT_INCLUDE_DIR})
+        target_link_libraries(${PROJECT_NAME} PUBLIC ${ETHERCAT_LIBRARY})
+    endif()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE LIBRMCS_ENABLE_IGH=1)
+    message(STATUS "EtherCAT (IgH) transport enabled")
 endif()
 
 # Enable LTO optimization

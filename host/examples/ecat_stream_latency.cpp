@@ -35,8 +35,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <print>
 #include <span>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -96,7 +98,35 @@ int main(int argc, char** argv) {
         if (sched_setaffinity(0, sizeof(set), &set) == 0)
             std::println("cycle thread: pinned to CPU {}", pin_core);
     });
-    auto link = transport::soem::create_transport(argv[1], options);
+    // Backend selection. The tool builds against whichever EtherCAT backends
+    // the SDK was compiled with (SOEM and/or IgH); pick at run time with
+    // RMCS_ECAT_BACKEND=soem|igh (default: soem if available, else igh). For
+    // IgH, argv[1] is only an advisory interface hint (the master is chosen by
+    // ethercat.conf); for SOEM it is the raw interface bound with CAP_NET_RAW.
+    std::unique_ptr<transport::Transport> link;
+    {
+        const char* backend_env = std::getenv("RMCS_ECAT_BACKEND");
+#if defined(EXAMPLE_HAVE_SOEM) && defined(EXAMPLE_HAVE_IGH)
+        const std::string_view backend = backend_env ? backend_env : "soem";
+#elif defined(EXAMPLE_HAVE_IGH)
+        const std::string_view backend = backend_env ? backend_env : "igh";
+#else
+        const std::string_view backend = backend_env ? backend_env : "soem";
+#endif
+#if defined(EXAMPLE_HAVE_SOEM)
+        if (backend == "soem")
+            link = transport::soem::create_transport(argv[1], options);
+#endif
+#if defined(EXAMPLE_HAVE_IGH)
+        if (backend == "igh")
+            link = transport::igh::create_transport(argv[1], options);
+#endif
+        if (!link) {
+            std::println(stderr, "unknown or unavailable EtherCAT backend \"{}\"", backend);
+            return 1;
+        }
+        std::println("EtherCAT backend: {}", backend);
+    }
 
     Stats stats;
     std::atomic<std::uint64_t> acked{0};

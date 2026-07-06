@@ -22,14 +22,24 @@ target_link_libraries(can_error_test PRIVATE librmcs-sdk)
 add_executable(can_loopback_latency can_loopback_latency.cpp)
 target_link_libraries(can_loopback_latency PRIVATE librmcs-sdk)
 
-if(LIBRMCS_ENABLE_SOEM)
+if(LIBRMCS_ENABLE_SOEM OR LIBRMCS_ENABLE_IGH)
     add_executable(ecat_stream_latency ecat_stream_latency.cpp)
     target_link_libraries(ecat_stream_latency PRIVATE librmcs-sdk)
     # Raw-transport diagnostic: deliberately uses the internal transport API
     # (host/src/...), which needs the repository root on the include path.
     target_include_directories(
         ecat_stream_latency PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+    # Tell the tool which backends are linked in so it can offer them at
+    # run time via RMCS_ECAT_BACKEND (see the source).
+    if(LIBRMCS_ENABLE_SOEM)
+        target_compile_definitions(ecat_stream_latency PRIVATE EXAMPLE_HAVE_SOEM=1)
+    endif()
+    if(LIBRMCS_ENABLE_IGH)
+        target_compile_definitions(ecat_stream_latency PRIVATE EXAMPLE_HAVE_IGH=1)
+    endif()
+endif()
 
+if(LIBRMCS_ENABLE_SOEM)
     add_executable(ecat_board_test ecat_board_test.cpp)
     target_link_libraries(ecat_board_test PRIVATE librmcs-sdk)
 endif()
