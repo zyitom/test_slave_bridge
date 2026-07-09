@@ -1,12 +1,48 @@
-#include <atomic>
-#include <cstddef>
-#include <cstdint>
-#include <span>
-
 #include <board.h>
-#include <hpm_mbx_drv.h>
 
-#include "xcore_channel.hpp"
+#if defined(RMCS_ECAT_CORE1_CAN_PIN_SCANNER) && RMCS_ECAT_CORE1_CAN_PIN_SCANNER
+
+namespace librmcs::firmware::board {
+int can_pin_scanner_main();
+}
+
+int main() {
+    board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
+    return librmcs::firmware::board::can_pin_scanner_main();
+}
+
+#elif defined(RMCS_ECAT_CORE1_LED_PIN_SCANNER) && RMCS_ECAT_CORE1_LED_PIN_SCANNER
+
+namespace librmcs::firmware::board {
+int led_pin_scanner_main();
+}
+
+int main() {
+    board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
+    return librmcs::firmware::board::led_pin_scanner_main();
+}
+
+#elif defined(RMCS_ECAT_CORE1_LED_CONFIRM) && RMCS_ECAT_CORE1_LED_CONFIRM
+
+namespace librmcs::firmware::board {
+int led_confirm_main();
+}
+
+int main() {
+    board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
+    return librmcs::firmware::board::led_confirm_main();
+}
+
+#else
+
+# include <atomic>
+# include <cstddef>
+# include <cstdint>
+# include <span>
+
+# include <hpm_mbx_drv.h>
+
+# include "xcore_channel.hpp"
 
 namespace {
 
@@ -48,7 +84,7 @@ void uplink_doorbell_ring() {
 // byte echo with zero peripheral code, which the host tool
 // ecat_stream_latency uses for byte-exact link validation and RTT scans.
 
-#if defined(RMCS_ECAT_CORE1_LOOPBACK) && RMCS_ECAT_CORE1_LOOPBACK
+# if defined(RMCS_ECAT_CORE1_LOOPBACK) && RMCS_ECAT_CORE1_LOOPBACK
 
 int main() {
     board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
@@ -74,17 +110,17 @@ int main() {
     return 0;
 }
 
-#else
+# else
 
-# include <hpm_dma_mgr.h>
-# include <hpm_l1c_drv.h>
+#  include <hpm_dma_mgr.h>
+#  include <hpm_l1c_drv.h>
 
-# include "firmware/rmcs_board/app/src/can/can.hpp"
-# include "firmware/rmcs_board/app/src/led/led.hpp"
-# include "firmware/rmcs_board/app/src/timer/timer.hpp"
-# include "firmware/rmcs_board/app/src/uart/uart.hpp"
-# include "firmware/rmcs_board/app/src/utility/interrupt_lock.hpp"
-# include "host_link.hpp"
+#  include "firmware/rmcs_board/app/src/can/can.hpp"
+#  include "firmware/rmcs_board/app/src/led/led.hpp"
+#  include "firmware/rmcs_board/app/src/timer/timer.hpp"
+#  include "firmware/rmcs_board/app/src/uart/uart.hpp"
+#  include "firmware/rmcs_board/app/src/utility/interrupt_lock.hpp"
+#  include "host_link.hpp"
 
 int main() {
     using namespace librmcs::firmware; // NOLINT(google-build-using-namespace)
@@ -152,5 +188,7 @@ int main() {
         }
     }
 }
+
+# endif
 
 #endif

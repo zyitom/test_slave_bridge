@@ -34,10 +34,11 @@ namespace librmcs::ecat {
 // natural end-to-end backpressure.
 //
 // Throughput is payload_size per poll and the ack path costs one poll, so
-// with 124-byte payloads a 10 kHz master busy-poll moves ~1.2 MB/s per
-// direction -- above four saturated classic 1 Mbit/s CAN buses.
+// with 44-byte payloads a 20 kHz master busy-poll moves ~0.9 MB/s per
+// direction -- comfortably above a saturated classic 1 Mbit/s CAN bus, while
+// the smaller chunk shortens the on-wire frame for lower per-cycle latency.
 inline constexpr std::size_t kPdChunkHeaderSize = 4;
-inline constexpr std::size_t kPdChunkPayloadSize = 124;
+inline constexpr std::size_t kPdChunkPayloadSize = 44;
 inline constexpr std::size_t kPdChunkSize = kPdChunkHeaderSize + kPdChunkPayloadSize;
 
 // One end of the stream. The slave instantiates it on core0 inside the SSC

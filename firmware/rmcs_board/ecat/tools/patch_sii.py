@@ -4,7 +4,7 @@
 The SSC Tool project stays the stock SDK ecat_io configuration (see
 core0/ssc_overrides/digital_ioObjects.h for why), so the SII it emits still
 describes two 32-bit counter PDOs with 4-byte SyncManager buffers. This script
-performs the structured edits that make the SII agree with the 128-byte
+performs the structured edits that make the SII agree with the 48-byte
 stream-chunk process data actually implemented by the firmware:
 
   * SyncManager category: SM2/SM3 default length -> the PD chunk size. The
@@ -31,9 +31,10 @@ import re
 import struct
 import sys
 
-PD_CHUNK_SIZE = 128  # bytes per direction; must match rmcs_pd.h
-ENTRY_COUNT = 32     # 32 x UNSIGNED32 = 128 bytes
-REVISION = 2         # stock ecat_io SII carries revision 1
+PD_CHUNK_SIZE = 48   # bytes per direction; must match rmcs_pd.h
+ENTRY_COUNT = 12     # 12 x UNSIGNED32 = 48 bytes
+REVISION = 3         # bump whenever the SII changes so already-flashed boards
+                     # refresh their emulated EEPROM on next boot
 
 CAT_STRINGS = 10
 CAT_SYNCM = 41

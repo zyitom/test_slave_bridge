@@ -1,7 +1,7 @@
 # EtherCAT 主站网卡调优清单(host/soem 传输层)
 
 本文档记录让 `soem.cpp`(可选 `LIBRMCS_SOEM_AFXDP=ON` 的 AF_XDP nicdrv 变体,见
-`host/third_party/soem-afxdp/README.md`)达到低延迟所需的**主站侧网卡/系统配置**。
+`host/third_party/soem/README.afxdp.md`)达到低延迟所需的**主站侧网卡/系统配置**。
 这些配置和 librmcs 代码无关,是运行环境的一次性准备,机器重装或换机器时按本清单过一遍。
 
 验证环境:Intel igc(i225/i226)网卡,Ubuntu `*-realtime` 内核。不同网卡/内核的具体现象
@@ -103,7 +103,7 @@ governor 的调优范围。busy-poll(`SO_PREFER_BUSY_POLL`)本身不要求 IRQ �
 
 ## AF_XDP nicdrv 环境变量
 
-见 `host/third_party/soem-afxdp/README.md`。默认走 `RMCS_XDP_COPY=0`(尝试 zero-copy),
+见 `host/third_party/soem/README.afxdp.md`。默认走 `RMCS_XDP_COPY=0`(尝试 zero-copy),
 在已知有问题的环境下用 `RMCS_XDP_COPY=1` 强制走 COPY 模式:
 
 | 变量 | 默认 | 说明 |
@@ -129,7 +129,7 @@ governor 的调优范围。busy-poll(`SO_PREFER_BUSY_POLL`)本身不要求 IRQ �
   的 NAPI 调度冲突这个猜测。
 - `dmesg` 全程无 igc/xdp 报错,是静默的收包缺失。
 - `bpftool net show dev $IFACE` 确认 XDP 是 native/driver 模式,不是 generic 模式伪装成功。
-- `nicdrv.c`(`host/third_party/soem-afxdp/nicdrv.c`)里 UMEM/ring/promisc 设置顺序走读
+- `nicdrv.c`(`host/third_party/soem/nicdrv_afxdp.c`)里 UMEM/ring/promisc 设置顺序走读
   未发现逻辑错误,和 stock SOEM 的 TX/RX 语义一致。
 
 结论:问题在 igc 驱动的 zero-copy 接收路径本身,在应用层代码触及范围之下,和 `nicdrv.c`

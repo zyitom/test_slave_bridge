@@ -19,12 +19,16 @@
 #include "hpm_ecat_hw.h"
 #include "multicore_common.h"
 #include "rmcs_pd.h"
+#include "usb_runtime.h"
 
 int main(void) {
     hpm_stat_t stat;
 
     board_init();
+    rmcs_usb_runtime_init();
+#if !(defined(BOARD_ECAT_DISABLE_ESC_BRINGUP) && BOARD_ECAT_DISABLE_ESC_BRINGUP)
     board_init_ethercat(HPM_ESC);
+#endif
     printf("RMCS EtherCAT stream bridge (core0)\n");
 
     /* Publish the shared-memory channel and arm the cross-core uplink doorbell,
@@ -35,6 +39,14 @@ int main(void) {
     rmcs_uplink_doorbell_init();
     multicore_release_cpu(HPM_CORE1, SEC_CORE_IMG_START);
 
+#if defined(BOARD_ECAT_DISABLE_ESC_BRINGUP) && BOARD_ECAT_DISABLE_ESC_BRINGUP
+    /* ESC bring-up is disabled for this board (see board.h). Core1 (fieldbus) has
+     * already been released; keep core0 alive to service the USB DFU runtime. */
+    (void)stat;
+    while (1) {
+        rmcs_usb_runtime_task();
+    }
+#else
     stat = ecat_hardware_init(HPM_ESC);
     if (stat != status_success) {
         printf("Init ESC peripheral and related devices (EEPROM/PHY) failed!\n");
@@ -54,8 +66,10 @@ int main(void) {
 
     bRunApplication = TRUE;
     while (bRunApplication == TRUE) {
+        rmcs_usb_runtime_task();
         MainLoop();
     }
+#endif
 
     return 0;
 }

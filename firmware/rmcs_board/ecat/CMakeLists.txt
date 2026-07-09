@@ -24,6 +24,9 @@ set(RV_ABI "ilp32" CACHE STRING "RISC-V ABI")
 set(BOARD_BOOTLOADER_MODE "auto" CACHE STRING "Bootloader mode (auto / manual)")
 set_property(CACHE BOARD_BOOTLOADER_MODE PROPERTY STRINGS auto manual)
 option(RMCS_ECAT_CORE1_LOOPBACK "Build the P1 loopback bring-up image on core1" OFF)
+option(RMCS_ECAT_CORE1_CAN_PIN_SCANNER "Build the HPM6E8Y CAN pin scanner on core1" OFF)
+option(RMCS_ECAT_CORE1_LED_PIN_SCANNER "Build the HPM6E8Y LED GPIO pin scanner on core1" OFF)
+option(RMCS_ECAT_CORE1_LED_CONFIRM "Build the HPM6E8Y known-LED confirmation image on core1" OFF)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "debug")
@@ -69,10 +72,16 @@ add_rmcs_ecat_subbuild(
     rmcs_ecat_core1
     "${CMAKE_CURRENT_SOURCE_DIR}/core1"
     -DRMCS_ECAT_CORE1_LOOPBACK=${RMCS_ECAT_CORE1_LOOPBACK}
+    -DRMCS_ECAT_CORE1_CAN_PIN_SCANNER=${RMCS_ECAT_CORE1_CAN_PIN_SCANNER}
+    -DRMCS_ECAT_CORE1_LED_PIN_SCANNER=${RMCS_ECAT_CORE1_LED_PIN_SCANNER}
+    -DRMCS_ECAT_CORE1_LED_CONFIRM=${RMCS_ECAT_CORE1_LED_CONFIRM}
 )
 add_rmcs_ecat_subbuild(
     rmcs_ecat_core0
     "${CMAKE_CURRENT_SOURCE_DIR}/core0"
+    -DRMCS_ECAT_CORE1_CAN_PIN_SCANNER=${RMCS_ECAT_CORE1_CAN_PIN_SCANNER}
+    -DRMCS_ECAT_CORE1_LED_PIN_SCANNER=${RMCS_ECAT_CORE1_LED_PIN_SCANNER}
+    -DRMCS_ECAT_CORE1_LED_CONFIRM=${RMCS_ECAT_CORE1_LED_CONFIRM}
 )
 # core0 compiles the sec_core_img.c that the core1 build emits.
 add_dependencies(rmcs_ecat_core0 rmcs_ecat_core1)

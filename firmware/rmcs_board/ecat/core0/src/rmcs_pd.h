@@ -18,7 +18,7 @@ extern "C" {
  * configured in the SSC Tool project and the ESI file (see ../README.md);
  * pd_glue.cpp statically asserts it against the protocol constants.
  */
-#define RMCS_PD_CHUNK_SIZE (128U)
+#define RMCS_PD_CHUNK_SIZE (48U)
 
 /* Construct and publish the shared-memory channel. Must be called BEFORE
  * releasing core1 and before any other rmcs_pd_* function. */

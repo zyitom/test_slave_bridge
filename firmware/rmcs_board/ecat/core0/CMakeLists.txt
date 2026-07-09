@@ -22,6 +22,8 @@ set(BOARD_SEARCH_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../boards" CACHE PATH "Boa
 
 # Enables the SDK flash-EEPROM-emulation component (must precede find_package).
 set(CONFIG_EEPROM_EMULATION 1)
+set(CONFIG_TINYUSB 1)
+set(CONFIG_USB_DEVICE 1)
 
 # Hot-path linker script: EtherCAT data-path objects execute from ILM instead
 # of XIP flash (see the .ld header). Must precede find_package.
@@ -71,10 +73,14 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sec_core_img.c")
 endif()
 
 # Process data buffer sizes for the SSC (guarded by #ifndef in the generated
-# ecat_def.h). One 128-byte stream chunk per direction; must equal
+# ecat_def.h). One 48-byte stream chunk per direction; must equal
 # RMCS_PD_CHUNK_SIZE (src/rmcs_pd.h) -- ecat_appl.c static-asserts it. Applied
 # SDK-wide so every stack translation unit sees the same buffer layout.
-sdk_compile_definitions(-DMAX_PD_INPUT_SIZE=0x80 -DMAX_PD_OUTPUT_SIZE=0x80)
+sdk_compile_definitions(-DMAX_PD_INPUT_SIZE=0x30 -DMAX_PD_OUTPUT_SIZE=0x30)
+sdk_compile_definitions(-DLIBRMCS_PROJECT_VERSION_STRING="${LIBRMCS_PROJECT_VERSION}")
+sdk_compile_definitions(-DCFG_TUSB_MCU=OPT_MCU_HPM)
+sdk_compile_definitions(-DUSB_HOST_MCU_CORE=HPM_CORE0)
+sdk_inc("${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # Beckhoff SSC (generated).
 sdk_inc(SSC/Src)
@@ -107,6 +113,11 @@ sdk_app_src(src/ecat_main.c)
 sdk_app_src(src/ecat_appl.c)
 sdk_app_src(src/pd_glue.cpp)
 sdk_app_src(src/sec_core_img.c)
+sdk_app_src(src/usb_runtime.cpp)
+sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/device/usbd.c")
+sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/device/usbd_control.c")
+sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/portable/hpm/dcd_hpm.c")
+sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/class/dfu/dfu_rt_device.c")
 
 set_property(TARGET app PROPERTY CXX_STANDARD 23)
 set_property(TARGET app PROPERTY CXX_STANDARD_REQUIRED ON)

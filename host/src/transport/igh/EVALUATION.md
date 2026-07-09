@@ -6,7 +6,7 @@
 
 ## 起点:AF_XDP zero-copy 模式下 "No EtherCAT slave found on the network"
 
-现象:`host/third_party/soem-afxdp/nicdrv.c`(SOEM 的 AF_XDP 替换驱动)在 zero-copy 模式下
+现象:`host/third_party/soem/nicdrv_afxdp.c`(SOEM 的 AF_XDP 替换驱动)在 zero-copy 模式下
 打印绑定成功(`ZERO-COPY` 横幅),但 `ec_config_init` 广播发现帧超时,一个从站都找不到。
 
 排查过程(详见对话历史,这里只记结论):
@@ -188,7 +188,7 @@ SOEM 数字是被污染的,不可用**;干净的 SOEM 基线还得用历史值(1
   多半能自愈到干净态;SOEM 则更依赖从站是干净上电态。
 - `ethercat.service` **没有** enable,重启机器会恢复成标准 `igc`(除非之后手动
   `systemctl enable ethercat`)。
-- `host/third_party/soem-afxdp/nicdrv.c` 已经换回 AF_XDP 版本(不是纯 AF_PACKET),
+- `host/third_party/soem/nicdrv_afxdp.c` 已经换回 AF_XDP 版本(不是纯 AF_PACKET),
   `/home/helios/3rd_party/soem-1.4.0/oshw/linux/` 下两份备份都在
   (`nicdrv.c.afpacket.bak` 和 `nicdrv.c.afxdp.bak`)。
 - IgH 主站源码克隆在 `/tmp/.../scratchpad/igh/ethercat`(临时目录,**会话结束后大概率被

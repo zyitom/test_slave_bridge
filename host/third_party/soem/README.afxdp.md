@@ -28,35 +28,20 @@ tuning could not reach.
   `sudo apt install libxdp-dev libbpf-dev` (Ubuntu 22.04+/Debian 12+).
 - Run as root or with `CAP_NET_RAW` + `CAP_BPF` (your `sudo` already covers it).
 
-## Build: rebuild SOEM against this file
+## Build: one flag
 
-SOEM is a system/3rd-party library here (`find_package(soem)` /
-`find_library(soem)`), so the swap happens in the SOEM build, not librmcs.
-
-```bash
-# 1. Back up and replace the Linux nicdrv in your SOEM source tree
-cd <soem-src>            # e.g. ~/3rd_party/soem-1.4.0 (dev box) or the TL101 copy
-cp oshw/linux/nicdrv.c oshw/linux/nicdrv.c.afpacket.bak
-cp <librmcs>/host/third_party/soem-afxdp/nicdrv.c oshw/linux/nicdrv.c
-
-# 2. Rebuild + reinstall SOEM (CMake build). SOEM's own CMakeLists does not link
-#    libxdp/libbpf, so add them to the final link. Two options:
-#    a) add  target_link_libraries(soem xdp bpf)  to SOEM's CMakeLists, or
-#    b) leave SOEM as-is and let the librmcs exe pull them in (option below).
-cmake --build build --target soem
-cmake --install build      # or point librmcs at build/ output
-```
-
-Then build librmcs with the transport enabled and the AF_XDP libs linked:
+SOEM is now vendored under `host/third_party/soem/upstream` and built inline, so
+there is no manual "replace nicdrv.c, rebuild SOEM, reinstall" step anymore. The
+vendored build (`../CMakeLists.txt`) selects this file over the stock
+`upstream/oshw/linux/nicdrv.c` and links `libxdp`/`libbpf` when the flag is on:
 
 ```bash
 cmake --preset linux-debug -S host -DLIBRMCS_ENABLE_SOEM=ON -DLIBRMCS_SOEM_AFXDP=ON
 cmake --build host/build
 ```
 
-`LIBRMCS_SOEM_AFXDP=ON` only adds `-lxdp -lbpf` to the final link (needed
-because SOEM now references the `xsk_*` symbols). If you already linked them
-inside SOEM (option 2a), the flag is harmless.
+Needs `libxdp-dev` + `libbpf-dev` installed. Without the flag the stock
+AF_PACKET nicdrv is compiled instead (builds anywhere, no libxdp).
 
 ## NIC prep on the target (once per boot)
 

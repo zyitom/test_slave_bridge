@@ -76,8 +76,8 @@ constexpr std::size_t kChunkSize = librmcs::ecat::kPdChunkSize;
 // with `ethercat slaves -v` / `ethercat pdos -p 0`. The slave reports
 // "PDO Assign: no" / "PDO Configuration: no", so ecrt_slave_config_pdos() only
 // describes the existing mapping, it does not change it. SM2 = RxPDO 0x1600
-// (master->slave, 32 x 32-bit at 0x7010:01..20). SM3 = TxPDO 0x1a00
-// (slave->master, 32 x 32-bit at 0x6000:01..20). Both are 128 bytes == one
+// (master->slave, 12 x 32-bit at 0x7010:01..0C). SM3 = TxPDO 0x1a00
+// (slave->master, 12 x 32-bit at 0x6000:01..0C). Both are 48 bytes == one
 // kPdChunkSize chunk. If the slave firmware/board changes, re-read the bus.
 constexpr uint32_t kVendorId = 0x00000511;
 constexpr uint32_t kProductCode = 0x00000001;
@@ -85,7 +85,7 @@ constexpr uint16_t kRxPdoIndex = 0x1600;
 constexpr uint16_t kTxPdoIndex = 0x1a00;
 constexpr uint16_t kOutputEntryIndex = 0x7010; // master -> slave subindex base
 constexpr uint16_t kInputEntryIndex = 0x6000;  // slave -> master subindex base
-constexpr unsigned kPdoEntryCount = 32;
+constexpr unsigned kPdoEntryCount = 12;
 
 // AL state word bit for OPERATIONAL in ec_master_state_t::al_states.
 constexpr uint8_t kAlStateOp = 1u << 3;
@@ -197,10 +197,10 @@ public:
                 "at ring position 0)",
                 kVendorId, kProductCode)};
 
-        // Describe the fixed PDO mapping (32 contiguous 32-bit entries each
+        // Describe the fixed PDO mapping (12 contiguous 32-bit entries each
         // direction). The entries are only needed so ecrt can resolve the base
         // offset of each direction; the payload is then treated as one
-        // 128-byte contiguous chunk, exactly like ec_slave[1].outputs/inputs
+        // 48-byte contiguous chunk, exactly like ec_slave[1].outputs/inputs
         // in the SOEM backend.
         ec_pdo_entry_info_t out_entries[kPdoEntryCount];
         ec_pdo_entry_info_t in_entries[kPdoEntryCount];

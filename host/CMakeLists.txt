@@ -105,35 +105,16 @@ endif()
 
 # Optional EtherCAT transport (talks to the rmcs_board EtherCAT stream bridge
 # through SOEM). Default OFF: src/transport/soem/soem.cpp compiles to an empty
-# translation unit unless enabled, keeping the dependency optional.
+# translation unit unless enabled, keeping the dependency optional. SOEM is
+# vendored under third_party/soem and built inline -- no system install. Flip
+# -DLIBRMCS_SOEM_AFXDP=ON (defined by that subdirectory) for the AF_XDP
+# zero-copy nicdrv; it needs libxdp/libbpf and pulls them into the link itself.
 option(LIBRMCS_ENABLE_SOEM "Build the EtherCAT (SOEM) transport" OFF)
 if(LIBRMCS_ENABLE_SOEM)
-    find_package(soem CONFIG QUIET)
-    if(soem_FOUND)
-        target_link_libraries(${PROJECT_NAME} PUBLIC soem)
-    else()
-        # SOEM v1.4.0 installs flat headers into include/soem without a CMake
-        # package; its umbrella header uses sibling angled includes, so both
-        # directories go on the search path.
-        find_path(SOEM_INCLUDE_DIR soem/ethercat.h REQUIRED)
-        find_library(SOEM_LIBRARY soem REQUIRED)
-        target_include_directories(
-            ${PROJECT_NAME} SYSTEM PRIVATE ${SOEM_INCLUDE_DIR} ${SOEM_INCLUDE_DIR}/soem)
-        target_link_libraries(${PROJECT_NAME} PUBLIC ${SOEM_LIBRARY})
-    endif()
+    add_subdirectory(third_party/soem)
+    target_link_libraries(${PROJECT_NAME} PUBLIC soem)
     target_compile_definitions(${PROJECT_NAME} PRIVATE LIBRMCS_ENABLE_SOEM=1)
-    message(STATUS "EtherCAT (SOEM) transport enabled")
-
-    # When SOEM was rebuilt against the AF_XDP nicdrv overlay
-    # (host/third_party/soem-afxdp/nicdrv.c) it references libxdp/libbpf; pull
-    # them into the final link. No librmcs source changes -- see that README.
-    option(LIBRMCS_SOEM_AFXDP "Link libxdp/libbpf for the AF_XDP SOEM nicdrv" OFF)
-    if(LIBRMCS_SOEM_AFXDP)
-        find_library(XDP_LIBRARY xdp REQUIRED)
-        find_library(BPF_LIBRARY bpf REQUIRED)
-        target_link_libraries(${PROJECT_NAME} PUBLIC ${XDP_LIBRARY} ${BPF_LIBRARY})
-        message(STATUS "SOEM AF_XDP nicdrv: linking ${XDP_LIBRARY} ${BPF_LIBRARY}")
-    endif()
+    message(STATUS "EtherCAT (SOEM) transport enabled (vendored third_party/soem)")
 endif()
 
 # Optional EtherCAT transport through the IgH EtherCAT Master native driver
