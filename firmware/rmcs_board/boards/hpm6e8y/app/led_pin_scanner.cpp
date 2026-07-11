@@ -57,15 +57,15 @@ constexpr uint32_t kBankCount = 6;
 constexpr uint32_t kPinsPerBank = 32;
 constexpr uint32_t kGpioAltFunc = IOC_PAD_FUNC_CTL_ALT_SELECT_SET(0);
 
-// Pads with a proven fixed function on this BGA192 hpm6e8y board. EVERYTHING
-// else is scanned as a LED candidate, including the EtherCAT/Ethernet pad groups
-// (their pinout is still unconfirmed on this board) and pads that this package
-// may not even bond out -- driving an unbonded pad is harmless, it simply never
-// lights a LED. Only genuinely reserved pads are excluded here, so no real LED
-// can be hidden behind an over-eager exclusion.
+// Pads with a proven fixed function on this hpm6e8y board. EVERYTHING else is
+// scanned as a LED candidate, including pads that this package may not even bond
+// out -- driving an unbonded pad is harmless, it simply never lights a LED. Only
+// genuinely reserved pads are excluded here, so no real LED can be hidden behind
+// an over-eager exclusion.
 //
 //   - UART0 console PA00/PA01 (routed to the on-board FT2232 debug bridge)
 //   - JTAG PA04-PA08
+//   - Internal PHY analog/strap pins PA16-PA29
 //   - CAN0 PC00/PC01, CAN1 PB04/PB05, CAN2 PD08/PD09, CAN3 PD14/PD15
 //   - USB0 ID/OC/PWR PF19/PF22/PF23
 //   - XPI0 boot NOR flash PB25-PB31 (CS0/SCLK/DQS/D0-D3). core0 runs XIP from
@@ -73,15 +73,15 @@ constexpr uint32_t kGpioAltFunc = IOC_PAD_FUNC_CTL_ALT_SELECT_SET(0);
 //     PB24 is only the unused second chip-select (CA_CS1), so it stays scannable.
 constexpr bool is_reserved_pad(uint32_t bank, uint32_t pin) {
     switch (bank) {
-    case 0: // A
-        return pin == 0 || pin == 1 || (pin >= 4 && pin <= 8);
-    case 1: // B
+    case 0:  // A
+        return pin == 0 || pin == 1 || (pin >= 4 && pin <= 8) || (pin >= 16 && pin <= 29);
+    case 1:  // B
         return pin == 4 || pin == 5 || (pin >= 25 && pin <= 31);
-    case 2: // C
+    case 2:  // C
         return pin == 0 || pin == 1;
-    case 3: // D
+    case 3:  // D
         return pin == 8 || pin == 9 || pin == 14 || pin == 15;
-    case 5: // F
+    case 5:  // F
         return pin == 19 || pin == 22 || pin == 23;
     default: // E and any other bank: fully scannable
         return false;

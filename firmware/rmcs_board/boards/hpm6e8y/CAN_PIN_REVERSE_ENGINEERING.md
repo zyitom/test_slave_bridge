@@ -52,9 +52,9 @@ Against the currently known hpm6e8y board setup, these CAN pins do not collide w
 - The currently configured EtherCAT MII pins, which are mainly on `PA`, `PB12`-`PB23`,
   and `PE02`/`PE03`/`PE06`.
 
-The existing bring-up board application still exposes only the old single test CAN
-configuration. The normal board port should eventually be updated to use these four CAN
-ports:
+The normal EtherCAT bridge currently exposes physical CAN0 as logical CAN0. The
+remaining physical CAN1..CAN3 ports are confirmed and can be exposed later if the
+host bridge API grows beyond one CAN bus:
 
 | Logical CAN | Peripheral | TX | RX |
 | --- | --- | --- | --- |
@@ -65,10 +65,12 @@ ports:
 
 Implementation notes for the normal firmware:
 
-- Add `clock_can0` through `clock_can3` to the core1 clock group.
-- Use `IRQn_MCAN0` through `IRQn_MCAN3`.
-- Assign separate MCAN message RAM slices for all four controllers.
-- Configure pads as `MCANx_TXD` / `MCANx_RXD` with RX pull-up and hysteresis.
+- Current logical CAN0 uses `clock_can0`, `IRQn_MCAN0`, `PC00` TX, and `PC01`
+  RX with RX pull-up and hysteresis.
+- If exposing all four buses later, add `clock_can1` through `clock_can3` to the
+  core1 clock group, use `IRQn_MCAN1` through `IRQn_MCAN3`, assign separate MCAN
+  message RAM slices, and configure pads as `MCANx_TXD` / `MCANx_RXD` with RX
+  pull-up and hysteresis.
 - Keep these pins excluded from later GPIO/LED probing.
 
 ## Remaining Board-Recovery Work
@@ -77,4 +79,3 @@ Implementation notes for the normal firmware:
 - Confirm USB HS and JTAG are the EVK-compatible pins assumed so far.
 - Confirm EtherCAT port 0/1 MII pins against the actual PHY/magnetics routing.
 - Identify the Realtek gigabit Ethernet PHY interface pins separately.
-

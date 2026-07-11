@@ -1,6 +1,6 @@
 // P2 validation tool for the rmcs_board EtherCAT stream bridge: exercises the
 // FULL librmcs protocol stack over EtherCAT (session handshake + keepalive,
-// CAN0 = the bridge's MCAN4, UART0 = UART1 on PY06/PY07) through the public
+// CAN0 = physical CAN0 / MCAN0 on PC00/PC01, UART0 = UART1 on PY06/PY07) through the public
 // RmcsBoardEcatBridge board class -- the same API shape as every USB board.
 //
 // Pair it with the protocol firmware image (the default ecat superbuild, NOT

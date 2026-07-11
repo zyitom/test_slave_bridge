@@ -46,6 +46,20 @@ int main(void) {
     while (1) {
         rmcs_usb_runtime_task();
     }
+#elif defined(RMCS_ECAT_CORE1_ECAT_STATUS_PROBE) && RMCS_ECAT_CORE1_ECAT_STATUS_PROBE
+    /* Status-probe image: bring the ESC hardware up and apply the software link
+     * (so core1 can read the resulting DL/AL status), but do NOT run the SSC
+     * MainLoop. That loop is the known DFU-runtime wedge -- it can stall and stop
+     * calling tud_task(), leaving the board unflashable. Keep core0 in the plain
+     * USB-servicing loop so reflashing stays reliable while diagnosing the link. */
+    stat = ecat_hardware_init(HPM_ESC);
+    if (stat == status_success) {
+        board_ecat_configure_internal_phy_mii_mode();
+        board_ecat_refresh_internal_phy_link();
+    }
+    while (1) {
+        rmcs_usb_runtime_task();
+    }
 #else
     stat = ecat_hardware_init(HPM_ESC);
     if (stat != status_success) {
@@ -53,14 +67,21 @@ int main(void) {
         return 0;
     }
 
+    /* The on-die PHYs do not route a stable LINK pin to an ESC CTR input, so the
+     * SDK's NMII_LINK-from-IO path is not usable on this board. Drive the ESC link
+     * state from the real PHY BMSR instead: forcing both ports up breaks the
+     * single-cable case because the empty port never closes its loop. */
+    board_ecat_configure_internal_phy_mii_mode();
+    board_ecat_wait_internal_phy_link(2000);
+
     MainInit(); /* SSC stack initialization */
 
-#if defined(ESC_EEPROM_EMULATION) && ESC_EEPROM_EMULATION
+# if defined(ESC_EEPROM_EMULATION) && ESC_EEPROM_EMULATION
     pAPPL_EEPROM_Read = ecat_eeprom_emulation_read;
     pAPPL_EEPROM_Write = ecat_eeprom_emulation_write;
     pAPPL_EEPROM_Reload = ecat_eeprom_emulation_reload;
     pAPPL_EEPROM_Store = ecat_eeprom_emulation_store;
-#endif
+# endif
 
     APPL_GenerateMapping(&nPdInputSize, &nPdOutputSize);
 

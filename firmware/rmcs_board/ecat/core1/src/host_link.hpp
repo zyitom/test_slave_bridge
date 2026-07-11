@@ -44,6 +44,7 @@ public:
     core::protocol::Serializer& serializer() { return serializer_; }
 
     bool session_established() const { return session_established_; }
+    bool uplink_enabled() const { return uplink_enabled_; }
 
     // Main loop, step 1: bytes popped from the down ring. The PD stream has no
     // transfer boundaries (unlike USB), so the deserializer is fed
@@ -87,7 +88,10 @@ public:
         return false;
     }
 
-    void deactivate_session() { session_established_ = false; }
+    void deactivate_session() {
+        uplink_enabled_ = false;
+        session_established_ = false;
+    }
 
 private:
     void activate_session(uint32_t nonce) {
@@ -100,6 +104,7 @@ private:
         current_session_nonce_ = nonce;
         last_session_refresh_ = timer::Timer::timestamp64_quarter_us();
         session_established_ = true;
+        uplink_enabled_ = false;
     }
 
     void refresh_session_state() {
@@ -201,6 +206,7 @@ private:
                 {.type = data::SessionType::kStartAck, .nonce = data.nonce});
             core::utility::assert_always(
                 result != core::protocol::Serializer::SerializeResult::kInvalidArgument);
+            uplink_enabled_ = true;
             break;
         }
         case data::SessionType::kKeepalive:
@@ -230,6 +236,7 @@ private:
     core::protocol::Serializer serializer_{transmit_buffer_};
 
     const link::InterruptSafeBuffer::Batch* transmitting_batch_ = nullptr;
+    bool uplink_enabled_ = false;
     bool session_established_ = false;
     uint32_t current_session_nonce_ = 0;
     uint64_t last_session_refresh_ = 0;

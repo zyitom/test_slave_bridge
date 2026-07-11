@@ -20,14 +20,14 @@
 namespace librmcs::firmware::board {
 
 // Fieldbus (core1) application layer of the EtherCAT bridge. This board
-// exposes one test CAN (MCAN4, the EVK's on-board transceiver port) and one
-// test UART (UART1 on PY06/PY07), plus a plain GPIO RGB LED. The EtherCAT
-// side (ESC, core0) is configured in ../board.c and does not appear here.
+// exposes physical CAN0 (MCAN0 on PC00/PC01) and one test UART (UART1 on
+// PY06/PY07), plus a plain GPIO RGB LED. The EtherCAT side (ESC, core0) is
+// configured in ../board.c and does not appear here.
 
-// CAN ports in logical order. CAN0 = MCAN4, classic 1 Mbps for bring-up; the
-// on-board transceiver's STB pin is driven low (normal mode) by init_can().
+// CAN ports in logical order. CAN0 = physical silk CAN0 = MCAN0, classic
+// 1 Mbps for bring-up.
 constexpr CanPort kCanPorts[] = {
-    {.base = HPM_MCAN4_BASE, .irq_num = IRQn_MCAN4, .mode = CanMode::kClassic},
+    {.base = HPM_MCAN0_BASE, .irq_num = IRQn_MCAN0, .mode = CanMode::kClassic},
 };
 
 uint32_t init_can(MCAN_Type* ptr);

@@ -15,6 +15,7 @@ namespace librmcs::firmware::link {
 
 // The USB vendor class is the host transport of this application.
 core::protocol::Serializer& uplink_serializer() { return usb::vendor->serializer(); }
+bool uplink_enabled() { return usb::vendor->session_established(); }
 
 } // namespace librmcs::firmware::link
 

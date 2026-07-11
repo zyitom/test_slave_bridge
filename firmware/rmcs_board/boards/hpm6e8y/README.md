@@ -3,6 +3,11 @@
 > HPM6E80 固件运行在 HPM6E00 芯片上，hpm6e00evk 等效硬件，
 > XPI NOR Flash 使用 FCFG option 1 (`0xfcf90002`)。
 
+> EtherCAT/CAN bring-up 的最新避坑记录见
+> [`ECAT_BRIDGE_BRINGUP_NOTES.md`](ECAT_BRIDGE_BRINGUP_NOTES.md)。该文档记录了
+> hpm6e8y 内置 PHY、ESC port 映射反向、clean normal 固件、以及 normal CAN0
+> 实际为 MCAN4/PZ00-PZ01 的结论。
+
 ---
 
 ## 目录

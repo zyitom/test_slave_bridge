@@ -21,6 +21,10 @@ option(RMCS_ECAT_CORE1_LOOPBACK "Build the loopback bring-up image" OFF)
 option(RMCS_ECAT_CORE1_CAN_PIN_SCANNER "Build the HPM6E8Y CAN pin scanner" OFF)
 option(RMCS_ECAT_CORE1_LED_PIN_SCANNER "Build the HPM6E8Y LED GPIO pin scanner" OFF)
 option(RMCS_ECAT_CORE1_LED_CONFIRM "Build the HPM6E8Y known-LED confirmation image" OFF)
+option(RMCS_ECAT_CORE1_MDIO_PIN_SCANNER "Build the HPM6E8Y TSW MDIO pin scanner" OFF)
+option(RMCS_ECAT_CORE1_ENET_PACKET_TESTER "Build the HPM6E8Y ENET packet tester" OFF)
+option(RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER "Build the HPM6E8Y Realtek reset pin scanner" OFF)
+option(RMCS_ECAT_CORE1_ECAT_STATUS_PROBE "Build the HPM6E8Y ESC status probe" OFF)
 
 # The alternate core1 images are mutually exclusive; at most one may be ON.
 set(_rmcs_core1_modes 0)
@@ -28,13 +32,17 @@ foreach(_mode
         RMCS_ECAT_CORE1_LOOPBACK
         RMCS_ECAT_CORE1_CAN_PIN_SCANNER
         RMCS_ECAT_CORE1_LED_PIN_SCANNER
-        RMCS_ECAT_CORE1_LED_CONFIRM)
+        RMCS_ECAT_CORE1_LED_CONFIRM
+        RMCS_ECAT_CORE1_MDIO_PIN_SCANNER
+        RMCS_ECAT_CORE1_ENET_PACKET_TESTER
+        RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER
+        RMCS_ECAT_CORE1_ECAT_STATUS_PROBE)
     if(${_mode})
         math(EXPR _rmcs_core1_modes "${_rmcs_core1_modes} + 1")
     endif()
 endforeach()
 if(_rmcs_core1_modes GREATER 1)
-    message(FATAL_ERROR "RMCS_ECAT_CORE1_LOOPBACK, RMCS_ECAT_CORE1_CAN_PIN_SCANNER, RMCS_ECAT_CORE1_LED_PIN_SCANNER and RMCS_ECAT_CORE1_LED_CONFIRM are mutually exclusive")
+    message(FATAL_ERROR "RMCS_ECAT_CORE1_LOOPBACK, RMCS_ECAT_CORE1_CAN_PIN_SCANNER, RMCS_ECAT_CORE1_LED_PIN_SCANNER, RMCS_ECAT_CORE1_LED_CONFIRM, RMCS_ECAT_CORE1_MDIO_PIN_SCANNER, RMCS_ECAT_CORE1_ENET_PACKET_TESTER, RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER and RMCS_ECAT_CORE1_ECAT_STATUS_PROBE are mutually exclusive")
 endif()
 
 # Component/board selection must precede find_package. The loopback image is
@@ -85,6 +93,14 @@ elseif(RMCS_ECAT_CORE1_LED_PIN_SCANNER)
     sdk_compile_definitions(-DRMCS_ECAT_CORE1_LED_PIN_SCANNER=1)
 elseif(RMCS_ECAT_CORE1_LED_CONFIRM)
     sdk_compile_definitions(-DRMCS_ECAT_CORE1_LED_CONFIRM=1)
+elseif(RMCS_ECAT_CORE1_MDIO_PIN_SCANNER)
+    sdk_compile_definitions(-DRMCS_ECAT_CORE1_MDIO_PIN_SCANNER=1)
+elseif(RMCS_ECAT_CORE1_ENET_PACKET_TESTER)
+    sdk_compile_definitions(-DRMCS_ECAT_CORE1_ENET_PACKET_TESTER=1)
+elseif(RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER)
+    sdk_compile_definitions(-DRMCS_ECAT_CORE1_REALTEK_RESET_SCANNER=1)
+elseif(RMCS_ECAT_CORE1_ECAT_STATUS_PROBE)
+    sdk_compile_definitions(-DRMCS_ECAT_CORE1_ECAT_STATUS_PROBE=1)
 elseif(RMCS_ECAT_CORE1_LOOPBACK)
     sdk_compile_definitions(-DRMCS_ECAT_CORE1_LOOPBACK=1)
 else()

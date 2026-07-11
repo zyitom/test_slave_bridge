@@ -12,7 +12,15 @@
             "inherits": "base",
             "cacheVariables": {
                 "HOST_DEBUGGER": "OFF",
-                "CMAKE_BUILD_TYPE": "debug"
+                "CMAKE_BUILD_TYPE": "debug",
+                "RMCS_ECAT_CORE1_LOOPBACK": "OFF",
+                "RMCS_ECAT_CORE1_CAN_PIN_SCANNER": "OFF",
+                "RMCS_ECAT_CORE1_LED_PIN_SCANNER": "OFF",
+                "RMCS_ECAT_CORE1_LED_CONFIRM": "OFF",
+                "RMCS_ECAT_CORE1_MDIO_PIN_SCANNER": "OFF",
+                "RMCS_ECAT_CORE1_ENET_PACKET_TESTER": "OFF",
+                "RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER": "OFF",
+                "RMCS_ECAT_CORE1_ECAT_STATUS_PROBE": "OFF"
             }
         },
         {
@@ -20,6 +28,34 @@
             "inherits": "debug",
             "cacheVariables": {
                 "RMCS_ECAT_CORE1_LOOPBACK": "ON"
+            }
+        },
+        {
+            "name": "debug-mdio-pin-scanner",
+            "inherits": "debug",
+            "cacheVariables": {
+                "RMCS_ECAT_CORE1_MDIO_PIN_SCANNER": "ON"
+            }
+        },
+        {
+            "name": "debug-enet-packet-tester",
+            "inherits": "debug",
+            "cacheVariables": {
+                "RMCS_ECAT_CORE1_ENET_PACKET_TESTER": "ON"
+            }
+        },
+        {
+            "name": "debug-realtek-reset-scanner",
+            "inherits": "debug",
+            "cacheVariables": {
+                "RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER": "ON"
+            }
+        },
+        {
+            "name": "debug-ecat-status-probe",
+            "inherits": "debug",
+            "cacheVariables": {
+                "RMCS_ECAT_CORE1_ECAT_STATUS_PROBE": "ON"
             }
         },
         {

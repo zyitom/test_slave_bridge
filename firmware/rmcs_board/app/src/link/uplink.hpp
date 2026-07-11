@@ -9,5 +9,6 @@ namespace librmcs::firmware::link {
 // transport-neutrally so the CAN/UART drivers can be reused by any transport
 // application; the application that owns the transport defines it.
 core::protocol::Serializer& uplink_serializer();
+bool uplink_enabled();
 
 } // namespace librmcs::firmware::link

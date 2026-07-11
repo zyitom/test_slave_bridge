@@ -151,7 +151,17 @@ extern "C" {
 void dcd_int_handler(uint8_t rhport);
 
 SDK_DECLARE_EXT_ISR_M(IRQn_USB0, rmcs_usb0_isr)
-void rmcs_usb0_isr(void) { dcd_int_handler(0); }
+void rmcs_usb0_isr(void) {
+    dcd_int_handler(0);
+    // Service the device stack in ISR context so DFU-runtime control transfers
+    // (enumeration, SET_INTERFACE, detach-to-bootloader) always complete even if
+    // the main loop is busy or stalled -- notably the SSC MainLoop, whose stalls
+    // are the known cause of "Cannot set alternate interface: LIBUSB_ERROR_OTHER"
+    // wedges that made reflashing require the KEYA force-bootloader dance. Because
+    // tud_task() now runs ONLY here (rmcs_usb_runtime_task is a no-op), there is
+    // no reentrancy with any main-loop caller.
+    tud_task();
+}
 
 uint8_t const* tud_descriptor_device_cb(void) {
     return reinterpret_cast<uint8_t const*>(&kDeviceDescriptor);
@@ -211,6 +221,9 @@ void rmcs_usb_runtime_init(void) {
     intc_m_enable_irq_with_priority(IRQn_USB0, kUsbIrqPriority);
 }
 
-void rmcs_usb_runtime_task(void) { tud_task(); }
+// USB is now serviced entirely from rmcs_usb0_isr so a stalled main loop can
+// never wedge the DFU runtime. Kept as a no-op so existing main-loop call sites
+// (ecat_main.c) still compile and read as "pump USB here".
+void rmcs_usb_runtime_task(void) {}
 
 } // extern "C"

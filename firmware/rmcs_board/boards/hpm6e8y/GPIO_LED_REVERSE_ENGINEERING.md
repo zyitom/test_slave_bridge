@@ -1,6 +1,6 @@
 # HPM6E8Y GPIO LED reverse engineering
 
-This board (BGA192 hpm6e8y with the on-die PHY) has 17 active-high LED GPIO
+This board (BGA196 hpm6e8y with the on-die PHY) has 17 active-high LED GPIO
 outputs, but the schematic/pinout is missing. The LED scanner image drives each
 candidate GPIO high one at a time and reports the current candidate over the
 already confirmed CAN0 port.
@@ -98,12 +98,16 @@ Stop once 17 unique LEDs have been observed. Those 17 bank/pin pairs are the boa
 
 ## Scan results (decoded 2026-07-09)
 
-All 15 GPIO LEDs are CONFIRMED (operator verified the physical LEDs against the
-confirmation image's blink order, 2026-07-10). Every LED is in banks A/B/C/E --
-NONE in the always-on X/Y/Z domain, so the earlier "RGB lives in the PZ domain"
-guess was wrong; the RGB is in bank E. board.c `board_park_leds_off()` now drives
-all 15 to OFF at boot (RGB active-low high=off; indicators active-high low=off),
-fixing the EtherCAT0 yellow power-up glow.
+All 15 originally observed GPIO-drivable LEDs were confirmed by the operator
+against the confirmation image's blink order, 2026-07-10. A later check against
+the HPM6E*Y* datasheet reclassified `PA25` and `PA28`: they are internal Ethernet
+PHY LED/PHY-address strap pins, not safe application GPIO LEDs. Normal firmware
+now leaves them undriven so the PHY can own them.
+
+The remaining safe GPIO LEDs are in banks A/B/C/E -- NONE in the always-on X/Y/Z
+domain, so the earlier "RGB lives in the PZ domain" guess was wrong; the RGB is
+in bank E. board.c `board_park_leds_off()` drives only the safe GPIO LEDs to OFF
+at boot.
 
 Polarity is NOT uniform: the main RGB is **active-LOW** (common-anode) and so is
 EtherCAT0 yellow (PA25); the other 11 indicator LEDs are **active-HIGH**. See the
@@ -126,24 +130,20 @@ active-low LED.
 | CAN2 - blue            | PB00 | 0x719  | active-high|                 |
 | CAN3 - green           | PB02 | 0x71b  | active-high|                 |
 | CAN3 - blue            | PB03 | 0x71c  | active-high|                 |
-| EtherCAT port0 - yellow| PA25 | 0x712  | active-low | OFF = drive high |
-| EtherCAT port1 - yellow| PA28 | 0x715  | active-high|                 |
+| PHY1 LED/strap         | PA25 | 0x712  | reserved   | PHY LED1 / addr1 |
+| PHY0 LED/strap         | PA28 | 0x715  | reserved   | PHY LED1 / addr1 |
 | EtherCAT middle - green| PC20 | 0x742  | active-high|                 |
 | EtherCAT middle - red  | PC21 | 0x743  | active-high|                 |
 
-This is the complete set: 15 GPIO LEDs (the operator confirmed there are exactly
-15 controllable ones; the two ENET link LEDs are PHY-driven, see below).
-
-**PA25 (EtherCAT0 yellow) is a normal active-low LED** (OFF = drive the pad high),
-same polarity as the main RGB. It blinks cleanly. An earlier suspicion that it
-latched via the PHY was wrong: the confirm image had it flagged active-high, so
-its per-blink OFF step drove the pad LOW (= on) and left it lit when the sweep
-advanced. With the correct active-low flag it ends OFF. `board_park_leds_off()`
-drives it high (off) at boot.
+This is the complete observed set from the original GPIO LED scan, but `PA25` and
+`PA28` are reserved after the internal-PHY review. They may still visibly affect
+yellow LEDs when forced as GPIO, but normal firmware must not do that because the
+same pads latch PHY address and are intended as PHY LED outputs.
 
 Originally three LEDs were lit at power-up: Main blue PE03, Main green PE04 (both
-active-low, whose pads sit low at reset), and EtherCAT0 yellow PA25. With the RGB
-parked high, PA25 held high, and the ESC bring-up disabled, none glow at power-up.
+active-low, whose pads sit low at reset), and the PA25 PHY LED/strap pad. The RGB
+can be safely parked high; PA25 must be left to the PHY rather than forced as a
+GPIO workaround.
 
 ### These results contradicted several assumed pin assignments (now resolved)
 
@@ -153,15 +153,15 @@ parked high, PA25 held high, and the ESC bring-up disabled, none glow at power-u
 - `board_app.cpp` `init_can_indicator_pins()` said "No per-CAN indicator LEDs."
   Wrong: every CAN port has green+blue indicators (active-high). Comment
   corrected; the pins are not wired up as indicators yet.
-- `board.c` `init_esc_pins()` (EVK-copied) put ESC functions on real LED pads:
+- The original `board.c` `init_esc_pins()` (EVK-copied) put ESC functions on real LED pads:
   PA09=REFCK is CAN2-green, PA25=TXD_0 is EtherCAT0-yellow, PA28=TXD_3 is
   EtherCAT1-yellow, PE02=CTR_6 is CAN1-blue, PE03=CTR_1 is Main-blue. A pad cannot
   be both an MII line and a static GPIO LED, so this pinmux cannot work here and it
   re-grabbed the LED pads after they were parked (Main blue kept glowing).
-  RESOLVED for now: PE02/PE03 removed from init_esc_pins, and the whole ESC
-  bring-up is compiled out via `BOARD_ECAT_DISABLE_ESC_BRINGUP` (board.h). Core0
-  then only runs the USB DFU runtime; core1 CAN/UART fieldbus is unaffected. Set
-  that macro to 0 and supply the real EtherCAT pinout to re-enable.
+  RESOLVED: normal firmware now uses the HPM6E*Y* on-die PHY mapping. `PA16..PA29`
+  are analog/strap pins, `PV00..PV15` and `PW00..PW15` are the internal MII buses,
+  `PV12`/`PW12` are the active-low PHY resets, and `PA25`/`PA28` are left as PHY
+  LED/address-strap pads rather than GPIO LEDs or external MII data lines.
 
 ### Two non-GPIO LEDs
 

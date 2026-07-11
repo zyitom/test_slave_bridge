@@ -14,8 +14,9 @@ namespace librmcs::board {
 // (firmware/rmcs_board/ecat on the HPM6E80IVM1 / hpm6e00evk-equivalent
 // hardware). Connects over an EtherCAT network interface instead of USB;
 // everything above the transport -- session, data ids, callbacks -- matches
-// the USB boards. The bridge exposes one CAN bus (CAN0 = MCAN4) and one UART
-// (UART0 = UART1 on PY06/PY07); it has no IMU, GPIO channels or DBUS.
+// the USB boards. The bridge exposes one CAN bus (CAN0 = physical CAN0 / MCAN0
+// on PC00/PC01) and one UART (UART0 = UART1 on PY06/PY07); it has no IMU, GPIO
+// channels or DBUS.
 //
 // Requires an SDK built with -DLIBRMCS_ENABLE_SOEM=ON (the constructor throws
 // otherwise) and CAP_NET_RAW (or root) to open the raw network interface.

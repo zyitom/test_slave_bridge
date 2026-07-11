@@ -33,6 +33,50 @@ int main() {
     return librmcs::firmware::board::led_confirm_main();
 }
 
+#elif defined(RMCS_ECAT_CORE1_MDIO_PIN_SCANNER) && RMCS_ECAT_CORE1_MDIO_PIN_SCANNER
+
+namespace librmcs::firmware::board {
+int mdio_pin_scanner_main();
+}
+
+int main() {
+    board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
+    return librmcs::firmware::board::mdio_pin_scanner_main();
+}
+
+#elif defined(RMCS_ECAT_CORE1_ENET_PACKET_TESTER) && RMCS_ECAT_CORE1_ENET_PACKET_TESTER
+
+namespace librmcs::firmware::board {
+int enet_packet_tester_main();
+}
+
+int main() {
+    board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
+    return librmcs::firmware::board::enet_packet_tester_main();
+}
+
+#elif defined(RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER) && RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER
+
+namespace librmcs::firmware::board {
+int realtek_reset_scanner_main();
+}
+
+int main() {
+    board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
+    return librmcs::firmware::board::realtek_reset_scanner_main();
+}
+
+#elif defined(RMCS_ECAT_CORE1_ECAT_STATUS_PROBE) && RMCS_ECAT_CORE1_ECAT_STATUS_PROBE
+
+namespace librmcs::firmware::board {
+int ecat_status_probe_main();
+}
+
+int main() {
+    board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
+    return librmcs::firmware::board::ecat_status_probe_main();
+}
+
 #else
 
 # include <atomic>

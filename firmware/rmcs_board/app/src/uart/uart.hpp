@@ -88,6 +88,9 @@ private:
 
     void handle_uplink(
         std::span<const std::byte> payload, std::span<const std::byte> payload2, bool is_idle) {
+        if (!link::uplink_enabled())
+            return;
+
         auto& serializer = link::uplink_serializer();
         core::utility::assert_debug(
             serializer.write_uart(

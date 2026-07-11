@@ -1,12 +1,15 @@
 #include "board.h"
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <hpm_batt_iomux.h>
 #include <hpm_clock_drv.h>
 #include <hpm_common.h>
 #include <hpm_debug_console.h>
+#include <hpm_enet_drv.h>
+#include <hpm_esc_drv.h>
 #include <hpm_gpio_drv.h>
 #include <hpm_gpiom_drv.h>
 #include <hpm_gpiom_soc_drv.h>
@@ -20,8 +23,8 @@
 #include <hpm_sysctl_drv.h>
 #include <hpm_usb_drv.h>
 
-/* Pin-level configuration is copied from the SDK hpm6e00evk board files
- * (boards/hpm6e00evk/{board.c,pinmux.c}); the hardware is that design. */
+/* Pin-level configuration is based on board reverse engineering. The HPM6E*Y*
+ * package uses on-die 100M PHYs for the two EtherCAT ports. */
 
 #if defined(FLASH_XIP) && FLASH_XIP
 __attribute__((section(".nor_cfg_option"), used))
@@ -35,6 +38,21 @@ __attribute__((used)) const uint32_t kUf2Signature = BOARD_UF2_SIGNATURE;
 
 static inline void board_init_clock(void);
 static inline void init_esc_pins(void);
+static inline void configure_esc_internal_phy_interface(ESC_Type* ptr);
+static inline void configure_internal_phy_mdio_as_enet(void);
+static inline void configure_internal_phy_mdio_as_esc(void);
+static bool configure_internal_phy_mii_mode(uint8_t phy_addr, uint16_t* rmsr_p7);
+static void board_ecat_apply_internal_phy_link_status(const board_ecat_phy_status_t* status);
+
+#define BOARD_ECAT_PHY_REG_BMCR           (0U)
+#define BOARD_ECAT_PHY_REG_BMSR           (1U)
+#define BOARD_ECAT_PHY_REG_ID1            (2U)
+#define BOARD_ECAT_PHY_REG_ID2            (3U)
+#define BOARD_ECAT_PHY_REG_RMSR_P7        (16U)
+#define BOARD_ECAT_PHY_REG_PAGESEL        (31U)
+#define BOARD_ECAT_PHY_PAGE_RMSR          (7U)
+#define BOARD_ECAT_PHY_BMSR_LINK_MASK     (0x0004U)
+#define BOARD_ECAT_PHY_RMSR_MII_MODE_MASK (0x0008U)
 
 /* Console: UART0 on PA00/PA01, routed to the on-board FT2232 (DEBUGUART0). */
 #define BOARD_CONSOLE_UART_BASE     HPM_UART0
@@ -62,12 +80,10 @@ void board_init_console(void) {
 }
 
 static void board_park_leds_off(void) {
-    /* Drive every board LED to its OFF state at boot so nothing glows before the
-     * fieldbus core takes ownership. All 15 GPIO LED pads were verified by the
-     * GPIO LED scan (see boards/hpm6e8y/GPIO_LED_REVERSE_ENGINEERING.md). Polarity
-     * is mixed: the main RGB is active-LOW (common-anode, OFF = drive high) while
-     * every CAN/EtherCAT indicator is active-HIGH (OFF = drive low). Undriven
-     * pads float high, which is why EtherCAT0 yellow (PA25) glowed at power-up.
+    /* Drive safe board LEDs to their OFF state at boot so nothing glows before
+     * the fieldbus core takes ownership. PA25/PA28 were first found by the LED
+     * scan, but the HPM6E*Y* datasheet identifies them as internal PHY LED/strap
+     * pins, so normal firmware must leave them to the PHY.
      *
      * These must be real push-pull outputs: a weak internal pull cannot hold an
      * LED line. This runs before board_init_clock(), so the GPIO peripheral clock
@@ -80,16 +96,19 @@ static void board_park_leds_off(void) {
         uint8_t pin;
         uint8_t off_level;
     } leds[] = {
-        {GPIO_DO_GPIOE, 5, 1}, {GPIO_DO_GPIOE, 4, 1}, {GPIO_DO_GPIOE, 3, 1}, /* main RGB R/G/B */
-        {GPIO_DO_GPIOC, 26, 0}, {GPIO_DO_GPIOC, 27, 0},                      /* CAN0 green/blue */
-        {GPIO_DO_GPIOE, 0, 0}, {GPIO_DO_GPIOE, 2, 0},                        /* CAN1 green/blue */
-        {GPIO_DO_GPIOA, 9, 0}, {GPIO_DO_GPIOB, 0, 0},                        /* CAN2 green/blue */
-        {GPIO_DO_GPIOB, 2, 0}, {GPIO_DO_GPIOB, 3, 0},                        /* CAN3 green/blue */
-        /* EtherCAT0 yellow (PA25) is active-LOW (lit when driven low; its scan
-         * frame was stage 'L' and it glowed at power-up), so OFF = drive high.
-         * EtherCAT1 yellow (PA28) is active-high like the other indicators. */
-        {GPIO_DO_GPIOA, 25, 1}, {GPIO_DO_GPIOA, 28, 0},                      /* EtherCAT0/1 yellow */
-        {GPIO_DO_GPIOC, 20, 0}, {GPIO_DO_GPIOC, 21, 0},                      /* EtherCAT mid grn/red */
+        {GPIO_DO_GPIOE,  5, 1},
+        {GPIO_DO_GPIOE,  4, 1},
+        {GPIO_DO_GPIOE,  3, 1}, /* main RGB R/G/B */
+        {GPIO_DO_GPIOC, 26, 0},
+        {GPIO_DO_GPIOC, 27, 0}, /* CAN0 green/blue */
+        {GPIO_DO_GPIOE,  0, 0},
+        {GPIO_DO_GPIOE,  2, 0}, /* CAN1 green/blue */
+        {GPIO_DO_GPIOA,  9, 0},
+        {GPIO_DO_GPIOB,  0, 0}, /* CAN2 green/blue */
+        {GPIO_DO_GPIOB,  2, 0},
+        {GPIO_DO_GPIOB,  3, 0}, /* CAN3 green/blue */
+        {GPIO_DO_GPIOC, 20, 0},
+        {GPIO_DO_GPIOC, 21, 0}, /* EtherCAT mid grn/red */
     };
 
     for (uint32_t i = 0; i < sizeof(leds) / sizeof(leds[0]); ++i) {
@@ -227,7 +246,7 @@ static inline void board_init_clock(void) {
     clock_connect_group_to_cpu(0, 0);
 
     /* Group 1: core1 domain (fieldbus peripherals live with the fieldbus
-     * core: MCAN4 + UART1 + its machine timer). */
+     * core: physical CAN0/MCAN0 + UART1 + its machine timer). */
     clock_add_to_group(clock_cpu1, 1);
     clock_add_to_group(clock_mchtmr1, 1);
 #if defined(RMCS_ECAT_CORE1_CAN_PIN_SCANNER) && RMCS_ECAT_CORE1_CAN_PIN_SCANNER
@@ -239,12 +258,25 @@ static inline void board_init_clock(void) {
     clock_add_to_group(clock_can5, 1);
     clock_add_to_group(clock_can6, 1);
     clock_add_to_group(clock_can7, 1);
-#elif (defined(RMCS_ECAT_CORE1_LED_PIN_SCANNER) && RMCS_ECAT_CORE1_LED_PIN_SCANNER)      \
+#elif (defined(RMCS_ECAT_CORE1_MDIO_PIN_SCANNER) && RMCS_ECAT_CORE1_MDIO_PIN_SCANNER)      \
+    || (defined(RMCS_ECAT_CORE1_ENET_PACKET_TESTER) && RMCS_ECAT_CORE1_ENET_PACKET_TESTER) \
+    || (defined(RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER) && RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER)
+    clock_add_to_group(clock_gpio, 1);
+    clock_add_to_group(clock_can0, 1);
+    clock_add_to_group(clock_eth0, 1);
+    /* The MDIO scanner, the ENET packet tester and the Realtek reset scanner all
+     * probe the ENET0 PHY path; enable the ESC/TSN clock groups so the on-die PHY
+     * domain (ESC core/PHY clocks, reference clock) is available to them. */
+    clock_add_to_group(clock_esc0, 1);
+    clock_add_to_group(clock_tsn1, 1);
+    clock_add_to_group(clock_tsn2, 1);
+    clock_add_to_group(clock_tsn3, 1);
+#elif (defined(RMCS_ECAT_CORE1_LED_PIN_SCANNER) && RMCS_ECAT_CORE1_LED_PIN_SCANNER) \
     || (defined(RMCS_ECAT_CORE1_LED_CONFIRM) && RMCS_ECAT_CORE1_LED_CONFIRM)
     clock_add_to_group(clock_gpio, 1);
     clock_add_to_group(clock_can0, 1);
 #else
-    clock_add_to_group(clock_can4, 1);
+    clock_add_to_group(clock_can0, 1);
 #endif
     clock_add_to_group(clock_uart1, 1);
     /* Connect Group1 to CPU1 */
@@ -288,12 +320,13 @@ void board_init_usb(void) {
 }
 
 void board_init_ethercat(ESC_Type* ptr) {
-    (void)ptr;
-
     clock_add_to_group(clock_esc0, 0);
+    esc_core_enable_clock(ptr, true);
+    esc_phy_enable_clock(ptr, true);
+    configure_esc_internal_phy_interface(ptr);
 
     init_esc_pins();
-    /* Keep the (shared) ECAT PHY reset asserted; the port layer releases it. */
+    /* Keep the on-die ECAT PHY resets asserted; the port layer releases them. */
     gpio_set_pin_output_with_initial(
         BOARD_ECAT_PHY0_RESET_GPIO, BOARD_ECAT_PHY0_RESET_GPIO_PORT_INDEX,
         BOARD_ECAT_PHY0_RESET_PIN_INDEX, BOARD_ECAT_PHY_RESET_LEVEL);
@@ -302,58 +335,304 @@ void board_init_ethercat(ESC_Type* ptr) {
         BOARD_ECAT_PHY1_RESET_PIN_INDEX, BOARD_ECAT_PHY_RESET_LEVEL);
 }
 
-static inline void init_esc_pins(void) {
-    HPM_IOC->PAD[IOC_PAD_PA09].FUNC_CTL = IOC_PA09_FUNC_CTL_ESC0_REFCK;
+static inline void configure_esc_internal_phy_interface(ESC_Type* ptr) {
+    uint32_t phy_cfg0 = ptr->PHY_CFG0;
+    phy_cfg0 |= ESC_PHY_CFG0_MAC_SPEED_MASK;
+    phy_cfg0 &=
+        ~(ESC_PHY_CFG0_PORT0_RMII_EN_MASK | ESC_PHY_CFG0_PORT1_RMII_EN_MASK
+          | ESC_PHY_CFG0_PORT2_RMII_EN_MASK);
+    ptr->PHY_CFG0 = phy_cfg0;
+
+    ptr->PHY_CFG1 |= ESC_PHY_CFG1_REFCK_25M_OE_MASK;
+}
+
+void board_ecat_set_internal_phy_link(bool port0_up, bool port1_up) {
+    /* The two on-die PHYs do NOT route a dedicated LINK pin to an ESC CTR input
+     * the way the EVK's external PHYs do. The SDK default therefore leaves
+     * NMII_LINK sourced from pads that are not real link inputs.
+     *
+     * Switch the NMII_LINK source for port0/port1 to the GPR register and drive
+     * the value from software. The GPR bit is "link invalid" when set, so
+     * clearing it marks the link valid. Do not blindly force both ports up: with
+     * one cable connected, a false-up empty port prevents the ESC from closing
+     * that loop and the master may never receive a frame back. */
+    uint32_t gpr = HPM_ESC->GPR_CFG2;
+    gpr &= ~(ESC_GPR_CFG2_NMII_LINK0_FROM_IO_MASK | ESC_GPR_CFG2_NMII_LINK1_FROM_IO_MASK);
+    if (port0_up) {
+        gpr &= ~ESC_GPR_CFG2_NMII_LINK0_GPR_MASK;
+    } else {
+        gpr |= ESC_GPR_CFG2_NMII_LINK0_GPR_MASK;
+    }
+    if (port1_up) {
+        gpr &= ~ESC_GPR_CFG2_NMII_LINK1_GPR_MASK;
+    } else {
+        gpr |= ESC_GPR_CFG2_NMII_LINK1_GPR_MASK;
+    }
+    HPM_ESC->GPR_CFG2 = gpr;
+}
+
+bool board_ecat_get_internal_phy_status(board_ecat_phy_status_t* status) {
+    if (status == NULL) {
+        return false;
+    }
+
+    *status = (board_ecat_phy_status_t){0};
+    configure_internal_phy_mdio_as_enet();
+
+    uint16_t value = 0;
+    status->port0_read_ok =
+        enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT0_PHY_ADDR, BOARD_ECAT_PHY_REG_BMCR, &value)
+        == status_success;
+    status->port0_bmcr = value;
+    if (enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT0_PHY_ADDR, BOARD_ECAT_PHY_REG_BMSR, &value)
+        != status_success) {
+        status->port0_read_ok = false;
+    }
+    if (enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT0_PHY_ADDR, BOARD_ECAT_PHY_REG_BMSR, &value)
+        != status_success) {
+        status->port0_read_ok = false;
+    }
+    status->port0_bmsr = value;
+    status->port0_link_up =
+        status->port0_read_ok && ((status->port0_bmsr & BOARD_ECAT_PHY_BMSR_LINK_MASK) != 0U);
+    if (enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT0_PHY_ADDR, BOARD_ECAT_PHY_REG_ID1, &value)
+        == status_success) {
+        status->port0_id1 = value;
+    }
+    if (enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT0_PHY_ADDR, BOARD_ECAT_PHY_REG_ID2, &value)
+        == status_success) {
+        status->port0_id2 = value;
+    }
+    (void)enet_write_phy(
+        HPM_ENET0, BOARD_ECAT_PORT0_PHY_ADDR, BOARD_ECAT_PHY_REG_PAGESEL, BOARD_ECAT_PHY_PAGE_RMSR);
+    if (enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT0_PHY_ADDR, BOARD_ECAT_PHY_REG_RMSR_P7, &value)
+        == status_success) {
+        status->port0_rmsr_p7 = value;
+    }
+    (void)enet_write_phy(HPM_ENET0, BOARD_ECAT_PORT0_PHY_ADDR, BOARD_ECAT_PHY_REG_PAGESEL, 0U);
+
+    status->port1_read_ok =
+        enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT1_PHY_ADDR, BOARD_ECAT_PHY_REG_BMCR, &value)
+        == status_success;
+    status->port1_bmcr = value;
+    if (enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT1_PHY_ADDR, BOARD_ECAT_PHY_REG_BMSR, &value)
+        != status_success) {
+        status->port1_read_ok = false;
+    }
+    if (enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT1_PHY_ADDR, BOARD_ECAT_PHY_REG_BMSR, &value)
+        != status_success) {
+        status->port1_read_ok = false;
+    }
+    status->port1_bmsr = value;
+    status->port1_link_up =
+        status->port1_read_ok && ((status->port1_bmsr & BOARD_ECAT_PHY_BMSR_LINK_MASK) != 0U);
+    if (enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT1_PHY_ADDR, BOARD_ECAT_PHY_REG_ID1, &value)
+        == status_success) {
+        status->port1_id1 = value;
+    }
+    if (enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT1_PHY_ADDR, BOARD_ECAT_PHY_REG_ID2, &value)
+        == status_success) {
+        status->port1_id2 = value;
+    }
+    (void)enet_write_phy(
+        HPM_ENET0, BOARD_ECAT_PORT1_PHY_ADDR, BOARD_ECAT_PHY_REG_PAGESEL, BOARD_ECAT_PHY_PAGE_RMSR);
+    if (enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT1_PHY_ADDR, BOARD_ECAT_PHY_REG_RMSR_P7, &value)
+        == status_success) {
+        status->port1_rmsr_p7 = value;
+    }
+    (void)enet_write_phy(HPM_ENET0, BOARD_ECAT_PORT1_PHY_ADDR, BOARD_ECAT_PHY_REG_PAGESEL, 0U);
+
+    configure_internal_phy_mdio_as_esc();
+
+    return status->port0_read_ok || status->port1_read_ok;
+}
+
+bool board_ecat_configure_internal_phy_mii_mode(void) {
+    configure_internal_phy_mdio_as_enet();
+    const bool port0_ok = configure_internal_phy_mii_mode(BOARD_ECAT_PORT0_PHY_ADDR, NULL);
+    const bool port1_ok = configure_internal_phy_mii_mode(BOARD_ECAT_PORT1_PHY_ADDR, NULL);
+    configure_internal_phy_mdio_as_esc();
+    return port0_ok || port1_ok;
+}
+
+bool board_ecat_refresh_internal_phy_link(void) {
+    board_ecat_phy_status_t status = {0};
+    configure_internal_phy_mdio_as_enet();
+
+    uint16_t value = 0;
+    status.port0_read_ok =
+        enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT0_PHY_ADDR, BOARD_ECAT_PHY_REG_BMSR, &value)
+        == status_success;
+    status.port0_read_ok =
+        (enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT0_PHY_ADDR, BOARD_ECAT_PHY_REG_BMSR, &value)
+         == status_success)
+        && status.port0_read_ok;
+    status.port0_bmsr = value;
+    status.port0_link_up =
+        status.port0_read_ok && ((status.port0_bmsr & BOARD_ECAT_PHY_BMSR_LINK_MASK) != 0U);
+
+    status.port1_read_ok =
+        enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT1_PHY_ADDR, BOARD_ECAT_PHY_REG_BMSR, &value)
+        == status_success;
+    status.port1_read_ok =
+        (enet_read_phy(HPM_ENET0, BOARD_ECAT_PORT1_PHY_ADDR, BOARD_ECAT_PHY_REG_BMSR, &value)
+         == status_success)
+        && status.port1_read_ok;
+    status.port1_bmsr = value;
+    status.port1_link_up =
+        status.port1_read_ok && ((status.port1_bmsr & BOARD_ECAT_PHY_BMSR_LINK_MASK) != 0U);
+
+    configure_internal_phy_mdio_as_esc();
+    if (!status.port0_read_ok && !status.port1_read_ok) {
+        return false;
+    }
+    board_ecat_apply_internal_phy_link_status(&status);
+    return true;
+}
+
+bool board_ecat_wait_internal_phy_link(uint32_t timeout_ms) {
+    const uint32_t poll_interval_ms = 20U;
+    const uint32_t attempts = (timeout_ms + poll_interval_ms - 1U) / poll_interval_ms;
+
+    for (uint32_t i = 0; i <= attempts; ++i) {
+        board_ecat_phy_status_t status = {0};
+        if (board_ecat_get_internal_phy_status(&status)) {
+            board_ecat_apply_internal_phy_link_status(&status);
+            if (status.port0_link_up || status.port1_link_up) {
+                return true;
+            }
+        }
+        board_delay_ms(poll_interval_ms);
+    }
+
+    return false;
+}
+
+static bool configure_internal_phy_mii_mode(uint8_t phy_addr, uint16_t* rmsr_p7) {
+    uint16_t value = 0;
+    bool ok =
+        enet_write_phy(HPM_ENET0, phy_addr, BOARD_ECAT_PHY_REG_PAGESEL, BOARD_ECAT_PHY_PAGE_RMSR)
+        == status_success;
+    if (ok) {
+        ok = enet_read_phy(HPM_ENET0, phy_addr, BOARD_ECAT_PHY_REG_RMSR_P7, &value)
+          == status_success;
+    }
+    if (ok) {
+        value &= ~BOARD_ECAT_PHY_RMSR_MII_MODE_MASK;
+        ok = enet_write_phy(HPM_ENET0, phy_addr, BOARD_ECAT_PHY_REG_RMSR_P7, value)
+          == status_success;
+    }
+    if (rmsr_p7 != NULL) {
+        *rmsr_p7 = value;
+    }
+    (void)enet_write_phy(HPM_ENET0, phy_addr, BOARD_ECAT_PHY_REG_PAGESEL, 0U);
+    return ok;
+}
+
+static void board_ecat_apply_internal_phy_link_status(const board_ecat_phy_status_t* status) {
+#if defined(BOARD_ECAT_SWAP_PHY_LINK_TO_ESC_PORT) && BOARD_ECAT_SWAP_PHY_LINK_TO_ESC_PORT
+    board_ecat_set_internal_phy_link(status->port1_link_up, status->port0_link_up);
+#else
+    board_ecat_set_internal_phy_link(status->port0_link_up, status->port1_link_up);
+#endif
+}
+
+static inline void configure_internal_phy_mdio_as_enet(void) {
+    const uint32_t mdio_pad_ctl =
+        IOC_PAD_PAD_CTL_PE_SET(1) | IOC_PAD_PAD_CTL_PS_SET(1) | IOC_PAD_PAD_CTL_HYS_SET(1);
+
+#if defined(BOARD_RUNNING_CORE) && BOARD_RUNNING_CORE == HPM_CORE1
+    clock_add_to_group(clock_eth0, 1);
+#else
+    clock_add_to_group(clock_eth0, 0);
+#endif
+
+    HPM_IOC->PAD[IOC_PAD_PA30].FUNC_CTL = IOC_PA30_FUNC_CTL_ETH0_MDIO;
+    HPM_IOC->PAD[IOC_PAD_PA31].FUNC_CTL = IOC_PA31_FUNC_CTL_ETH0_MDC;
+    HPM_IOC->PAD[IOC_PAD_PA30].PAD_CTL = mdio_pad_ctl;
+}
+
+static inline void configure_internal_phy_mdio_as_esc(void) {
+    const uint32_t mdio_pad_ctl =
+        IOC_PAD_PAD_CTL_PE_SET(1) | IOC_PAD_PAD_CTL_PS_SET(1) | IOC_PAD_PAD_CTL_HYS_SET(1);
+
     HPM_IOC->PAD[IOC_PAD_PA30].FUNC_CTL = IOC_PA30_FUNC_CTL_ESC0_MDIO;
     HPM_IOC->PAD[IOC_PAD_PA31].FUNC_CTL = IOC_PA31_FUNC_CTL_ESC0_MDC;
+    HPM_IOC->PAD[IOC_PAD_PA30].PAD_CTL = mdio_pad_ctl;
+}
 
-    /* PHY reset line as GPIO (see board_init_ethercat). */
-    HPM_IOC->PAD[IOC_PAD_PA10].FUNC_CTL = IOC_PA10_FUNC_CTL_GPIO_A_10;
+static inline void init_esc_pins(void) {
+    const uint32_t strap_pullup_ctl = IOC_PAD_PAD_CTL_PE_SET(1) | IOC_PAD_PAD_CTL_PS_SET(1);
 
-    /* NMII_LINK0 (port A link), matches BOARD_ECAT_NMII_LINK0_CTRL_INDEX. */
-    HPM_IOC->PAD[IOC_PAD_PA15].FUNC_CTL = IOC_PA15_FUNC_CTL_ESC0_CTR_3;
-    /* NMII_LINK1 (port B link), matches BOARD_ECAT_NMII_LINK1_CTRL_INDEX. */
-    HPM_IOC->PAD[IOC_PAD_PA11].FUNC_CTL = IOC_PA11_FUNC_CTL_ESC0_CTR_0;
-    /* NOTE: the EVK-derived ESC RUN/ERROR LED mux is deliberately NOT applied on
-     * this board. The GPIO LED scan proved PE03 = Main RGB blue and PE02 = CAN1
-     * blue indicator, not EtherCAT status LEDs. Re-muxing them to ESC0_CTR here
-     * made those LEDs glow after board_turnoff_rgb_led()/init_led_pins() had
-     * turned them off. The ESC still computes RUN/ERROR internally; it just is
-     * not routed to a pad. Re-add a real ESC LED pad here once the true EtherCAT
-     * pinout for this board is known. */
+    static const uint32_t analog_pads[] = {
+        IOC_PAD_PA16, IOC_PAD_PA17, IOC_PAD_PA18, IOC_PAD_PA19, IOC_PAD_PA20,
+        IOC_PAD_PA21, IOC_PAD_PA22, IOC_PAD_PA23, IOC_PAD_PA24, IOC_PAD_PA26,
+        IOC_PAD_PA27, IOC_PAD_PA29, IOC_PAD_PW16, IOC_PAD_PW17,
+    };
 
-    /* ESC port A (MII) */
-    HPM_IOC->PAD[IOC_PAD_PA24].FUNC_CTL = IOC_PA24_FUNC_CTL_ESC0_P0_TXCK;
-    HPM_IOC->PAD[IOC_PAD_PA29].FUNC_CTL = IOC_PA29_FUNC_CTL_ESC0_P0_TXEN;
-    HPM_IOC->PAD[IOC_PAD_PA25].FUNC_CTL = IOC_PA25_FUNC_CTL_ESC0_P0_TXD_0;
-    HPM_IOC->PAD[IOC_PAD_PA26].FUNC_CTL = IOC_PA26_FUNC_CTL_ESC0_P0_TXD_1;
-    HPM_IOC->PAD[IOC_PAD_PA27].FUNC_CTL = IOC_PA27_FUNC_CTL_ESC0_P0_TXD_2;
-    HPM_IOC->PAD[IOC_PAD_PA28].FUNC_CTL = IOC_PA28_FUNC_CTL_ESC0_P0_TXD_3;
-    HPM_IOC->PAD[IOC_PAD_PA21].FUNC_CTL = IOC_PA21_FUNC_CTL_ESC0_P0_RXCK;
-    HPM_IOC->PAD[IOC_PAD_PA16].FUNC_CTL = IOC_PA16_FUNC_CTL_ESC0_P0_RXDV;
-    HPM_IOC->PAD[IOC_PAD_PA23].FUNC_CTL = IOC_PA23_FUNC_CTL_ESC0_P0_RXER;
-    HPM_IOC->PAD[IOC_PAD_PA17].FUNC_CTL = IOC_PA17_FUNC_CTL_ESC0_P0_RXD_0;
-    HPM_IOC->PAD[IOC_PAD_PA18].FUNC_CTL = IOC_PA18_FUNC_CTL_ESC0_P0_RXD_1;
-    HPM_IOC->PAD[IOC_PAD_PA19].FUNC_CTL = IOC_PA19_FUNC_CTL_ESC0_P0_RXD_2;
-    HPM_IOC->PAD[IOC_PAD_PA20].FUNC_CTL = IOC_PA20_FUNC_CTL_ESC0_P0_RXD_3;
+    for (uint32_t i = 0; i < sizeof(analog_pads) / sizeof(analog_pads[0]); ++i) {
+        HPM_IOC->PAD[analog_pads[i]].FUNC_CTL = IOC_PAD_FUNC_CTL_ANALOG_MASK;
+        HPM_IOC->PAD[analog_pads[i]].PAD_CTL = 0;
+    }
 
-    /* ESC port B (MII) */
-    HPM_IOC->PAD[IOC_PAD_PB18].FUNC_CTL = IOC_PB18_FUNC_CTL_ESC0_P1_TXCK;
-    HPM_IOC->PAD[IOC_PAD_PB23].FUNC_CTL = IOC_PB23_FUNC_CTL_ESC0_P1_TXEN;
-    HPM_IOC->PAD[IOC_PAD_PB19].FUNC_CTL = IOC_PB19_FUNC_CTL_ESC0_P1_TXD_0;
-    HPM_IOC->PAD[IOC_PAD_PB20].FUNC_CTL = IOC_PB20_FUNC_CTL_ESC0_P1_TXD_1;
-    HPM_IOC->PAD[IOC_PAD_PB21].FUNC_CTL = IOC_PB21_FUNC_CTL_ESC0_P1_TXD_2;
-    HPM_IOC->PAD[IOC_PAD_PB22].FUNC_CTL = IOC_PB22_FUNC_CTL_ESC0_P1_TXD_3;
-    HPM_IOC->PAD[IOC_PAD_PB17].FUNC_CTL = IOC_PB17_FUNC_CTL_ESC0_P1_RXCK;
-    HPM_IOC->PAD[IOC_PAD_PB12].FUNC_CTL = IOC_PB12_FUNC_CTL_ESC0_P1_RXDV;
-    HPM_IOC->PAD[IOC_PAD_PA22].FUNC_CTL = IOC_PA22_FUNC_CTL_ESC0_P1_RXER;
-    HPM_IOC->PAD[IOC_PAD_PB13].FUNC_CTL = IOC_PB13_FUNC_CTL_ESC0_P1_RXD_0;
-    HPM_IOC->PAD[IOC_PAD_PB14].FUNC_CTL = IOC_PB14_FUNC_CTL_ESC0_P1_RXD_1;
-    HPM_IOC->PAD[IOC_PAD_PB15].FUNC_CTL = IOC_PB15_FUNC_CTL_ESC0_P1_RXD_2;
-    HPM_IOC->PAD[IOC_PAD_PB16].FUNC_CTL = IOC_PB16_FUNC_CTL_ESC0_P1_RXD_3;
+    configure_internal_phy_mdio_as_esc();
 
-    /* ESC SYNC0 output (unused in free-run; kept for parity with the EVK). */
-    HPM_IOC->PAD[IOC_PAD_PE06].FUNC_CTL = IOC_PE06_FUNC_CTL_ESC0_EVTO_0;
+    HPM_IOC->PAD[IOC_PAD_PV12].FUNC_CTL = IOC_PV12_FUNC_CTL_GPIO_V_12;
+    HPM_IOC->PAD[IOC_PAD_PW12].FUNC_CTL = IOC_PW12_FUNC_CTL_GPIO_W_12;
+    HPM_IOC->PAD[IOC_PAD_PV12].PAD_CTL = 0;
+    HPM_IOC->PAD[IOC_PAD_PW12].PAD_CTL = 0;
+    gpiom_set_pin_controller(HPM_GPIOM, GPIOM_ASSIGN_GPIOV, 12, gpiom_soc_gpio0);
+    gpiom_set_pin_controller(HPM_GPIOM, GPIOM_ASSIGN_GPIOW, 12, gpiom_soc_gpio0);
+
+    HPM_IOC->PAD[IOC_PAD_PW20].FUNC_CTL = IOC_PW20_FUNC_CTL_ESC0_REFCK;
+    HPM_IOC->PAD[IOC_PAD_PW21].FUNC_CTL = IOC_PW21_FUNC_CTL_ESC0_REFCK;
+
+    /* On-die PHY LED/address-strap pads double as ESC link-source controls. */
+    HPM_IOC->PAD[IOC_PAD_PA25].FUNC_CTL = IOC_PA25_FUNC_CTL_ESC0_CTR_0;
+    HPM_IOC->PAD[IOC_PAD_PA25].PAD_CTL = strap_pullup_ctl;
+    HPM_IOC->PAD[IOC_PAD_PA28].FUNC_CTL = IOC_PA28_FUNC_CTL_ESC0_CTR_1;
+    HPM_IOC->PAD[IOC_PAD_PA28].PAD_CTL = strap_pullup_ctl;
+
+    /* EtherCAT RUN/ERROR status LEDs: the GPIO LED scan found PC20 (green) and
+     * PC21 (red) as the "EtherCAT middle" indicators, and both carry an ESC0_CTR
+     * alt function (PC20 = CTR_2, PC21 = CTR_3), so the ESC drives them directly
+     * from the AL state machine. CTR_2/CTR_3 are free (CTR_0/CTR_1 are the
+     * NMII_LINK sources above). The port layer (hpm_ecat_hw.c) binds LED_RUN to
+     * BOARD_ECAT_LED_RUN_CTRL_INDEX (2) and LED_ERROR to
+     * BOARD_ECAT_LED_ERROR_CTRL_INDEX (3); board_park_leds_off() drives these OFF
+     * before the ESC takes them. The LEDs are active-high and the SDK drives the
+     * CTR LED signal non-inverted -- if they read inverted on hardware, that
+     * polarity is the thing to flip. */
+    HPM_IOC->PAD[IOC_PAD_PC20].FUNC_CTL = IOC_PC20_FUNC_CTL_ESC0_CTR_2;
+    HPM_IOC->PAD[IOC_PAD_PC21].FUNC_CTL = IOC_PC21_FUNC_CTL_ESC0_CTR_3;
+
+    HPM_IOC->PAD[IOC_PAD_PV00].FUNC_CTL = IOC_PV00_FUNC_CTL_ESC0_P0_RXDV;
+    HPM_IOC->PAD[IOC_PAD_PV01].FUNC_CTL = IOC_PV01_FUNC_CTL_ESC0_P0_RXD_0;
+    HPM_IOC->PAD[IOC_PAD_PV02].FUNC_CTL = IOC_PV02_FUNC_CTL_ESC0_P0_RXD_1;
+    HPM_IOC->PAD[IOC_PAD_PV03].FUNC_CTL = IOC_PV03_FUNC_CTL_ESC0_P0_RXD_2;
+    HPM_IOC->PAD[IOC_PAD_PV04].FUNC_CTL = IOC_PV04_FUNC_CTL_ESC0_P0_RXD_3;
+    HPM_IOC->PAD[IOC_PAD_PV05].FUNC_CTL = IOC_PV05_FUNC_CTL_ESC0_P0_RXCK;
+    HPM_IOC->PAD[IOC_PAD_PV06].FUNC_CTL = IOC_PV06_FUNC_CTL_ESC0_P0_TXCK;
+    HPM_IOC->PAD[IOC_PAD_PV07].FUNC_CTL = IOC_PV07_FUNC_CTL_ESC0_P0_TXD_0;
+    HPM_IOC->PAD[IOC_PAD_PV08].FUNC_CTL = IOC_PV08_FUNC_CTL_ESC0_P0_TXD_1;
+    HPM_IOC->PAD[IOC_PAD_PV09].FUNC_CTL = IOC_PV09_FUNC_CTL_ESC0_P0_TXD_2;
+    HPM_IOC->PAD[IOC_PAD_PV10].FUNC_CTL = IOC_PV10_FUNC_CTL_ESC0_P0_TXD_3;
+    HPM_IOC->PAD[IOC_PAD_PV11].FUNC_CTL = IOC_PV11_FUNC_CTL_ESC0_P0_TXEN;
+    HPM_IOC->PAD[IOC_PAD_PV15].FUNC_CTL = IOC_PV15_FUNC_CTL_ESC0_P0_RXER;
+
+    HPM_IOC->PAD[IOC_PAD_PW00].FUNC_CTL = IOC_PW00_FUNC_CTL_ESC0_P1_RXDV;
+    HPM_IOC->PAD[IOC_PAD_PW01].FUNC_CTL = IOC_PW01_FUNC_CTL_ESC0_P1_RXD_0;
+    HPM_IOC->PAD[IOC_PAD_PW02].FUNC_CTL = IOC_PW02_FUNC_CTL_ESC0_P1_RXD_1;
+    HPM_IOC->PAD[IOC_PAD_PW03].FUNC_CTL = IOC_PW03_FUNC_CTL_ESC0_P1_RXD_2;
+    HPM_IOC->PAD[IOC_PAD_PW04].FUNC_CTL = IOC_PW04_FUNC_CTL_ESC0_P1_RXD_3;
+    HPM_IOC->PAD[IOC_PAD_PW05].FUNC_CTL = IOC_PW05_FUNC_CTL_ESC0_P1_RXCK;
+    HPM_IOC->PAD[IOC_PAD_PW06].FUNC_CTL = IOC_PW06_FUNC_CTL_ESC0_P1_TXCK;
+    HPM_IOC->PAD[IOC_PAD_PW07].FUNC_CTL = IOC_PW07_FUNC_CTL_ESC0_P1_TXD_0;
+    HPM_IOC->PAD[IOC_PAD_PW08].FUNC_CTL = IOC_PW08_FUNC_CTL_ESC0_P1_TXD_1;
+    HPM_IOC->PAD[IOC_PAD_PW09].FUNC_CTL = IOC_PW09_FUNC_CTL_ESC0_P1_TXD_2;
+    HPM_IOC->PAD[IOC_PAD_PW10].FUNC_CTL = IOC_PW10_FUNC_CTL_ESC0_P1_TXD_3;
+    HPM_IOC->PAD[IOC_PAD_PW11].FUNC_CTL = IOC_PW11_FUNC_CTL_ESC0_P1_TXEN;
+    HPM_IOC->PAD[IOC_PAD_PW15].FUNC_CTL = IOC_PW15_FUNC_CTL_ESC0_P1_RXER;
 }
 
 void board_delay_us(uint32_t us) { clock_cpu_delay_us(us); }

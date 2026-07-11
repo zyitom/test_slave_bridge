@@ -36,31 +36,28 @@ struct Led {
     bool active_high;
 };
 
-// The 15 GPIO-controllable LEDs. The two ENET link LEDs are PHY-driven and not
-// listed here. Banks A/B/C/E only -> GPIO port / GPIOM index equal the bank
-// index and no always-on-domain routing is needed.
+// Safe GPIO-controllable LEDs. PA25/PA28 were observed by the original LED scan,
+// but they are internal PHY LED/strap pins on HPM6E*Y* and are intentionally not
+// driven here. Banks A/B/C/E only -> GPIO port / GPIOM index equal the bank index
+// and no always-on-domain routing is needed.
 constexpr Led kLeds[] = {
-    {'E', 5, false},  // Main RGB red   (active-low)
-    {'E', 4, false},  // Main RGB green (active-low)
-    {'E', 3, false},  // Main RGB blue  (active-low)
-    {'C', 26, true},  // CAN0 green
-    {'C', 27, true},  // CAN0 blue
-    {'E', 0, true},   // CAN1 green
-    {'E', 2, true},   // CAN1 blue
-    {'A', 9, true},   // CAN2 green
-    {'B', 0, true},   // CAN2 blue
-    {'B', 2, true},   // CAN3 green
-    {'B', 3, true},   // CAN3 blue
-    {'A', 25, false}, // EtherCAT0 yellow -- active-LOW (OFF = drive high). With the
-                      // wrong active-high flag the per-blink OFF step drove it low,
-                      // leaving it lit when the sweep moved on.
-    {'A', 28, true},  // EtherCAT1 yellow
-    {'C', 20, true},  // EtherCAT middle green
-    {'C', 21, true},  // EtherCAT middle red
+    {'E',  5, false}, // Main RGB red   (active-low)
+    {'E',  4, false}, // Main RGB green (active-low)
+    {'E',  3, false}, // Main RGB blue  (active-low)
+    {'C', 26,  true}, // CAN0 green
+    {'C', 27,  true}, // CAN0 blue
+    {'E',  0,  true}, // CAN1 green
+    {'E',  2,  true}, // CAN1 blue
+    {'A',  9,  true}, // CAN2 green
+    {'B',  0,  true}, // CAN2 blue
+    {'B',  2,  true}, // CAN3 green
+    {'B',  3,  true}, // CAN3 blue
+    {'C', 20,  true}, // EtherCAT middle green
+    {'C', 21,  true}, // EtherCAT middle red
 };
 
 constexpr size_t kLedCount = sizeof(kLeds) / sizeof(kLeds[0]);
-static_assert(kLedCount == 15U);
+static_assert(kLedCount == 13U);
 static_assert(kAnnounceBaseId + kLedCount - 1 <= 0x7FFU);
 
 constexpr uint32_t bank_index(char bank) { return static_cast<uint32_t>(bank - 'A'); }
@@ -149,8 +146,7 @@ void write_led(const Led& led, bool on) {
 int led_confirm_main() {
     (void)init_telemetry_can();
 
-    // Park every LED OFF up front (also silences the EtherCAT0 pad that floats
-    // high when the ESC does not drive it).
+    // Park every safe GPIO LED OFF up front. PHY LED/strap pads are left alone.
     for (const auto& led : kLeds) {
         configure_led_output(led);
     }
