@@ -249,35 +249,7 @@ static inline void board_init_clock(void) {
      * core: physical CAN0/MCAN0 + UART1 + its machine timer). */
     clock_add_to_group(clock_cpu1, 1);
     clock_add_to_group(clock_mchtmr1, 1);
-#if defined(RMCS_ECAT_CORE1_CAN_PIN_SCANNER) && RMCS_ECAT_CORE1_CAN_PIN_SCANNER
     clock_add_to_group(clock_can0, 1);
-    clock_add_to_group(clock_can1, 1);
-    clock_add_to_group(clock_can2, 1);
-    clock_add_to_group(clock_can3, 1);
-    clock_add_to_group(clock_can4, 1);
-    clock_add_to_group(clock_can5, 1);
-    clock_add_to_group(clock_can6, 1);
-    clock_add_to_group(clock_can7, 1);
-#elif (defined(RMCS_ECAT_CORE1_MDIO_PIN_SCANNER) && RMCS_ECAT_CORE1_MDIO_PIN_SCANNER)      \
-    || (defined(RMCS_ECAT_CORE1_ENET_PACKET_TESTER) && RMCS_ECAT_CORE1_ENET_PACKET_TESTER) \
-    || (defined(RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER) && RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER)
-    clock_add_to_group(clock_gpio, 1);
-    clock_add_to_group(clock_can0, 1);
-    clock_add_to_group(clock_eth0, 1);
-    /* The MDIO scanner, the ENET packet tester and the Realtek reset scanner all
-     * probe the ENET0 PHY path; enable the ESC/TSN clock groups so the on-die PHY
-     * domain (ESC core/PHY clocks, reference clock) is available to them. */
-    clock_add_to_group(clock_esc0, 1);
-    clock_add_to_group(clock_tsn1, 1);
-    clock_add_to_group(clock_tsn2, 1);
-    clock_add_to_group(clock_tsn3, 1);
-#elif (defined(RMCS_ECAT_CORE1_LED_PIN_SCANNER) && RMCS_ECAT_CORE1_LED_PIN_SCANNER) \
-    || (defined(RMCS_ECAT_CORE1_LED_CONFIRM) && RMCS_ECAT_CORE1_LED_CONFIRM)
-    clock_add_to_group(clock_gpio, 1);
-    clock_add_to_group(clock_can0, 1);
-#else
-    clock_add_to_group(clock_can0, 1);
-#endif
     clock_add_to_group(clock_uart1, 1);
     /* Connect Group1 to CPU1 */
     clock_connect_group_to_cpu(1, 1);

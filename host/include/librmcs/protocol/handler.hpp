@@ -49,11 +49,19 @@ public:
      * @brief Connects to a board over EtherCAT (the rmcs_board EtherCAT stream
      * bridge) instead of USB.
      *
-     * @param ethercat_interface_name Raw network interface wired to the slave
-     *        (e.g. "enp2s0"); opening it requires CAP_NET_RAW (or root).
-     * @throws std::runtime_error when the SDK was built without the optional
-     *         SOEM component (cmake -DLIBRMCS_ENABLE_SOEM=ON), or when the
-     *         slave cannot be brought to OPERATIONAL.
+     * The backend is chosen at run time via the RMCS_ECAT_BACKEND environment
+     * variable ("soem" or "igh"; default: soem if compiled in, else igh),
+     * among the backends the SDK was built with (-DLIBRMCS_ENABLE_SOEM=ON /
+     * -DLIBRMCS_ENABLE_IGH=ON).
+     *
+     * @param ethercat_interface_name For SOEM: the raw network interface wired
+     *        to the slave (e.g. "enp2s0"); opening it requires CAP_NET_RAW (or
+     *        root). For IgH: advisory only -- the NIC is owned by the IgH
+     *        master kernel module (`ethercatctl start` first; the process
+     *        needs write access to /dev/EtherCAT0).
+     * @throws std::runtime_error when the SDK was built without any EtherCAT
+     *         backend, when RMCS_ECAT_BACKEND names a backend that was not
+     *         compiled in, or when the slave cannot be brought to OPERATIONAL.
      *
      * The session handshake and all data semantics are identical to the USB
      * transport; use options.thread_setup to pin the EtherCAT busy-poll

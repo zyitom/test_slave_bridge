@@ -1,65 +1,78 @@
-# RMCS Slave HPM5321 DualCan - Pin Assignments
+# RMCS Slave HPM5321 DualCan
 
-Board name: `RMCS_Slave_HPM5321_DualCan` (`BOARD_NAME`)
-SoC: **HPM5361** (`HPM5361xEGx`, QFN48 package), named `hpm5321` after the board series
-USB PID: `0xA902`
+USB<->fieldbus forwarding bridge with two CAN-FD controllers, one data UART, a
+main RGB status LED and one indicator LED per CAN bus. No IMU, no DBUS
+receiver, no GPIO application channels.
 
-Two CAN-FD controllers and one data UART. No IMU, no DBUS receiver, no GPIO
-application channels.
+Hardware pin assignments live in [PINOUT.md](PINOUT.md), including how the pin
+map was recovered after the schematic was lost.
 
-Build with `-DBOARD=hpm5321_dual_can`.
+## Identifiers
 
-## Pin map — all confirmed
+| Item        | Value                                     |
+| ----------- | ----------------------------------------- |
+| Board name  | `RMCS_Slave_HPM5321_DualCan` (`BOARD_NAME`) |
+| SoC         | HPM5361 (QFN48), single RV32 core         |
+| USB PID     | `0xA902` (VID `0xA11C`)                   |
+| USB speed   | High speed (480 Mbps)                     |
+| Flash       | 1 MiB XPI NOR, app behind the shared DFU bootloader |
 
-| Function        | Hardware  | Pad(s)              | Notes                    |
-| --------------- | --------- | ------------------- | ------------------------ |
-| CAN0            | MCAN0     | TX=PA00, RX=PA01    | CAN-FD, DM motor bus     |
-| CAN1            | MCAN3     | TX=PA31, RX=PA30    | CAN-FD, second motor bus |
-| UART            | UART2     | TX=PB08, RX=PB09    | 921600-8N1               |
-| Main LED blue   | GPIO      | PA26                | Active-low               |
-| Main LED green  | GPIO      | PA27                | Active-low               |
-| Main LED red    | GPIO      | PA28                | Active-low               |
-| CAN1 indicator  | HW LED    | PB14                | GPIO active-high; CAN0/MCAN0 light language (see below) |
-| CAN2 indicator  | HW LED    | PB15                | GPIO active-high; CAN1/MCAN3 light language (see below) |
-| JTAG            | default   | PA04/PA05/PA06/PA07 |                          |
-| USB FS          | USB0      | DM=PA24, DP=PA25    | Analog, internal VBUS    |
+## What the host sees
 
-## How the pin map was recovered
+The board runs the shared rmcs_board USB application (`app/`): a USB
+vendor-class device carrying the librmcs byte stream, with the session
+handshake (kStart nonce + keepalive lease) handled by the shared
+`link::HostSession`.
 
-The schematic for this board was lost. All pins were recovered on the bench:
+| Host endpoint    | Board resource                  | Notes                     |
+| ---------------- | ------------------------------- | ------------------------- |
+| `DataId::kCan0`  | MCAN0, CAN-FD 1 Mbps / 5 Mbps   | DM (Damiao) motor bus     |
+| `DataId::kCan1`  | MCAN3, CAN-FD 1 Mbps / 5 Mbps   | Second motor bus          |
+| `DataId::kUart0` | UART2, 921600-8N1               | DMA-driven both directions |
 
-- **LED pins** (PA26/27/28, PB14/15): discovered by a GPIO blink-scan firmware
-  (`boards/hpm5321_scan/`, `app/src/utility/pin_scan.hpp`)
-- **CAN1** (MCAN0, PA00/PA01): carried over from the original `hpm5321` board
-- **CAN2** (MCAN3, PA30/PA31): narrowed down by QFN48 pinmux exclusion after
-  PB14/PB15 turned out to be CAN activity LEDs
-- **UART** (UART2, PB08/PB09): same as original `hpm5321`; confirmed by exhaustive
-  testing of all QFN48 UART TX/RXD pin pairs (variants 1–6) — only variant 1
-  (PB08/PB09) produced data in rxmonitor
+## Build and flash
+
+```bash
+cmake --preset debug -S firmware/rmcs_board -DBOARD=hpm5321_dual_can
+cmake --build firmware/rmcs_board/build
+```
+
+Flash over USB DFU with the repo script (builds the release preset first):
+
+```bash
+./flash-dual.sh                # build release + flash
+PRESET=debug ./flash-dual.sh   # debuggable (-O0) image instead
+```
+
+The shared RMCS DFU bootloader must already be on the chip (one-time, needs a
+debugger: `./flash-dual-bootloader.sh`). A running app exposes the DFU runtime
+interface, so dfu-util detaches it automatically; to force the bootloader to
+stay resident, hold the PA07 button through reset.
 
 ## Main status LED (RGB)
 
-The 3-channel RGB LED (PA26/27/28, active-low) shows the host link and the USB
-forwarding buffers. Each state is a single colour; the priority is top-to-bottom
+The 3-channel RGB LED shows the host link and the forwarding buffers. Each
+state is a distinct color (yellow = red+green, cyan = green+blue; all three
+channels are never lit at once); priority is top to bottom
 (`app/src/led/led.hpp`):
 
-| Pattern              | Meaning                                                    |
-| -------------------- | --------------------------------------------------------- |
-| red/blue alternating | both directions congested (uplink AND downlink full)      |
-| blue blink           | uplink buffer full (board -> host); host not draining fast enough |
-| red blink            | downlink buffer full (host -> board); CAN TX FIFO backed up |
-| steady green         | host connected and healthy                                |
-| slow green blink 1 Hz| alive, no host connected yet                              |
+| Pattern               | Meaning                                                   |
+| --------------------- | --------------------------------------------------------- |
+| yellow/cyan alternate | both directions congested (uplink AND downlink full)      |
+| yellow blink (~4 Hz)  | uplink buffer full (board -> host); host not draining     |
+| cyan blink (~4 Hz)    | downlink buffer full (host -> board); CAN TX backed up    |
+| steady green          | host session established, data forwarding                 |
+| slow green blink 1 Hz | alive, waiting for a host session                         |
 
-Note: "host connected" here means USB is enumerated (`tud_mounted()`), i.e. the
-cable is plugged into a live host — it does NOT prove the host application has
-opened the device. USB gives the device no signal for that; detecting it would
-need an application-level heartbeat.
+"Host session established" means the librmcs handshake is up (kStart nonce
+acknowledged and the keepalive lease refreshed within 1 s) -- NOT merely that
+the USB cable is plugged in. An enumerated device without a live host
+application stays on the slow green blink.
 
 ## CAN status LEDs (light language)
 
 One indicator LED per CAN controller. The on-board silkscreen labels them CAN1
-and CAN2, but in firmware they are CAN0/CAN1 (0-based) — keep the mapping
+and CAN2, but in firmware they are CAN0/CAN1 (0-based) -- keep the mapping
 straight, it is a common source of confusion:
 
 | Silkscreen | Pin  | Firmware | Controller | Bus pins        |
@@ -72,13 +85,13 @@ controller can actually tell apart, and the LED shows it until ~5 s after the
 last error, then returns to off (implemented in `app/src/can/can.hpp` and
 `app/src/led/led.hpp`):
 
-| Pattern         | State       | What it means / where to look                                  |
-| --------------- | ----------- | -------------------------------------------------------------- |
-| off             | healthy     | no errors                                                      |
-| slow blink 1 Hz | NO-ACK      | nobody acknowledged — alone on the bus, partner unpowered, or TX wire cut |
-| fast blink 5 Hz | WIRING (Bit0) | bus cannot be driven dominant — CAN_H/L shorted together, reversed, or open |
-| double blink    | SIGNAL      | corrupted bits — missing 120R termination, baudrate mismatch, or noise |
-| solid on        | BUS-OFF     | too many errors; controller is recovering / offline           |
+| Pattern         | State         | What it means / where to look                                 |
+| --------------- | ------------- | ------------------------------------------------------------- |
+| off             | healthy       | no errors                                                     |
+| slow blink 1 Hz | NO-ACK        | nobody acknowledged -- alone on the bus, partner unpowered, or TX wire cut |
+| fast blink 5 Hz | WIRING (Bit0) | bus cannot be driven dominant -- CAN_H/L shorted together, reversed, or open |
+| double blink    | SIGNAL        | corrupted bits -- missing 120R termination, baudrate mismatch, or noise |
+| solid on        | BUS-OFF       | too many errors; controller is recovering / offline           |
 
 Why only these states: a controller can reliably separate "nobody answered"
 (ACK error) from "the bits on the wire are wrong". The exact wire error
@@ -89,12 +102,12 @@ to tell them apart. A hard short/reversal is the one wiring fault that shows up
 stably (Bit0), so it gets its own pattern.
 
 Note: CAN errors only arise while the controller is actively transmitting or
-receiving. An idle bus reports nothing — to surface a fault you must send
+receiving. An idle bus reports nothing -- to surface a fault you must send
 traffic (e.g. `host/examples/can_error_test`).
 
 ### Common mistakes that light the CAN LED
 
-- **Double blink right after another node joins — duplicate CAN ID.** Two
+- **Double blink right after another node joins -- duplicate CAN ID.** Two
   transmitters sending the SAME id with different data both win arbitration (the
   id bits are identical), then collide in the data field -> bit error -> SIGNAL.
   Give every transmitter on the bus a unique id. Most frames still get through, so
@@ -103,14 +116,14 @@ traffic (e.g. `host/examples/can_error_test`).
   classic CAN 2.0 node (typical USB-to-CAN adapter, RoboMaster motor) cannot
   acknowledge a CAN-FD frame: it either ignores it (-> NO-ACK) or sends an error
   frame (-> SIGNAL). Send classic frames (`is_fdcan = false`) to such devices.
-- **Double blink with no obvious cause — termination.** A CAN bus needs exactly
+- **Double blink with no obvious cause -- termination.** A CAN bus needs exactly
   two 120R resistors, one at each end. Zero, one or three cause reflections ->
   intermittent stuff/form/CRC -> SIGNAL.
-- **Slow blink with a device attached — it is not acknowledging.** It is on a
+- **Slow blink with a device attached -- it is not acknowledging.** It is on a
   different bus, unpowered, in listen-only/silent mode, or its TX wire is cut.
-- **LED never lights even on a broken bus — the bus is idle.** Errors only occur
+- **LED never lights even on a broken bus -- the bus is idle.** Errors only occur
   while transmitting/receiving; send traffic to test.
-- **The "wrong" LED reacts — silkscreen vs firmware numbering.** Board CAN1/CAN2
+- **The "wrong" LED reacts -- silkscreen vs firmware numbering.** Board CAN1/CAN2
   are firmware CAN0/CAN1 (see the mapping table above).
 
 ### Bus-off auto-recovery
@@ -122,14 +135,14 @@ hardware latches `CCCR.INIT`, halting it. The ISR clears INIT
 controller waits for the bus to go idle (129 * 11 recessive bits), resets its
 error counters and resumes automatically. While the bus stays faulty it simply
 cycles bus-off -> recover -> retry, keeping the port alive (and preventing the
-TX FIFO from backing up, which would otherwise flash the main LED red forever).
+TX FIFO from backing up, which would otherwise flash the main LED forever).
 
 ## Classic CAN 2.0 vs CAN-FD
 
 Both controllers run permanently in CAN-FD mode (arbitration 1 Mbps, data
 5 Mbps). CAN-FD mode is a strict superset: an FD-enabled M_CAN transmits and
 receives classic CAN 2.0 frames too, selected per element via the FDF/BRS bits.
-So there is no controller-level "mode switch" — the frame type is chosen
+So there is no controller-level "mode switch" -- the frame type is chosen
 per-frame:
 
 - **Receive**: the hardware auto-detects each frame; `handle_uplink` reports the
@@ -151,7 +164,7 @@ interruption). The host can therefore mix classic and FD frames freely on the
 same bus, frame by frame.
 
 Interop note: a classic-only node (e.g. a typical USB-to-CAN adapter, or a
-RoboMaster motor) will NOT acknowledge an FD frame — it ignores it, so the board
+RoboMaster motor) will NOT acknowledge an FD frame -- it ignores it, so the board
 sees a pure ACK error and the indicator shows NO-ACK (slow blink). Send classic
 frames (`is_fdcan = false`) to such devices. The arbitration baudrate must match
 on all nodes regardless (1 Mbps here).

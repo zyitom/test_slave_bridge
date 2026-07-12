@@ -1,92 +1,12 @@
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+
 #include <board.h>
+#include <hpm_mbx_drv.h>
 
-#if defined(RMCS_ECAT_CORE1_CAN_PIN_SCANNER) && RMCS_ECAT_CORE1_CAN_PIN_SCANNER
-
-namespace librmcs::firmware::board {
-int can_pin_scanner_main();
-}
-
-int main() {
-    board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
-    return librmcs::firmware::board::can_pin_scanner_main();
-}
-
-#elif defined(RMCS_ECAT_CORE1_LED_PIN_SCANNER) && RMCS_ECAT_CORE1_LED_PIN_SCANNER
-
-namespace librmcs::firmware::board {
-int led_pin_scanner_main();
-}
-
-int main() {
-    board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
-    return librmcs::firmware::board::led_pin_scanner_main();
-}
-
-#elif defined(RMCS_ECAT_CORE1_LED_CONFIRM) && RMCS_ECAT_CORE1_LED_CONFIRM
-
-namespace librmcs::firmware::board {
-int led_confirm_main();
-}
-
-int main() {
-    board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
-    return librmcs::firmware::board::led_confirm_main();
-}
-
-#elif defined(RMCS_ECAT_CORE1_MDIO_PIN_SCANNER) && RMCS_ECAT_CORE1_MDIO_PIN_SCANNER
-
-namespace librmcs::firmware::board {
-int mdio_pin_scanner_main();
-}
-
-int main() {
-    board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
-    return librmcs::firmware::board::mdio_pin_scanner_main();
-}
-
-#elif defined(RMCS_ECAT_CORE1_ENET_PACKET_TESTER) && RMCS_ECAT_CORE1_ENET_PACKET_TESTER
-
-namespace librmcs::firmware::board {
-int enet_packet_tester_main();
-}
-
-int main() {
-    board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
-    return librmcs::firmware::board::enet_packet_tester_main();
-}
-
-#elif defined(RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER) && RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER
-
-namespace librmcs::firmware::board {
-int realtek_reset_scanner_main();
-}
-
-int main() {
-    board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
-    return librmcs::firmware::board::realtek_reset_scanner_main();
-}
-
-#elif defined(RMCS_ECAT_CORE1_ECAT_STATUS_PROBE) && RMCS_ECAT_CORE1_ECAT_STATUS_PROBE
-
-namespace librmcs::firmware::board {
-int ecat_status_probe_main();
-}
-
-int main() {
-    board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
-    return librmcs::firmware::board::ecat_status_probe_main();
-}
-
-#else
-
-# include <atomic>
-# include <cstddef>
-# include <cstdint>
-# include <span>
-
-# include <hpm_mbx_drv.h>
-
-# include "xcore_channel.hpp"
+#include "xcore_channel.hpp"
 
 namespace {
 
@@ -100,9 +20,9 @@ namespace {
 //
 // core0 owns the shared MBX0 clock (rmcs_uplink_doorbell_init runs before this
 // core is released), so here only the HPM_MBX0B port needs resetting.
-void uplink_doorbell_init() { mbx_init(HPM_MBX0B); }
+[[maybe_unused]] void uplink_doorbell_init() { mbx_init(HPM_MBX0B); }
 
-void uplink_doorbell_ring() {
+[[maybe_unused]] void uplink_doorbell_ring() {
     // Publish the ring bytes BEFORE the doorbell. XcoreRing::try_push ends in a
     // release store, which orders the payload before the index but does NOT
     // order that non-cacheable store ahead of the following device-register
@@ -128,7 +48,7 @@ void uplink_doorbell_ring() {
 // byte echo with zero peripheral code, which the host tool
 // ecat_stream_latency uses for byte-exact link validation and RTT scans.
 
-# if defined(RMCS_ECAT_CORE1_LOOPBACK) && RMCS_ECAT_CORE1_LOOPBACK
+#if defined(RMCS_ECAT_CORE1_LOOPBACK) && RMCS_ECAT_CORE1_LOOPBACK
 
 int main() {
     board_init_core1(); // includes board_init_pmp(): SHARE_RAM non-cacheable + AMO
@@ -154,17 +74,17 @@ int main() {
     return 0;
 }
 
-# else
+#else
 
-#  include <hpm_dma_mgr.h>
-#  include <hpm_l1c_drv.h>
+# include <hpm_dma_mgr.h>
+# include <hpm_l1c_drv.h>
 
-#  include "firmware/rmcs_board/app/src/can/can.hpp"
-#  include "firmware/rmcs_board/app/src/led/led.hpp"
-#  include "firmware/rmcs_board/app/src/timer/timer.hpp"
-#  include "firmware/rmcs_board/app/src/uart/uart.hpp"
-#  include "firmware/rmcs_board/app/src/utility/interrupt_lock.hpp"
-#  include "host_link.hpp"
+# include "firmware/rmcs_board/app/src/can/can.hpp"
+# include "firmware/rmcs_board/app/src/led/led.hpp"
+# include "firmware/rmcs_board/app/src/timer/timer.hpp"
+# include "firmware/rmcs_board/app/src/uart/uart.hpp"
+# include "firmware/rmcs_board/app/src/utility/interrupt_lock.hpp"
+# include "host_link.hpp"
 
 int main() {
     using namespace librmcs::firmware; // NOLINT(google-build-using-namespace)
@@ -232,7 +152,5 @@ int main() {
         }
     }
 }
-
-# endif
 
 #endif

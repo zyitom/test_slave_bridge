@@ -39,7 +39,9 @@ if(LIBRMCS_ENABLE_SOEM OR LIBRMCS_ENABLE_IGH)
     endif()
 endif()
 
-if(LIBRMCS_ENABLE_SOEM)
+if(LIBRMCS_ENABLE_SOEM OR LIBRMCS_ENABLE_IGH)
+    # Full-stack test; the EtherCAT backend is picked at run time via
+    # RMCS_ECAT_BACKEND=soem|igh (handled inside protocol::Handler).
     add_executable(ecat_board_test ecat_board_test.cpp)
     target_link_libraries(ecat_board_test PRIVATE librmcs-sdk)
 endif()

@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <memory>
@@ -415,12 +416,44 @@ Handler::Handler(
     : impl_(new Impl(
           transport::usb::create_transport(usb_vid, usb_pid, serial_filter, options), callback)) {}
 
-#if defined(LIBRMCS_ENABLE_SOEM)
+#if defined(LIBRMCS_ENABLE_SOEM) || defined(LIBRMCS_ENABLE_IGH)
+namespace {
+
+// Backend selection mirrors examples/ecat_stream_latency.cpp: the SDK builds
+// against whichever EtherCAT backends were compiled in (SOEM and/or IgH);
+// pick at run time with RMCS_ECAT_BACKEND=soem|igh (default: soem if
+// available, else igh). For IgH the interface name is only an advisory hint
+// (the master owning the NIC is chosen by the IgH configuration); for SOEM it
+// is the raw interface bound with CAP_NET_RAW.
+std::unique_ptr<transport::Transport> create_ethercat_transport(
+    std::string_view interface_name, const board::AdvancedOptions& options) {
+    const char* backend_env = std::getenv("RMCS_ECAT_BACKEND");
+# if defined(LIBRMCS_ENABLE_SOEM)
+    const std::string_view backend = backend_env ? backend_env : "soem";
+# else
+    const std::string_view backend = backend_env ? backend_env : "igh";
+# endif
+# if defined(LIBRMCS_ENABLE_SOEM)
+    if (backend == "soem")
+        return transport::soem::create_transport(interface_name, options);
+# endif
+# if defined(LIBRMCS_ENABLE_IGH)
+    if (backend == "igh")
+        return transport::igh::create_transport(interface_name, options);
+# endif
+    throw std::runtime_error{
+        "unknown or unavailable EtherCAT backend requested via RMCS_ECAT_BACKEND "
+        "(compiled-in backends are selected by -DLIBRMCS_ENABLE_SOEM / "
+        "-DLIBRMCS_ENABLE_IGH)"};
+}
+
+} // namespace
+
 Handler::Handler(
     std::string_view ethercat_interface_name, const board::AdvancedOptions& options,
     data::DataCallback& callback)
     : impl_(new Impl(
-          transport::soem::create_transport(ethercat_interface_name, options), callback,
+          create_ethercat_transport(ethercat_interface_name, options), callback,
           Impl::TransferFraming::kStream)) {}
 #else
 Handler::Handler(
@@ -429,8 +462,9 @@ Handler::Handler(
     (void)ethercat_interface_name;
     (void)options;
     (void)callback;
-    throw std::runtime_error{"librmcs-sdk was built without the EtherCAT transport; "
-                             "reconfigure with -DLIBRMCS_ENABLE_SOEM=ON"};
+    throw std::runtime_error{"librmcs-sdk was built without an EtherCAT transport; "
+                             "reconfigure with -DLIBRMCS_ENABLE_SOEM=ON and/or "
+                             "-DLIBRMCS_ENABLE_IGH=ON"};
 }
 #endif
 

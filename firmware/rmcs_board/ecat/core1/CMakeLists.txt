@@ -18,35 +18,9 @@ set(BOARD_SEARCH_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../boards" CACHE PATH "Boa
 # P1 bring-up image: lossless byte echo instead of the protocol application
 # (pairs with the host tool ecat_stream_latency for byte-exact validation).
 option(RMCS_ECAT_CORE1_LOOPBACK "Build the loopback bring-up image" OFF)
-option(RMCS_ECAT_CORE1_CAN_PIN_SCANNER "Build the HPM6E8Y CAN pin scanner" OFF)
-option(RMCS_ECAT_CORE1_LED_PIN_SCANNER "Build the HPM6E8Y LED GPIO pin scanner" OFF)
-option(RMCS_ECAT_CORE1_LED_CONFIRM "Build the HPM6E8Y known-LED confirmation image" OFF)
-option(RMCS_ECAT_CORE1_MDIO_PIN_SCANNER "Build the HPM6E8Y TSW MDIO pin scanner" OFF)
-option(RMCS_ECAT_CORE1_ENET_PACKET_TESTER "Build the HPM6E8Y ENET packet tester" OFF)
-option(RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER "Build the HPM6E8Y Realtek reset pin scanner" OFF)
-option(RMCS_ECAT_CORE1_ECAT_STATUS_PROBE "Build the HPM6E8Y ESC status probe" OFF)
 
-# The alternate core1 images are mutually exclusive; at most one may be ON.
-set(_rmcs_core1_modes 0)
-foreach(_mode
-        RMCS_ECAT_CORE1_LOOPBACK
-        RMCS_ECAT_CORE1_CAN_PIN_SCANNER
-        RMCS_ECAT_CORE1_LED_PIN_SCANNER
-        RMCS_ECAT_CORE1_LED_CONFIRM
-        RMCS_ECAT_CORE1_MDIO_PIN_SCANNER
-        RMCS_ECAT_CORE1_ENET_PACKET_TESTER
-        RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER
-        RMCS_ECAT_CORE1_ECAT_STATUS_PROBE)
-    if(${_mode})
-        math(EXPR _rmcs_core1_modes "${_rmcs_core1_modes} + 1")
-    endif()
-endforeach()
-if(_rmcs_core1_modes GREATER 1)
-    message(FATAL_ERROR "RMCS_ECAT_CORE1_LOOPBACK, RMCS_ECAT_CORE1_CAN_PIN_SCANNER, RMCS_ECAT_CORE1_LED_PIN_SCANNER, RMCS_ECAT_CORE1_LED_CONFIRM, RMCS_ECAT_CORE1_MDIO_PIN_SCANNER, RMCS_ECAT_CORE1_ENET_PACKET_TESTER, RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER and RMCS_ECAT_CORE1_ECAT_STATUS_PROBE are mutually exclusive")
-endif()
-
-# Component/board selection must precede find_package. The loopback image is
-# a pure ring echo with zero peripheral code, so it must not pull in the board
+# Component/board selection must precede find_package. The loopback bring-up
+# image carries no peripheral code, so it must not pull in the board
 # application layer (ISR table) either.
 if(NOT RMCS_ECAT_CORE1_LOOPBACK)
     set(CONFIG_DMA_MGR 1)
@@ -87,32 +61,15 @@ sdk_app_inc("${LIBRMCS_PROJECT_ROOT}")
 
 sdk_app_src(src/main.cpp)
 
-if(RMCS_ECAT_CORE1_CAN_PIN_SCANNER)
-    sdk_compile_definitions(-DRMCS_ECAT_CORE1_CAN_PIN_SCANNER=1)
-elseif(RMCS_ECAT_CORE1_LED_PIN_SCANNER)
-    sdk_compile_definitions(-DRMCS_ECAT_CORE1_LED_PIN_SCANNER=1)
-elseif(RMCS_ECAT_CORE1_LED_CONFIRM)
-    sdk_compile_definitions(-DRMCS_ECAT_CORE1_LED_CONFIRM=1)
-elseif(RMCS_ECAT_CORE1_MDIO_PIN_SCANNER)
-    sdk_compile_definitions(-DRMCS_ECAT_CORE1_MDIO_PIN_SCANNER=1)
-elseif(RMCS_ECAT_CORE1_ENET_PACKET_TESTER)
-    sdk_compile_definitions(-DRMCS_ECAT_CORE1_ENET_PACKET_TESTER=1)
-elseif(RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER)
-    sdk_compile_definitions(-DRMCS_ECAT_CORE1_REALTEK_RESET_SCANNER=1)
-elseif(RMCS_ECAT_CORE1_ECAT_STATUS_PROBE)
-    sdk_compile_definitions(-DRMCS_ECAT_CORE1_ECAT_STATUS_PROBE=1)
-elseif(RMCS_ECAT_CORE1_LOOPBACK)
+if(RMCS_ECAT_CORE1_LOOPBACK)
     sdk_compile_definitions(-DRMCS_ECAT_CORE1_LOOPBACK=1)
 else()
     # Protocol application: the shared app-layer drivers plus the EtherCAT
-    # host link (session + dispatch over the SHARE_RAM rings).
+    # host link (transmission over the SHARE_RAM rings; session + dispatch
+    # come from the shared link::HostSession).
     sdk_app_src(src/host_link.cpp)
-    sdk_app_src(
-        "${LIBRMCS_PROJECT_ROOT}/firmware/rmcs_board/app/src/can/can.cpp"
-        "${LIBRMCS_PROJECT_ROOT}/firmware/rmcs_board/app/src/timer/timer.cpp"
-        "${LIBRMCS_PROJECT_ROOT}/firmware/rmcs_board/app/src/uart/uart.cpp"
-        "${LIBRMCS_PROJECT_ROOT}/firmware/rmcs_board/app/src/utility/assert.cpp"
-    )
+    include("${LIBRMCS_PROJECT_ROOT}/firmware/rmcs_board/cmake/app_driver_sources.cmake")
+    sdk_app_src(${LIBRMCS_APP_DRIVER_SOURCES})
     file(GLOB_RECURSE LIBRMCS_CORE_SOURCE CONFIGURE_DEPENDS
         "${LIBRMCS_PROJECT_ROOT}/core/src/*.cpp"
         "${LIBRMCS_PROJECT_ROOT}/core/src/*.c"

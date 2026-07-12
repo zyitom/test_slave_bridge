@@ -18,8 +18,13 @@ namespace librmcs::board {
 // on PC00/PC01) and one UART (UART0 = UART1 on PY06/PY07); it has no IMU, GPIO
 // channels or DBUS.
 //
-// Requires an SDK built with -DLIBRMCS_ENABLE_SOEM=ON (the constructor throws
-// otherwise) and CAP_NET_RAW (or root) to open the raw network interface.
+// Requires an SDK built with at least one EtherCAT backend
+// (-DLIBRMCS_ENABLE_SOEM=ON and/or -DLIBRMCS_ENABLE_IGH=ON; the constructor
+// throws otherwise). The backend is picked at run time via RMCS_ECAT_BACKEND=
+// soem|igh (default: soem if compiled in, else igh). SOEM opens the raw
+// interface directly and needs CAP_NET_RAW (or root); IgH requires the master
+// kernel module to own the NIC first (`ethercatctl start`) and write access to
+// /dev/EtherCAT0.
 class RmcsBoardEcatBridge final {
 public:
     class Callback : public data::DataCallback {

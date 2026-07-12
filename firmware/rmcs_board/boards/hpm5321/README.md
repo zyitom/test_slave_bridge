@@ -1,69 +1,76 @@
-# RMCS Slave HPM5321 - Pin Assignments
+# RMCS Slave HPM5321
 
-Board name: `RMCS_Slave_HPM5321` (`BOARD_NAME`)
-SoC: **HPM5361** (`device: HPM5361xEGx`, `openocd-soc: hpm5300`) - the board is
-*named* hpm5321, but the silicon is HPM5361.
-USB PID: `0xA901`
+Minimal USB<->fieldbus forwarding bridge: one classic CAN controller, one data
+UART, and a plain GPIO RGB status LED. No IMU, no DBUS receiver, no GPIO
+application channels, no per-CAN indicator LEDs.
 
-This board is a minimal bridge: one CAN controller, one data UART, and a plain
-GPIO RGB LED. It has no IMU, no DBUS receiver, no GPIO application channels and
-no USB speed switch.
+Hardware pin assignments live in [PINOUT.md](PINOUT.md).
 
-Every entry below is taken directly from the firmware source. The "Source"
-column lists where the pin is configured so the table stays verifiable.
+## Identifiers
 
-## CAN (MCAN)
+| Item        | Value                             |
+| ----------- | --------------------------------- |
+| Board name  | `RMCS_Slave_HPM5321` (`BOARD_NAME`) |
+| SoC         | HPM5361 (QFN48), single RV32 core |
+| USB PID     | `0xA901` (VID `0xA11C`)           |
+| USB speed   | High speed (480 Mbps)             |
+| Flash       | 1 MiB XPI NOR, app behind the shared DFU bootloader |
 
-| Logical | Hardware | TXD  | RXD  | Mode    | Source                 |
-| ------- | -------- | ---- | ---- | ------- | ---------------------- |
-| CAN0    | MCAN0    | PA00 | PA01 | Classic | board_app.cpp init_can |
+## What the host sees
 
-`CanPort` table: `app/board_app.hpp` (`kCanPorts`). Pin mux: `init_can()` in
-`app/board_app.cpp`. CAN0 is the DM (Damiao) motor bus.
+The board runs the shared rmcs_board USB application (`app/`): a USB
+vendor-class device carrying the librmcs byte stream, with the session
+handshake (kStart nonce + keepalive lease) handled by the shared
+`link::HostSession`.
 
-## UART
+| Host endpoint | Board resource | Notes                          |
+| ------------- | -------------- | ------------------------------ |
+| `DataId::kCan0` | MCAN0 (classic 1 Mbps) | DM (Damiao) motor bus |
+| `DataId::kUart0` | UART2, 921600-8N1     | DMA-driven both directions |
 
-| Logical | Hardware | TXD  | RXD  | Baud   | Parity | Source                  |
-| ------- | -------- | ---- | ---- | ------ | ------ | ----------------------- |
-| UART0   | UART2    | PB08 | PB09 | 921600 | None   | board_app.cpp init_uart |
+### Classic-only CAN and the per-frame FD flag
 
-`UartPort` table: `app/board_app.hpp` (`kUartPorts`). Pin mux: `init_uart()` in
-`app/board_app.cpp`. Both pins use internal pull-up; RX adds a Schmitt trigger.
+The shared CAN driver honors the host's per-frame `is_fdcan` flag capped by
+controller capability (`send_fd = canfd_ && data.is_fdcan`). This board
+configures MCAN0 classic-only, so `is_fdcan = true` frames are transmitted as
+classic CAN 2.0 -- safe, but silently capped. Use `hpm5321_dual_can` if you
+need CAN-FD on the wire.
 
-## LED (plain GPIO RGB, active-low)
+## Build and flash
 
-Common-anode RGB LED: drive the pad LOW to light a channel
-(`make_gpio_pin<..., false>` = active-low). Defined in `app/board_app.hpp`,
-configured by `init_led_pins()` in `app/board_app.cpp`.
+```bash
+cmake --preset debug -S firmware/rmcs_board -DBOARD=hpm5321
+cmake --build firmware/rmcs_board/build
+```
 
-| Color | Pin  |
-| ----- | ---- |
-| Blue  | PA29 |
-| Green | PA30 |
-| Red   | PA31 |
+The build produces `rmcs_board_app_hpm5321.dfu` under
+`firmware/rmcs_board/build/app/output/`. Flash over USB DFU (the shared RMCS
+DFU bootloader must already be on the chip; first-time bootloader flashing
+needs a debugger):
 
-## Buttons / Debug
+```bash
+dfu-util -d 0xa11c:0xa901 -a 0 -D firmware/rmcs_board/build/app/output/rmcs_board_app_hpm5321.dfu
+```
 
-| Function           | Pin  | Notes                                                                |
-| ------------------ | ---- | -------------------------------------------------------------------- |
-| Bootloader button  | PA07 | Shared with JTAG_TMS; sampled by `board_check_bootloader_force_stay_requested()`, then restored to JTAG_TMS |
-| JTAG TCK           | PA04 | Default JTAG function; not muxed by the app                          |
-| JTAG TDO           | PA05 | Default JTAG function; not muxed by the app                          |
-| JTAG TDI           | PA06 | Default JTAG function; not muxed by the app                          |
+A running app exposes the DFU runtime interface, so dfu-util detaches and
+re-enumerates it into DFU mode automatically. To force the bootloader to stay
+resident, hold the PA07 button through reset (or power up with no valid app).
 
-## USB (internal VBUS, high speed)
+## Status LED light language
 
-`usb_use_high_speed()` returns true; pins set to analog in `board.c`
-(`board_init_usb_dp_dm_pins`).
+Single RGB LED (see PINOUT.md for pins), driven by the shared Led driver
+(`app/src/led/led.hpp`). Yellow is red+green, cyan is green+blue; priority is
+top to bottom:
 
-| Function | Pin  | Notes  |
-| -------- | ---- | ------ |
-| USB0 DM  | PA24 | Analog |
-| USB0 DP  | PA25 | Analog |
+| Pattern               | Meaning                                                   |
+| --------------------- | --------------------------------------------------------- |
+| yellow/cyan alternate | both directions congested (uplink AND downlink full)      |
+| yellow blink (~4 Hz)  | uplink buffer full (board -> host); host not draining     |
+| cyan blink (~4 Hz)    | downlink buffer full (host -> board); CAN TX backed up    |
+| steady green          | host session established, data forwarding                 |
+| slow green blink 1 Hz | alive, waiting for a host session                         |
 
-## PY domain
-
-| Pin  | Function     | Notes                                              |
-| ---- | ------------ | -------------------------------------------------- |
-| PY00 | SOC_GPIO_Y_00 | Switched to SoC GPIO domain in `board.c`, no peripheral |
-| PY01 | SOC_GPIO_Y_01 | Switched to SoC GPIO domain in `board.c`, no peripheral |
+"Host session established" means the librmcs handshake is up (kStart nonce
+acknowledged and the keepalive lease refreshed within 1 s) -- NOT merely that
+the USB cable is plugged in. An enumerated device without a live host
+application stays on the slow green blink.

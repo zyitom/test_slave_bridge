@@ -43,19 +43,6 @@
 #define BOARD_ECAT_SUPPORT_PORT1 (1)
 #define BOARD_ECAT_SUPPORT_PORT2 (0)
 
-/* The MDIO scanner and the ENET packet tester probe the EXTERNAL Realtek ENET0
- * PHY (MDC/MDIO on PF00/PF01). Core0's ESC bring-up (board_init_ethercat +
- * ecat_hardware_init in ecat_main.c) muxes the shared on-die PHY / clock / reset
- * pads (PA16-29, PW16-21, PV12, PW12) and, once it runs, the Realtek stops
- * answering MDIO -- an MDIO scan then sees ONLY the internal JL1111 PHYs and the
- * Realtek RJ45 stays dark. These diagnostic images do not need EtherCAT, so skip
- * the core0 ESC bring-up for them and leave the Realtek untouched. */
-#if (defined(RMCS_ECAT_CORE1_MDIO_PIN_SCANNER) && RMCS_ECAT_CORE1_MDIO_PIN_SCANNER)        \
-    || (defined(RMCS_ECAT_CORE1_ENET_PACKET_TESTER) && RMCS_ECAT_CORE1_ENET_PACKET_TESTER) \
-    || (defined(RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER) && RMCS_ECAT_CORE1_REALTEK_RESET_SCANNER)
-# define BOARD_ECAT_DISABLE_ESC_BRINGUP (1)
-#endif
-
 /* RUN/ERROR status LEDs: the GPIO LED scan identified PC20 (green) / PC21 (red)
  * as the "EtherCAT middle" indicators, and both carry an ESC0_CTR alt function
  * (PC20 = CTR_2, PC21 = CTR_3), so the ESC drives them from the AL state machine.
