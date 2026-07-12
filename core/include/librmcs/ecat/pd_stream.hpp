@@ -169,14 +169,20 @@ public:
             }
         }
         if (out == nullptr && count_ != 0) {
-            // Chunks in flight, everything sent, ack pending. Steady state
-            // writes an idle image (a repaint would look like NEW data to a
-            // receiver that has moved past it). An ack stalled for several
-            // frames is the signature of a lost frame: rewind and replay the
-            // whole window in order (see above) starting next build.
+            // Chunks in flight, everything sent, ack pending. An ack stalled
+            // for several frames is the signature of a lost frame: rewind and
+            // replay the whole window in order (see above) starting next
+            // build. Otherwise keep the image painted with the NEWEST
+            // transmitted chunk -- never an idle image: an extra build
+            // between two frames (slave doorbell / main-loop republish) must
+            // not replace a data image the peer has not read yet, and a
+            // duplicate of the newest chunk is exactly the peer's last
+            // consumed seq, which every receiver version ignores.
             if (frame_credit && ++stall_ >= kGoBackStallFrames) {
                 send_offset_ = 0;
                 stall_ = 0;
+            } else if (send_offset_ != 0) {
+                out = &slots_[(head_ + send_offset_ - 1) % kPdWindow];
             }
         }
 
