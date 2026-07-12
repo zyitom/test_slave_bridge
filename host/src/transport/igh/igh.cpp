@@ -79,7 +79,7 @@ constexpr std::size_t kChunkSize = librmcs::ecat::kPdChunkSize;
 // (master->slave, 12 x 32-bit at 0x7010:01..0C). SM3 = TxPDO 0x1a00
 // (slave->master, 12 x 32-bit at 0x6000:01..0C). Both are 48 bytes == one
 // kPdChunkSize chunk. If the slave firmware/board changes, re-read the bus.
-constexpr uint32_t kVendorId = 0x00000511;
+constexpr uint32_t kVendorId = 0x00001A81;
 constexpr uint32_t kProductCode = 0x00000001;
 constexpr uint16_t kRxPdoIndex = 0x1600;
 constexpr uint16_t kTxPdoIndex = 0x1a00;

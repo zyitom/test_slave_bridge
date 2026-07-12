@@ -56,7 +56,7 @@ IgH 原生驱动直接接管网卡、把主站状态机放进内核模块,完全
    跑,没有配置 udev 规则开放给普通用户组,如果需要免 sudo 运行,后续可以加一条 udev 规则。
 
 5. 验证前置条件是否就绪:`sudo /usr/local/bin/ethercat slaves -v` 应该能看到从站,
-   `Vendor Id: 0x00000511`,`Product code: 0x00000001`,状态至少是 `PREOP`。
+   `Vendor Id: 0x00001A81`,`Product code: 0x00000001`,状态至少是 `PREOP`。
 
 ## 从站的 PDO 布局(已从真实从站读出,固定映射,不支持 CoE 动态配置)
 
@@ -71,7 +71,7 @@ SM3: 0x1400, 48B, TxPDO 0x1a00 "InputStream"   -- 12 x 32bit entries, 0x6000:01 
 ```
 
 `ethercat slaves -v` 显示 `Enable PDO Assign: no`、`Enable PDO Configuration: no`——
-从站不支持通过 CoE 改 PDO 映射,**只能照抄现有布局,不能自定义**。`Vendor Id: 0x00000511`,
+从站不支持通过 CoE 改 PDO 映射,**只能照抄现有布局,不能自定义**。`Vendor Id: 0x00001A81`,
 `Product code: 0x00000001`。
 
 `ecrt_slave_config_pdos()` 用下面这套结构体描述(12 个 subindex 是连续的 32-bit 字,不需要

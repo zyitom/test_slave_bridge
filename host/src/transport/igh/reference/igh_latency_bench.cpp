@@ -40,7 +40,7 @@
 
 namespace {
 
-constexpr uint32_t kVendorId = 0x00000511;
+constexpr uint32_t kVendorId = 0x00001A81;
 constexpr uint32_t kProductCode = 0x00000001;
 constexpr int kChunkBytes = 48;
 constexpr int kPdoEntryCount = 12;
