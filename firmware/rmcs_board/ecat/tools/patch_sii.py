@@ -10,7 +10,7 @@ stream-chunk process data actually implemented by the firmware:
   * SyncManager category: SM2/SM3 default length -> the PD chunk size. The
     SSC's CheckSmSettings() requires the master-programmed SM length to equal
     the mapped PD size exactly, and SOEM programs SMs from this category.
-  * TXPDO/RXPDO categories: rebuilt as 32 x UNSIGNED32 entries of
+  * TXPDO/RXPDO categories: rebuilt as 12 x UNSIGNED32 entries of
     0x6000/0x7010, mirroring the CoE object dictionary (a single SII/CoE PDO
     entry is limited to 255 bits, hence the split).
   * Strings category: rebuilt with stream-bridge names (same string count and

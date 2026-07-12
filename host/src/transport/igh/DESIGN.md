@@ -66,23 +66,23 @@ IgH 原生驱动直接接管网卡、把主站状态机放进内核模块,完全
 ```
 SM0: 0x1000, 128B, mailbox out (CoE)
 SM1: 0x1080, 128B, mailbox in  (CoE)
-SM2: 0x1100, 128B, RxPDO 0x1600 "OutputStream"  -- 32 x 32bit entries, 0x7010:01 .. 0x7010:20
-SM3: 0x1400, 128B, TxPDO 0x1a00 "InputStream"   -- 32 x 32bit entries, 0x6000:01 .. 0x6000:20
+SM2: 0x1100, 48B, RxPDO 0x1600 "OutputStream"  -- 12 x 32bit entries, 0x7010:01 .. 0x7010:0C
+SM3: 0x1400, 48B, TxPDO 0x1a00 "InputStream"   -- 12 x 32bit entries, 0x6000:01 .. 0x6000:0C
 ```
 
 `ethercat slaves -v` 显示 `Enable PDO Assign: no`、`Enable PDO Configuration: no`——
 从站不支持通过 CoE 改 PDO 映射,**只能照抄现有布局,不能自定义**。`Vendor Id: 0x00000511`,
 `Product code: 0x00000001`。
 
-`ecrt_slave_config_pdos()` 用下面这套结构体描述(32 个 subindex 是连续的 32-bit 字,不需要
-逐个注册,只注册每个方向的第一个 entry 拿到基址偏移量,后面按 128 字节连续内存处理,和
+`ecrt_slave_config_pdos()` 用下面这套结构体描述(12 个 subindex 是连续的 32-bit 字,不需要
+逐个注册,只注册每个方向的第一个 entry 拿到基址偏移量,后面按 48 字节连续内存处理,和
 `soem.cpp` 里 `ec_slave[1].outputs`/`inputs` 指针的用法完全一致):
 
 ```c
-ec_pdo_entry_info_t out_entries[32];  // {0x7010, i+1, 32} for i in 0..31
-ec_pdo_entry_info_t in_entries[32];   // {0x6000, i+1, 32} for i in 0..31
-ec_pdo_info_t pdo_out[] = {{0x1600, 32, out_entries}};
-ec_pdo_info_t pdo_in[]  = {{0x1a00, 32, in_entries}};
+ec_pdo_entry_info_t out_entries[12];  // {0x7010, i+1, 32} for i in 0..11
+ec_pdo_entry_info_t in_entries[12];   // {0x6000, i+1, 32} for i in 0..11
+ec_pdo_info_t pdo_out[] = {{0x1600, 12, out_entries}};
+ec_pdo_info_t pdo_in[]  = {{0x1a00, 12, in_entries}};
 ec_sync_info_t syncs[] = {
     {0, EC_DIR_OUTPUT, 0, NULL, EC_WD_DISABLE},
     {1, EC_DIR_INPUT,  0, NULL, EC_WD_DISABLE},
@@ -92,7 +92,7 @@ ec_sync_info_t syncs[] = {
 };
 // ecrt_slave_config_reg_pdo_entry(sc, 0x7010, 1, domain, NULL) -> off_out(输出基址偏移)
 // ecrt_slave_config_reg_pdo_entry(sc, 0x6000, 1, domain, NULL) -> off_in(输入基址偏移)
-// domain_pd + off_out 开始的 128 字节 == outputs_,domain_pd + off_in 开始的 128 字节 == inputs_
+// domain_pd + off_out 开始的 48 字节 == outputs_,domain_pd + off_in 开始的 48 字节 == inputs_
 ```
 
 ## 最大的坑:分布式时钟(DC),不做这个从站永远卡在 PREOP/SAFEOP+ERROR

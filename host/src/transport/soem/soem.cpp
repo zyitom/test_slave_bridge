@@ -17,7 +17,7 @@
 //    symmetric); SyncManager 3-buffer latest-wins semantics are compensated
 //    there, so a lost or repeated poll never corrupts the stream.
 //  * transmit() only copies the frame into a byte ring; the cycle thread
-//    drains it 124 bytes per acknowledged chunk. When the ring is full the
+//    drains it one PDO payload per acknowledged chunk. When the ring is full the
 //    caller spins briefly -- end-to-end backpressure, frames are never
 //    dropped (the protocol layer has no retransmission of its own).
 //  * Cycles that delivered payload to the receive callback grant the
@@ -34,6 +34,7 @@
 # include <cstdint>
 # include <cstring>
 # include <format>
+# include <fstream>
 # include <functional>
 # include <memory>
 # include <mutex>
@@ -121,6 +122,18 @@ struct CallbackSink {
     }
 };
 
+bool linux_interface_has_carrier(std::string_view interface_name) {
+    if (interface_name.find('/') != std::string_view::npos)
+        return true;
+
+    std::ifstream carrier_file{
+        std::string{"/sys/class/net/"} + std::string{interface_name} + "/carrier"};
+    char carrier = '1';
+    if (!(carrier_file >> carrier))
+        return true;
+    return carrier == '1';
+}
+
 class SoemBuffer final : public TransportBuffer {
 public:
     BufferSpanType data() const noexcept override { return BufferSpanType{storage_}; }
@@ -134,6 +147,12 @@ public:
     Soem(std::string_view interface_name, const ConnectionOptions& options)
         : logger_(logging::get_logger()) {
         const std::string ifname{interface_name};
+
+        if (!linux_interface_has_carrier(ifname))
+            throw std::runtime_error{std::format(
+                "EtherCAT interface \"{}\" has no carrier/link; connect the slave to this NIC or "
+                "choose the linked interface",
+                ifname)};
 
         if (ec_init(ifname.c_str()) <= 0)
             throw std::runtime_error{std::format(
@@ -235,7 +254,7 @@ public:
         core::utility::assert_always(payload_size <= core::protocol::kProtocolBufferSize);
         const std::span<const std::byte> payload{buffer->data().data(), payload_size};
         // Spin until the ring accepts the whole frame: the stream must stay
-        // lossless, and sustained fullness means the link (124B per
+        // lossless, and sustained fullness means the link (44B per
         // acknowledged chunk) is saturated -- backpressure is the correct
         // behavior then.
         while (!transmit_ring_.try_push(payload)) {
@@ -401,7 +420,7 @@ private:
 
     logging::Logger& logger_;
 
-    // SOEM requires the IO map to outlive close; 4 KiB fits our 2x128B with
+    // SOEM requires the IO map to outlive close; 4 KiB fits our 2x48B with
     // plenty of margin for SOEM alignment.
     char io_map_[4096]{};
     std::byte* outputs_ = nullptr;

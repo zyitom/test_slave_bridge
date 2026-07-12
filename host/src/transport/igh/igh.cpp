@@ -23,7 +23,7 @@
 //    librmcs::ecat::PdStreamEndpoint (shared with the firmware, roles are
 //    symmetric), exactly as in the SOEM backend.
 //  * transmit() only copies the frame into a byte ring; the cycle thread
-//    drains it 124 bytes per acknowledged chunk. When the ring is full the
+//    drains it one PDO payload per acknowledged chunk. When the ring is full the
 //    caller spins briefly -- end-to-end backpressure, frames are never dropped.
 //  * Cycles that delivered payload grant the application a short response
 //    window before the next poll is built, so an immediate answer rides this
@@ -90,11 +90,20 @@ constexpr unsigned kPdoEntryCount = 12;
 // AL state word bit for OPERATIONAL in ec_master_state_t::al_states.
 constexpr uint8_t kAlStateOp = 1u << 3;
 
+std::string_view al_state_name(unsigned int al_state) noexcept {
+    switch (al_state & 0x0F) {
+    case 0x01: return "INIT";
+    case 0x02: return "PREOP";
+    case 0x04: return "SAFEOP";
+    case 0x08: return "OP";
+    default: return "MIXED";
+    }
+}
+
 std::uint64_t monotonic_ns() noexcept {
-    return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch())
-            .count());
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count());
 }
 
 // Byte ring between transmit() callers and the cycle thread. A mutex is fine
@@ -189,9 +198,8 @@ public:
         if (!domain_)
             throw std::runtime_error{"ecrt_master_create_domain failed"};
 
-        ec_slave_config_t* sc =
-            ecrt_master_slave_config(master_, 0, 0, kVendorId, kProductCode);
-        if (!sc)
+        slave_config_ = ecrt_master_slave_config(master_, 0, 0, kVendorId, kProductCode);
+        if (!slave_config_)
             throw std::runtime_error{std::format(
                 "ecrt_master_slave_config failed (expected vendor 0x{:08X} product 0x{:08X} "
                 "at ring position 0)",
@@ -208,22 +216,26 @@ public:
             out_entries[i] = {kOutputEntryIndex, static_cast<uint8_t>(i + 1), 32};
             in_entries[i] = {kInputEntryIndex, static_cast<uint8_t>(i + 1), 32};
         }
-        ec_pdo_info_t pdo_out[] = {{kRxPdoIndex, kPdoEntryCount, out_entries}};
-        ec_pdo_info_t pdo_in[] = {{kTxPdoIndex, kPdoEntryCount, in_entries}};
+        ec_pdo_info_t pdo_out[] = {
+            {kRxPdoIndex, kPdoEntryCount, out_entries}
+        };
+        ec_pdo_info_t pdo_in[] = {
+            {kTxPdoIndex, kPdoEntryCount, in_entries}
+        };
         ec_sync_info_t syncs[] = {
-            {0, EC_DIR_OUTPUT, 0, nullptr, EC_WD_DISABLE},
-            {1, EC_DIR_INPUT, 0, nullptr, EC_WD_DISABLE},
-            {2, EC_DIR_OUTPUT, 1, pdo_out, EC_WD_ENABLE},
-            {3, EC_DIR_INPUT, 1, pdo_in, EC_WD_DISABLE},
+            {   0,  EC_DIR_OUTPUT, 0, nullptr, EC_WD_DISABLE},
+            {   1,   EC_DIR_INPUT, 0, nullptr, EC_WD_DISABLE},
+            {   2,  EC_DIR_OUTPUT, 1, pdo_out,  EC_WD_ENABLE},
+            {   3,   EC_DIR_INPUT, 1,  pdo_in, EC_WD_DISABLE},
             {0xff, EC_DIR_INVALID, 0, nullptr, EC_WD_DEFAULT},
         };
-        if (ecrt_slave_config_pdos(sc, EC_END, syncs))
+        if (ecrt_slave_config_pdos(slave_config_, EC_END, syncs))
             throw std::runtime_error{"ecrt_slave_config_pdos failed"};
 
         const int off_out =
-            ecrt_slave_config_reg_pdo_entry(sc, kOutputEntryIndex, 1, domain_, nullptr);
+            ecrt_slave_config_reg_pdo_entry(slave_config_, kOutputEntryIndex, 1, domain_, nullptr);
         const int off_in =
-            ecrt_slave_config_reg_pdo_entry(sc, kInputEntryIndex, 1, domain_, nullptr);
+            ecrt_slave_config_reg_pdo_entry(slave_config_, kInputEntryIndex, 1, domain_, nullptr);
         if (off_out < 0 || off_in < 0)
             throw std::runtime_error{std::format(
                 "ecrt_slave_config_reg_pdo_entry failed (out={} in={})", off_out, off_in)};
@@ -306,7 +318,7 @@ public:
         core::utility::assert_always(payload_size <= core::protocol::kProtocolBufferSize);
         const std::span<const std::byte> payload{buffer->data().data(), payload_size};
         // Spin until the ring accepts the whole frame: the stream must stay
-        // lossless, and sustained fullness means the link (124B per
+        // lossless, and sustained fullness means the link (44B per
         // acknowledged chunk) is saturated -- backpressure is correct then.
         while (!transmit_ring_.try_push(payload)) {
             if (stop_.load(std::memory_order_relaxed))
@@ -343,7 +355,7 @@ private:
     // domain working-counter state observed after the frame came back (or after
     // the response deadline elapsed). Shared by the warm-up and the hot loop so
     // the ecrt call order stays in exactly one place.
-    uint8_t exchange_once() noexcept {
+    ec_domain_state_t exchange_once() noexcept {
         const std::uint64_t now_ns = monotonic_ns();
         // DC trio: required every cycle because this slave is the DC reference
         // clock; without it the FSM never reaches OP (see file header).
@@ -368,7 +380,7 @@ private:
             if (std::chrono::steady_clock::now() >= deadline)
                 break; // dropped cycle; caller counts it as a wc error
         }
-        return ds.wc_state;
+        return ds;
     }
 
     // Warm-up: drive the master's internal FSM until the slave reports OP.
@@ -389,14 +401,29 @@ private:
 
             if (std::chrono::steady_clock::now() >= deadline) {
                 ec_master_state_t last{};
+                ec_slave_config_state_t slave_state{};
+                ec_domain_state_t domain_state{};
                 ecrt_master_state(master_, &last);
+                ecrt_slave_config_state(slave_config_, &slave_state);
+                ecrt_domain_state(domain_, &domain_state);
                 throw std::runtime_error{std::format(
                     "EtherCAT slave did not reach OPERATIONAL within {} s "
-                    "(link_up={} slaves_responding={} al_states=0x{:02X})",
+                    "(link_up={} slaves_responding={} master_al_states=0x{:02X} "
+                    "slave_online={} slave_operational={} slave_al_state=0x{:X}/{} "
+                    "domain_wc_state={} domain_wc={}; verify the live SII/PDO mapping is "
+                    "{} bytes / {} entries per direction and check `ethercat slaves -v` or dmesg "
+                    "for the AL status code)",
                     std::chrono::duration_cast<std::chrono::seconds>(kOperationalTimeout).count(),
                     static_cast<unsigned>(last.link_up),
                     static_cast<unsigned>(last.slaves_responding),
-                    static_cast<unsigned>(last.al_states))};
+                    static_cast<unsigned>(last.al_states),
+                    static_cast<unsigned>(slave_state.online),
+                    static_cast<unsigned>(slave_state.operational),
+                    static_cast<unsigned>(slave_state.al_state),
+                    al_state_name(slave_state.al_state),
+                    static_cast<unsigned>(domain_state.wc_state),
+                    static_cast<unsigned>(domain_state.working_counter), kChunkSize,
+                    kPdoEntryCount)};
             }
             std::this_thread::sleep_for(std::chrono::milliseconds{1});
         }
@@ -412,12 +439,12 @@ private:
 
         while (!stop_.load(std::memory_order_relaxed)) {
             endpoint_.build_own_chunk(outputs_, transmit_ring_);
-            const uint8_t wc_state = exchange_once();
+            const ec_domain_state_t ds = exchange_once();
             total_cycles_++;
             window_cycles++;
 
             bool delivered = false;
-            if (wc_state == expected_wc_) {
+            if (ds.wc_state == expected_wc_) {
                 wc_error_streak = 0;
                 if (slave_left_op_) {
                     // Frames flow again == the FSM brought the slave back to
@@ -444,7 +471,7 @@ private:
                     logger_.warn(
                         "EtherCAT working counter incomplete (wc_state {}) for {} consecutive "
                         "cycles",
-                        wc_state, wc_error_streak);
+                        static_cast<unsigned>(ds.wc_state), wc_error_streak);
                 }
                 if (wc_error_streak >= kRecoveryThresholdCycles) {
                     supervise();
@@ -511,8 +538,11 @@ private:
     // Per-cycle stop-and-wait deadline: if the frame has not returned by here
     // the cycle is treated as dropped (wc error) and the loop moves on.
     static constexpr std::chrono::microseconds kResponseTimeout{5000};
-    // Warm-up bound for the PREOP -> OP walk.
-    static constexpr std::chrono::seconds kOperationalTimeout{5};
+    // Warm-up bound for the PREOP -> OP walk. Generous on purpose: the first
+    // activation after `ethercatctl start` re-reads the slave's SII through
+    // the (slow) EEPROM emulation path, and observed runs progressed
+    // PREOP -> SAFEOP -> OP across successive 5 s windows instead of failing.
+    static constexpr std::chrono::seconds kOperationalTimeout{20};
 
     static constexpr int kWcErrorReportThreshold = 16;
     // ~a few ms of consecutive bad cycles before running the (slower) state
@@ -524,6 +554,7 @@ private:
     logging::Logger& logger_;
 
     ec_master_t* master_ = nullptr;
+    ec_slave_config_t* slave_config_ = nullptr;
     ec_domain_t* domain_ = nullptr;
     uint8_t* process_data_ = nullptr;
     std::size_t off_out_ = 0;

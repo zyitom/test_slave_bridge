@@ -10,7 +10,7 @@
 #   2. apply the SDK's mandatory ssc_pdi_mask.patch (Sync0/Sync1 must not
 #      raise PDI interrupts; they have dedicated IRQ lines on HPM parts),
 #   3. install the stream-bridge object dictionary override,
-#   4. rewrite the SII image (eeprom.h) to match the 128-byte stream PDOs.
+#   4. rewrite the SII image (eeprom.h) to match the 48-byte stream PDOs.
 #
 # Usage: import_ssc.sh [GENERATED_SSC_SRC_DIR]
 #        default: ~/Downloads/ecat_io/SSC/Src

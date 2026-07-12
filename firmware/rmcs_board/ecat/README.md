@@ -17,11 +17,11 @@ CPU0 (EtherCAT 域)                     CPU1 (现场总线域)
              |  <------------------   up ring (8K)   |
 ```
 
-- **stream-over-PDO**:双向各一个 128 字节 PDO(`[seq:u8][ack:u8][len:u16][payload:124B]`),
+- **stream-over-PDO**:双向各一个 48 字节 PDO(`[seq:u8][ack:u8][len:u16][payload:44B]`),
   停等 ARQ 补偿 SyncManager 三缓冲的 latest-wins 语义(见
   `core/include/librmcs/ecat/pd_stream.hpp` 头注释,host SOEM transport 与固件共用)。
-  CoE 对象字典将其描述为 32 x UNSIGNED32 数组(0x6000 输入 / 0x7010 输出,单条 PDO
-  映射项最大 255 bit,故拆分);SM 长度由 SSC 严格校验(必须精确等于 128)。
+  CoE 对象字典将其描述为 12 x UNSIGNED32 数组(0x6000 输入 / 0x7010 输出,单条 PDO
+  映射项最大 255 bit,故拆分);SM 长度由 SSC 严格校验(必须精确等于 48)。
 - **主站模式**:free-run + busy-poll(SOEM,建议 8-16kHz 轮询 + 2-3 帧流水线)。不需要 DC。
 - **跨核环**:真 acquire/release 原子(`common/xcore_ring.hpp`),不同于 app/src 单核版的
   signal_fence 方案;依赖 board_init_pmp() 将 SHARE_RAM 配为非缓存 + AMO。
@@ -59,14 +59,14 @@ CPU0 (EtherCAT 域)                     CPU1 (现场总线域)
      (`$HPM_SDK_BASE/samples/ethercat/ecat_io/README_zh.rst`)用 **原样的例程配置**
      (`SSC/ECAT_IO.esp`,无需修改 PDO/对象字典)生成从站代码;
    - 运行导入脚本完成全部项目适配(复制/CRLF 归一化、打 SDK PDI 补丁、
-     安装 128 字节流对象字典覆盖、重写 SII/EEPROM 镜像):
+     安装 48 字节流对象字典覆盖、重写 SII/EEPROM 镜像):
      ```bash
      firmware/rmcs_board/ecat/tools/import_ssc.sh <生成的 Src 目录>
      # 默认路径 ~/Downloads/ecat_io/SSC/Src
      ```
    - 项目特有内容全部在版本库内(`core0/ssc_overrides/digital_ioObjects.h`、
      `tools/patch_sii.py`),重新生成 SSC 时无需再改 SSC Tool 工程;
-   - SII 中 Revision 由脚本抬升(当前为 2),已烧过旧镜像的板卡上电后会自动
+   - SII 中 Revision 由脚本抬升(当前为 3),已烧过旧镜像的板卡上电后会自动
      刷新仿真 EEPROM。开发期沿用 HPMicro 示例 Vendor ID;产品化需申请 ETG
      Vendor ID。
 
@@ -86,7 +86,7 @@ cmake --build build-ecat-core0     # 产出可烧录的 core0 镜像(内嵌 core
 
 core1 是无损回环:主站(SOEM busy-poll)通过 RxPDO 发送任意字节流,应从 TxPDO
 按序、按字节精确地收回。验证覆盖:ESC 收发、SM 事件路径、ARQ 重传/背压、
-双核启动、跨核环。吞吐≈124B × 有效轮询率;将 SOEM 轮询间隔与 PD 尺寸做参数
+双核启动、跨核环。吞吐≈44B × 有效轮询率;将 SOEM 轮询间隔与 PD 尺寸做参数
 扫描即可得出延迟/吞吐曲线,与 USB 版对比。
 
 host 侧配套工具(SOEM v1.4.0,可选组件;若 SOEM 未装系统目录,先

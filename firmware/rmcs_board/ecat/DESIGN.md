@@ -29,14 +29,14 @@ PDO 处理挂进 PDI ISR(SDK 的 `ssc_pdi_mask.patch` 已把 SYNC0/1 从 PDI 中
 
 主站侧对应选择 **free-run busy-poll**(SOEM 不开 DC):独立线程满速
 send/receive_processdata,轮询率即链路调度粒度。8-16kHz 起步;本 PD 尺寸(双向各
-128B)下线缆占用 ~30us/帧,理论上限 ~20kHz。
+48B)下线缆占用明显低于 128B 旧基线,实测丢 wkc 前可继续上探。
 
 ## 2. 应用层协议选型
 
 候选方案与否决理由:
 
 1. **stream-over-PDO + 停等 ARQ(采用)**。librmcs 协议字节流原样跑在 PD 上,
-   `[seq:u8][ack:u8][len:u16][payload:124B]`。
+   `[seq:u8][ack:u8][len:u16][payload:44B]`。
    - 为什么必须有 ARQ:SyncManager 三缓冲是 latest-wins——同一 chunk 可能被重复读、
      也可能没被读就被覆盖。对状态量无所谓,对字节流是致命的。seq/ack 停等恰好补齐
      "恰好一次"语义,且重传免费(数据留在 PD 镜像里,主站下个周期自然重发)。
@@ -104,19 +104,19 @@ MCAN 发送(1Mbps 经典帧)       ~110us                <- 物理下限,占大�
 1. **上位机运行环境**:隔离核(`isolcpus`+`nohz_full`+`rcu_nocbs`)、SCHED_FIFO、
    i226 关中断合并(`ethtool -C <if> rx-usecs 0`)、关 EEE(`ethtool --set-eee <if> off`)。
    预期把项 A 之外的主站侧抖动压到 <5us。PREEMPT_RT 内核对尾延迟(p99)有额外收益。
-2. **提高轮询率**:128B PD 下 16kHz 无压力;实测丢 wkc 前可试到 ~20kHz。
+2. **提高轮询率**:48B PD 下 16kHz 无压力;实测丢 wkc 前可继续上探。
 
 **中等投入(P3,按实测决定)**
 
 3. **SM-synchron(PDI ISR)**:消除项 B(0~60us -> ~2-5us 确定性)。从站单侧改动,
    预期是**从站侧最大的单项收益**。
-4. **ARQ 加窗**:停等的有效吞吐是每 ~2 周期 124B(发出后要等下周期的 ack)。若多路
-   CAN 遥测把上行打满,把 PD 扩为 N 槽滑窗(如 4x128B=512B,PD 上限已由
+4. **ARQ 加窗**:停等的有效吞吐是每 ~2 周期 44B(发出后要等下周期的 ack)。若多路
+   CAN 遥测把上行打满,把 PD 扩为 N 槽滑窗(如 4x48B=192B,PD 上限已由
    `MAX_PD_*_SIZE` 参数化;ESC RAM 余量以 RAM_SIZE 寄存器 0x0006 实测为准,例程布局
    0x1000-0x14FF 只用了零头)。注意:**加窗提升吞吐,不降低单帧延迟**,且 512B PD
    使帧上线时间 ~90us、轮询率上限降到 ~10kHz——是"吞吐换轮询率"的权衡,没有遥测
    饱和证据前不做。
-5. **chunk 内多帧打包**:librmcs 帧远小于 124B 时,一个 chunk 天然承载多帧(pop 是
+5. **chunk 内多帧打包**:librmcs 帧远小于 44B 时,一个 chunk 天然承载多帧(pop 是
    字节流语义,已支持);无需改动,列出仅为说明吞吐余量。
 
 **不做/暂不做**

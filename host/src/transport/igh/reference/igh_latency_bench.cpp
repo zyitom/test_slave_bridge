@@ -19,9 +19,9 @@
 //   specific to this driver -- see EVALUATION.md)
 //
 // PDO layout comes straight from `ethercat pdos -p 0` against the live
-// slave: SM2 = RxPDO 0x1600 (master->slave, 32 x 32-bit at 0x7010:01..20,
-// 128 bytes), SM3 = TxPDO 0x1a00 (slave->master, 32 x 32-bit at
-// 0x6000:01..20, 128 bytes). The slave reports "PDO Assign: no" / "PDO
+// slave: SM2 = RxPDO 0x1600 (master->slave, 12 x 32-bit at 0x7010:01..0C,
+// 48 bytes), SM3 = TxPDO 0x1a00 (slave->master, 12 x 32-bit at
+// 0x6000:01..0C, 48 bytes). The slave reports "PDO Assign: no" / "PDO
 // Configuration: no" (fixed mapping), so ecrt_slave_config_pdos() is only
 // used to describe the existing layout, not to change it.
 
@@ -30,61 +30,61 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <signal.h>
 #include <vector>
 
+#include <ecrt.h>
 #include <pthread.h>
 #include <sched.h>
-#include <signal.h>
 #include <unistd.h>
-
-#include <ecrt.h>
 
 namespace {
 
 constexpr uint32_t kVendorId = 0x00000511;
 constexpr uint32_t kProductCode = 0x00000001;
-constexpr int kChunkBytes = 128;
+constexpr int kChunkBytes = 48;
+constexpr int kPdoEntryCount = 12;
 constexpr int kCpu = 7; // isolated core (isolcpus/nohz_full/rcu_nocbs=7)
 
 volatile sig_atomic_t g_stop = 0;
 void on_sigint(int) { g_stop = 1; }
 
-double ts_to_us(const timespec &a, const timespec &b) {
+double ts_to_us(const timespec& a, const timespec& b) {
     return (b.tv_sec - a.tv_sec) * 1e6 + (b.tv_nsec - a.tv_nsec) / 1e3;
 }
 
-uint64_t ts_to_ns(const timespec &t) {
+uint64_t ts_to_ns(const timespec& t) {
     return static_cast<uint64_t>(t.tv_sec) * 1'000'000'000ull + static_cast<uint64_t>(t.tv_nsec);
 }
 
-ec_pdo_entry_info_t g_out_entries[32];
-ec_pdo_entry_info_t g_in_entries[32];
+ec_pdo_entry_info_t g_out_entries[kPdoEntryCount];
+ec_pdo_entry_info_t g_in_entries[kPdoEntryCount];
 
-void fill_entries(ec_pdo_entry_info_t *entries, uint16_t index) {
-    for (int i = 0; i < 32; i++) {
+void fill_entries(ec_pdo_entry_info_t* entries, uint16_t index) {
+    for (int i = 0; i < kPdoEntryCount; i++) {
         entries[i] = {index, static_cast<uint8_t>(i + 1), 32};
     }
 }
 
 } // namespace
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
     const double duration_s = argc > 1 ? std::atof(argv[1]) : 10.0;
     signal(SIGINT, on_sigint);
 
-    ec_master_t *master = ecrt_request_master(0);
+    ec_master_t* master = ecrt_request_master(0);
     if (!master) {
         std::fprintf(stderr, "ecrt_request_master failed (is the ethercat service running?)\n");
         return 1;
     }
 
-    ec_domain_t *domain = ecrt_master_create_domain(master);
+    ec_domain_t* domain = ecrt_master_create_domain(master);
     if (!domain) {
         std::fprintf(stderr, "ecrt_master_create_domain failed\n");
         return 1;
     }
 
-    ec_slave_config_t *sc = ecrt_master_slave_config(master, 0, 0, kVendorId, kProductCode);
+    ec_slave_config_t* sc = ecrt_master_slave_config(master, 0, 0, kVendorId, kProductCode);
     if (!sc) {
         std::fprintf(stderr, "ecrt_master_slave_config failed\n");
         return 1;
@@ -93,13 +93,17 @@ int main(int argc, char **argv) {
     fill_entries(g_out_entries, 0x7010);
     fill_entries(g_in_entries, 0x6000);
 
-    ec_pdo_info_t pdo_out[] = {{0x1600, 32, g_out_entries}};
-    ec_pdo_info_t pdo_in[] = {{0x1a00, 32, g_in_entries}};
+    ec_pdo_info_t pdo_out[] = {
+        {0x1600, kPdoEntryCount, g_out_entries}
+    };
+    ec_pdo_info_t pdo_in[] = {
+        {0x1a00, kPdoEntryCount, g_in_entries}
+    };
     ec_sync_info_t syncs[] = {
-        {0, EC_DIR_OUTPUT, 0, nullptr, EC_WD_DISABLE},
-        {1, EC_DIR_INPUT, 0, nullptr, EC_WD_DISABLE},
-        {2, EC_DIR_OUTPUT, 1, pdo_out, EC_WD_ENABLE},
-        {3, EC_DIR_INPUT, 1, pdo_in, EC_WD_DISABLE},
+        {   0,  EC_DIR_OUTPUT, 0, nullptr, EC_WD_DISABLE},
+        {   1,   EC_DIR_INPUT, 0, nullptr, EC_WD_DISABLE},
+        {   2,  EC_DIR_OUTPUT, 1, pdo_out,  EC_WD_ENABLE},
+        {   3,   EC_DIR_INPUT, 1,  pdo_in, EC_WD_DISABLE},
         {0xff, EC_DIR_INVALID, 0, nullptr, EC_WD_DEFAULT},
     };
 
@@ -111,8 +115,8 @@ int main(int argc, char **argv) {
     const int off_out = ecrt_slave_config_reg_pdo_entry(sc, 0x7010, 1, domain, nullptr);
     const int off_in = ecrt_slave_config_reg_pdo_entry(sc, 0x6000, 1, domain, nullptr);
     if (off_out < 0 || off_in < 0) {
-        std::fprintf(stderr, "ecrt_slave_config_reg_pdo_entry failed (out=%d in=%d)\n", off_out,
-                     off_in);
+        std::fprintf(
+            stderr, "ecrt_slave_config_reg_pdo_entry failed (out=%d in=%d)\n", off_out, off_in);
         return 1;
     }
 
@@ -121,7 +125,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    uint8_t *pd = ecrt_domain_data(domain);
+    uint8_t* pd = ecrt_domain_data(domain);
     if (!pd) {
         std::fprintf(stderr, "ecrt_domain_data failed\n");
         return 1;
@@ -172,8 +176,8 @@ int main(int argc, char **argv) {
         }
         usleep(1000);
     }
-    std::fprintf(stderr, "slave(s) in OP, starting %.1fs latency run (1 in flight)...\n",
-                 duration_s);
+    std::fprintf(
+        stderr, "slave(s) in OP, starting %.1fs latency run (1 in flight)...\n", duration_s);
 
     std::vector<double> rtt_us;
     rtt_us.reserve(200000);
@@ -226,10 +230,11 @@ int main(int argc, char **argv) {
     auto pct = [&](double p) { return rtt_us[static_cast<size_t>(p * (rtt_us.size() - 1))]; };
     const double cycle_rate_khz = rtt_us.size() / (ts_to_us(run_start, now) / 1e6) / 1000.0;
 
-    std::fprintf(stderr,
-                 "cycles %zu  timeouts %u  cycle rate %.1f kHz\n"
-                 "rtt us: p50 %.1f  p90 %.1f  p99 %.1f  max %.1f  (n=%zu)\n",
-                 rtt_us.size(), timeouts, cycle_rate_khz, pct(0.50), pct(0.90), pct(0.99),
-                 rtt_us.back(), rtt_us.size());
+    std::fprintf(
+        stderr,
+        "cycles %zu  timeouts %u  cycle rate %.1f kHz\n"
+        "rtt us: p50 %.1f  p90 %.1f  p99 %.1f  max %.1f  (n=%zu)\n",
+        rtt_us.size(), timeouts, cycle_rate_khz, pct(0.50), pct(0.90), pct(0.99), rtt_us.back(),
+        rtt_us.size());
     return 0;
 }
