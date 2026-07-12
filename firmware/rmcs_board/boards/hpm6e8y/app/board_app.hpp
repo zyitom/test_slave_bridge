@@ -20,14 +20,26 @@
 namespace librmcs::firmware::board {
 
 // Fieldbus (core1) application layer of the EtherCAT bridge. This board
-// exposes physical CAN0 (MCAN0 on PC00/PC01) and one test UART (UART1 on
-// PY06/PY07), plus a plain GPIO RGB LED. The EtherCAT side (ESC, core0) is
-// configured in ../board.c and does not appear here.
+// exposes all four physical CAN ports (CAN0..CAN3 = MCAN0..MCAN3; see kCanPorts
+// for pin routing) and one test UART (UART1 on PY06/PY07), plus a plain GPIO RGB
+// LED. The EtherCAT side (ESC, core0) is configured in ../board.c and does not
+// appear here.
 
-// CAN ports in logical order. CAN0 = physical silk CAN0 = MCAN0, classic
-// 1 Mbps for bring-up.
+// CAN ports in logical order, mapped to the four physical silk ports CAN0..CAN3
+// (= MCAN0..MCAN3). Pin routing recovered by the CAN pin scanner and recorded in
+// CAN_PIN_REVERSE_ENGINEERING.md:
+//   CAN0 = MCAN0  TX PC00 / RX PC01
+//   CAN1 = MCAN1  TX PB05 / RX PB04
+//   CAN2 = MCAN2  TX PD08 / RX PD09
+//   CAN3 = MCAN3  TX PD15 / RX PD14
+// All four run CAN-FD (1 Mbps arbitration / 5 Mbps data, BRS on). FD mode is a
+// strict superset -- classic frames still work -- and is required by the CANFD
+// loopback stress test that jumpers CAN0<->CAN1 and CAN2<->CAN3.
 constexpr CanPort kCanPorts[] = {
-    {.base = HPM_MCAN0_BASE, .irq_num = IRQn_MCAN0, .mode = CanMode::kClassic},
+    {.base = HPM_MCAN0_BASE, .irq_num = IRQn_MCAN0, .mode = CanMode::kCanFd},
+    {.base = HPM_MCAN1_BASE, .irq_num = IRQn_MCAN1, .mode = CanMode::kCanFd},
+    {.base = HPM_MCAN2_BASE, .irq_num = IRQn_MCAN2, .mode = CanMode::kCanFd},
+    {.base = HPM_MCAN3_BASE, .irq_num = IRQn_MCAN3, .mode = CanMode::kCanFd},
 };
 
 uint32_t init_can(MCAN_Type* ptr);

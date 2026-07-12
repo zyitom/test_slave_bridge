@@ -18,12 +18,24 @@ namespace librmcs::firmware::board {
 namespace {
 
 uint32_t init_can_clock(MCAN_Type* ptr) {
+    // Group membership (group1, the core1 domain) is set centrally in board.c
+    // before core1 is released; only the divider is chosen here. 80 MHz from
+    // PLL1CLK0 (800 MHz / 10), same as the EVK reference, for every controller.
     if (ptr == HPM_MCAN0) {
-        // Group membership (group1, the core1 domain) is set centrally in
-        // board.c before core1 is released; only the divider is chosen here.
-        // 80 MHz from PLL1CLK0 (800 MHz / 10), same as the EVK reference.
         clock_set_source_divider(clock_can0, clk_src_pll1_clk0, 10);
         return clock_get_frequency(clock_can0);
+    }
+    if (ptr == HPM_MCAN1) {
+        clock_set_source_divider(clock_can1, clk_src_pll1_clk0, 10);
+        return clock_get_frequency(clock_can1);
+    }
+    if (ptr == HPM_MCAN2) {
+        clock_set_source_divider(clock_can2, clk_src_pll1_clk0, 10);
+        return clock_get_frequency(clock_can2);
+    }
+    if (ptr == HPM_MCAN3) {
+        clock_set_source_divider(clock_can3, clk_src_pll1_clk0, 10);
+        return clock_get_frequency(clock_can3);
     }
     return 0;
 }
@@ -39,11 +51,26 @@ uint32_t init_uart_clock(UART_Type* ptr) {
 } // namespace
 
 uint32_t init_can(MCAN_Type* ptr) {
+    // RX pads: pull-up enabled + Schmitt trigger, so an idle/unconnected bus
+    // reads recessive cleanly. TX pads take the IOC default drive.
+    constexpr uint32_t rx_pad =
+        IOC_PAD_PAD_CTL_PE_SET(1) | IOC_PAD_PAD_CTL_PS_SET(1) | IOC_PAD_PAD_CTL_HYS_SET(1);
     if (ptr == HPM_MCAN0) {
         HPM_IOC->PAD[IOC_PAD_PC00].FUNC_CTL = IOC_PC00_FUNC_CTL_MCAN0_TXD;
         HPM_IOC->PAD[IOC_PAD_PC01].FUNC_CTL = IOC_PC01_FUNC_CTL_MCAN0_RXD;
-        HPM_IOC->PAD[IOC_PAD_PC01].PAD_CTL =
-            IOC_PAD_PAD_CTL_PE_SET(1) | IOC_PAD_PAD_CTL_PS_SET(1) | IOC_PAD_PAD_CTL_HYS_SET(1);
+        HPM_IOC->PAD[IOC_PAD_PC01].PAD_CTL = rx_pad;
+    } else if (ptr == HPM_MCAN1) {
+        HPM_IOC->PAD[IOC_PAD_PB05].FUNC_CTL = IOC_PB05_FUNC_CTL_MCAN1_TXD;
+        HPM_IOC->PAD[IOC_PAD_PB04].FUNC_CTL = IOC_PB04_FUNC_CTL_MCAN1_RXD;
+        HPM_IOC->PAD[IOC_PAD_PB04].PAD_CTL = rx_pad;
+    } else if (ptr == HPM_MCAN2) {
+        HPM_IOC->PAD[IOC_PAD_PD08].FUNC_CTL = IOC_PD08_FUNC_CTL_MCAN2_TXD;
+        HPM_IOC->PAD[IOC_PAD_PD09].FUNC_CTL = IOC_PD09_FUNC_CTL_MCAN2_RXD;
+        HPM_IOC->PAD[IOC_PAD_PD09].PAD_CTL = rx_pad;
+    } else if (ptr == HPM_MCAN3) {
+        HPM_IOC->PAD[IOC_PAD_PD15].FUNC_CTL = IOC_PD15_FUNC_CTL_MCAN3_TXD;
+        HPM_IOC->PAD[IOC_PAD_PD14].FUNC_CTL = IOC_PD14_FUNC_CTL_MCAN3_RXD;
+        HPM_IOC->PAD[IOC_PAD_PD14].PAD_CTL = rx_pad;
     }
     return init_can_clock(ptr);
 }
@@ -97,6 +124,15 @@ void init_can_indicator_pins() {
 
 SDK_DECLARE_EXT_ISR_M(IRQn_MCAN0, can0_isr)
 void can0_isr() { can_irq_handler(0); }
+
+SDK_DECLARE_EXT_ISR_M(IRQn_MCAN1, can1_isr)
+void can1_isr() { can_irq_handler(1); }
+
+SDK_DECLARE_EXT_ISR_M(IRQn_MCAN2, can2_isr)
+void can2_isr() { can_irq_handler(2); }
+
+SDK_DECLARE_EXT_ISR_M(IRQn_MCAN3, can3_isr)
+void can3_isr() { can_irq_handler(3); }
 
 SDK_DECLARE_EXT_ISR_M(IRQn_UART1, uart0_isr)
 void uart0_isr() { uart_irq_handler(0); }

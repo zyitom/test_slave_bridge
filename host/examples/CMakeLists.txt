@@ -44,4 +44,8 @@ if(LIBRMCS_ENABLE_SOEM OR LIBRMCS_ENABLE_IGH)
     # RMCS_ECAT_BACKEND=soem|igh (handled inside protocol::Handler).
     add_executable(ecat_board_test ecat_board_test.cpp)
     target_link_libraries(ecat_board_test PRIVATE librmcs-sdk)
+
+    # CAN-FD loopback stress over the EtherCAT bridge (CAN0->CAN1, CAN2->CAN3).
+    add_executable(ecat_canfd_stress ecat_canfd_stress.cpp)
+    target_link_libraries(ecat_canfd_stress PRIVATE librmcs-sdk)
 endif()

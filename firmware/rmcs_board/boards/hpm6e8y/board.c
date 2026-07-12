@@ -246,10 +246,13 @@ static inline void board_init_clock(void) {
     clock_connect_group_to_cpu(0, 0);
 
     /* Group 1: core1 domain (fieldbus peripherals live with the fieldbus
-     * core: physical CAN0/MCAN0 + UART1 + its machine timer). */
+     * core: physical CAN0..CAN3 / MCAN0..MCAN3 + UART1 + its machine timer). */
     clock_add_to_group(clock_cpu1, 1);
     clock_add_to_group(clock_mchtmr1, 1);
     clock_add_to_group(clock_can0, 1);
+    clock_add_to_group(clock_can1, 1);
+    clock_add_to_group(clock_can2, 1);
+    clock_add_to_group(clock_can3, 1);
     clock_add_to_group(clock_uart1, 1);
     /* Connect Group1 to CPU1 */
     clock_connect_group_to_cpu(1, 1);
