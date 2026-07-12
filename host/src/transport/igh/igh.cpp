@@ -29,12 +29,14 @@
 //    window before the next poll is built, so an immediate answer rides this
 //    cycle instead of the next one.
 //
-// Distributed clock: this slave is auto-elected as the DC reference clock, so
-// the master FSM only advances to OP if application_time / reference-clock /
-// slave-clock sync is fed every cycle before send(). Omitting it hangs the
-// slave in PREOP or SAFEOP+ERROR forever. See DESIGN.md's "distributed clock"
-// section; the ecrt call order below is the one verified in the standalone
-// reference bench (reference/igh_latency_bench.cpp).
+// Distributed clock: none. The bridge runs SM-synchron and never programs
+// SYNC0, so DC sync would be pure per-frame overhead: the application-time/
+// reference-clock/slave-clock trio costs 3 ioctls per cycle and appends DC
+// register datagrams to every frame, right on the 100Mbit serialization
+// bottleneck. The master would still auto-elect this DC-capable slave as the
+// reference clock (and then refuse OP until the trio is fed every cycle --
+// verified live, see DESIGN.md), so the constructor explicitly selects NO
+// reference clock via ecrt_master_select_reference_clock(master, nullptr).
 
 #if defined(LIBRMCS_ENABLE_IGH)
 
@@ -98,12 +100,6 @@ std::string_view al_state_name(unsigned int al_state) noexcept {
     case 0x08: return "OP";
     default: return "MIXED";
     }
-}
-
-std::uint64_t monotonic_ns() noexcept {
-    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                          std::chrono::steady_clock::now().time_since_epoch())
-                                          .count());
 }
 
 // Byte ring between transmit() callers and the cycle thread. A mutex is fine
@@ -232,6 +228,12 @@ public:
         if (ecrt_slave_config_pdos(slave_config_, EC_END, syncs))
             throw std::runtime_error{"ecrt_slave_config_pdos failed"};
 
+        // No DC reference clock (see the file header): without this the master
+        // auto-elects the slave as reference clock and the FSM never reaches
+        // OP unless the DC trio is fed every cycle.
+        if (ecrt_master_select_reference_clock(master_, nullptr))
+            throw std::runtime_error{"ecrt_master_select_reference_clock(none) failed"};
+
         const int off_out =
             ecrt_slave_config_reg_pdo_entry(slave_config_, kOutputEntryIndex, 1, domain_, nullptr);
         const int off_in =
@@ -351,17 +353,13 @@ private:
             buffer_pool_.push_back(std::move(buffer));
     }
 
-    // Feed one cycle to the master with the distributed-clock trio. Returns the
-    // domain working-counter state observed after the frame came back (or after
-    // the response deadline elapsed). Shared by the warm-up and the hot loop so
+    // Feed one process-data cycle to the master. Returns the domain
+    // working-counter state observed after the frame came back (or after the
+    // response deadline elapsed). Shared by the warm-up and the hot loop so
     // the ecrt call order stays in exactly one place.
     ec_domain_state_t exchange_once() noexcept {
-        const std::uint64_t now_ns = monotonic_ns();
-        // DC trio: required every cycle because this slave is the DC reference
-        // clock; without it the FSM never reaches OP (see file header).
-        ecrt_master_application_time(master_, now_ns);
-        ecrt_master_sync_reference_clock_to(master_, now_ns);
-        ecrt_master_sync_slave_clocks(master_);
+        // No DC trio here: the constructor selects no reference clock, so the
+        // frame carries only the process data datagram (see the file header).
         ecrt_domain_queue(domain_);
         ecrt_master_send(master_);
 
