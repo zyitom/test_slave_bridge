@@ -421,17 +421,17 @@ namespace {
 
 // Backend selection mirrors examples/ecat_stream_latency.cpp: the SDK builds
 // against whichever EtherCAT backends were compiled in (SOEM and/or IgH);
-// pick at run time with RMCS_ECAT_BACKEND=soem|igh (default: soem if
-// available, else igh). For IgH the interface name is only an advisory hint
+// pick at run time with RMCS_ECAT_BACKEND=soem|igh (default: igh if
+// available, else soem). For IgH the interface name is only an advisory hint
 // (the master owning the NIC is chosen by the IgH configuration); for SOEM it
 // is the raw interface bound with CAP_NET_RAW.
 std::unique_ptr<transport::Transport> create_ethercat_transport(
     std::string_view interface_name, const board::AdvancedOptions& options) {
     const char* backend_env = std::getenv("RMCS_ECAT_BACKEND");
-# if defined(LIBRMCS_ENABLE_SOEM)
-    const std::string_view backend = backend_env ? backend_env : "soem";
-# else
+# if defined(LIBRMCS_ENABLE_IGH)
     const std::string_view backend = backend_env ? backend_env : "igh";
+# else
+    const std::string_view backend = backend_env ? backend_env : "soem";
 # endif
 # if defined(LIBRMCS_ENABLE_SOEM)
     if (backend == "soem")

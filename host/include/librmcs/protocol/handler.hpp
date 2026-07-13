@@ -50,7 +50,7 @@ public:
      * bridge) instead of USB.
      *
      * The backend is chosen at run time via the RMCS_ECAT_BACKEND environment
-     * variable ("soem" or "igh"; default: soem if compiled in, else igh),
+     * variable ("soem" or "igh"; default: igh if compiled in, else soem),
      * among the backends the SDK was built with (-DLIBRMCS_ENABLE_SOEM=ON /
      * -DLIBRMCS_ENABLE_IGH=ON).
      *

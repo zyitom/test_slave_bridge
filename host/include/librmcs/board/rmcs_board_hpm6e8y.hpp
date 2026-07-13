@@ -10,22 +10,13 @@
 
 namespace librmcs::board {
 
-// Board interface for the rmcs_board EtherCAT stream bridge
-// (firmware/rmcs_board/ecat on the HPM6E80IVM1 / hpm6e00evk-equivalent
-// hardware). Connects over an EtherCAT network interface instead of USB;
-// everything above the transport -- session, data ids, callbacks -- matches
-// the USB boards. The bridge exposes four CAN buses (CAN0..CAN3 = physical
-// CAN0..CAN3 / MCAN0..MCAN3; see the firmware board_app for pin routing) and one
-// UART (UART0 = UART1 on PY06/PY07); it has no IMU, GPIO channels or DBUS.
-//
-// Requires an SDK built with at least one EtherCAT backend
-// (-DLIBRMCS_ENABLE_SOEM=ON and/or -DLIBRMCS_ENABLE_IGH=ON; the constructor
-// throws otherwise). The backend is picked at run time via RMCS_ECAT_BACKEND=
-// soem|igh (default: igh if compiled in, else soem). SOEM opens the raw
-// interface directly and needs CAP_NET_RAW (or root); IgH requires the master
-// kernel module to own the NIC first (`ethercatctl start`) and write access to
-// /dev/EtherCAT0.
-class RmcsBoardEcatBridge final {
+// Board interface for the HPM6E8Y board over USB (PID 0xA904). This is the
+// USB-transport twin of RmcsBoardEcatBridge: the same HPM6E8Y hardware and the
+// same shared app-layer, but connected as a USB vendor device instead of an
+// EtherCAT slave. It exposes all four physical CAN buses (CAN0..CAN3 =
+// MCAN0..MCAN3) and one UART (UART0 = UART1); it has no IMU, GPIO channels or
+// DBUS, so those callbacks are intentionally absent.
+class RmcsBoardHpm6e8y final {
 public:
     class Callback : public data::DataCallback {
     public:
@@ -79,19 +70,19 @@ public:
         }
     };
 
-    explicit RmcsBoardEcatBridge(
-        std::string_view interface_name, Callback& callback = default_callback_,
+    explicit RmcsBoardHpm6e8y(
+        Callback& callback = default_callback_, std::string_view serial_filter = {},
         const AdvancedOptions& options = {})
-        : handler_(interface_name, options, callback) {}
+        : handler_(0xA11C, 0xA904, serial_filter, options, callback) {}
 
-    RmcsBoardEcatBridge(const RmcsBoardEcatBridge&) = delete;
-    RmcsBoardEcatBridge& operator=(const RmcsBoardEcatBridge&) = delete;
-    RmcsBoardEcatBridge(RmcsBoardEcatBridge&&) = delete;
-    RmcsBoardEcatBridge& operator=(RmcsBoardEcatBridge&&) = delete;
-    ~RmcsBoardEcatBridge() = default;
+    RmcsBoardHpm6e8y(const RmcsBoardHpm6e8y&) = delete;
+    RmcsBoardHpm6e8y& operator=(const RmcsBoardHpm6e8y&) = delete;
+    RmcsBoardHpm6e8y(RmcsBoardHpm6e8y&&) = delete;
+    RmcsBoardHpm6e8y& operator=(RmcsBoardHpm6e8y&&) = delete;
+    ~RmcsBoardHpm6e8y() = default;
 
     class PacketBuilder {
-        friend class RmcsBoardEcatBridge;
+        friend class RmcsBoardHpm6e8y;
 
     public:
         PacketBuilder& can0_transmit(const librmcs::data::CanDataView& data) {

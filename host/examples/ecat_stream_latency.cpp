@@ -100,15 +100,13 @@ int main(int argc, char** argv) {
     });
     // Backend selection. The tool builds against whichever EtherCAT backends
     // the SDK was compiled with (SOEM and/or IgH); pick at run time with
-    // RMCS_ECAT_BACKEND=soem|igh (default: soem if available, else igh). For
+    // RMCS_ECAT_BACKEND=soem|igh (default: igh if available, else soem). For
     // IgH, argv[1] is only an advisory interface hint (the master is chosen by
     // ethercat.conf); for SOEM it is the raw interface bound with CAP_NET_RAW.
     std::unique_ptr<transport::Transport> link;
     {
         const char* backend_env = std::getenv("RMCS_ECAT_BACKEND");
-#if defined(EXAMPLE_HAVE_SOEM) && defined(EXAMPLE_HAVE_IGH)
-        const std::string_view backend = backend_env ? backend_env : "soem";
-#elif defined(EXAMPLE_HAVE_IGH)
+#if defined(EXAMPLE_HAVE_IGH)
         const std::string_view backend = backend_env ? backend_env : "igh";
 #else
         const std::string_view backend = backend_env ? backend_env : "soem";

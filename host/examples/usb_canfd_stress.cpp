@@ -1,29 +1,23 @@
-// CAN-FD loopback stress test for the rmcs_board EtherCAT bridge (hpm6e8y),
-// which now exposes all four physical CAN ports CAN0..CAN3.
+// CAN-FD loopback stress test for the HPM6E8Y board over USB (PID 0xA904) --
+// the USB-transport twin of ecat_canfd_stress. Same wiring and same checks, so
+// the two can be compared directly to see how the transport (USB vendor bulk
+// vs EtherCAT ARQ stream) affects CAN loopback loss/throughput.
 //
 // WIRING: two independent loopback pairs, each a single CAN bus with a 120 ohm
 // terminator at EACH end:
 //   pair 0/1 : CAN0_H<->CAN1_H, CAN0_L<->CAN1_L
 //   pair 2/3 : CAN2_H<->CAN3_H, CAN2_L<->CAN3_L
 // The host floods CAN-FD frames out CAN0 and CAN2; the partner (CAN1 / CAN3)
-// receives and ACKs; the firmware forwards every received frame back to the
-// host, which checks it. So each pair is stressed one-way (even->odd) with a
-// clean, verifiable sequence.
-//
-// Note on payload width: the librmcs wire protocol carries at most 8 CAN data
-// bytes even for FD frames, so these frames are FD-format (BRS: 1 Mbps
-// arbitration / 5 Mbps data phase) with an 8-byte payload -- enough to exercise
-// the FD data-phase path end to end.
+// receives, and the firmware forwards every received frame back to the host,
+// which checks it.
 //
 // Each frame's payload is 8 bytes: a 32-bit little-endian sequence number plus a
 // 32-bit hash of it. The receiver validates the hash (corruption) and the
 // sequence continuity (loss / reordering), all in host time.
 //
-// Build:  cmake -DLIBRMCS_ENABLE_IGH=ON ... (see host/CMakeLists.txt)
-// Run:    sudo ./ecat_canfd_stress <interface> [seconds] [rate_fps_per_stream]
-//         The EtherCAT backend defaults to IgH when compiled in; override with
-//         RMCS_ECAT_BACKEND=soem|igh. (for steadier pacing:
-//         sudo chrt -f 80 ./ecat_canfd_stress enp2s0 30 8000)
+// Build:  cmake --preset linux-debug -S host   (no EtherCAT backend needed)
+// Run:    sudo ./usb_canfd_stress [seconds] [rate_fps_per_stream] [serial_filter]
+//         (for steadier pacing:  sudo chrt -f 80 ./usb_canfd_stress 30 8000)
 
 #include <atomic>
 #include <chrono>
@@ -33,10 +27,10 @@
 #include <cstdlib>
 #include <csignal>
 #include <exception>
-#include <span>
+#include <string_view>
 #include <thread>
 
-#include <librmcs/board/rmcs_board_ecat_bridge.hpp>
+#include <librmcs/board/rmcs_board_hpm6e8y.hpp>
 
 namespace {
 
@@ -80,8 +74,8 @@ void encode(std::byte* out, uint32_t seq) {
 }
 
 // Per loopback pair. Counters are read live by the main thread; the sequence
-// state is touched only from the single EtherCAT poll thread that drives the
-// receive callbacks, so it needs no synchronization.
+// state is touched only from the single USB receive thread, so it needs no
+// synchronization.
 struct Stream {
     std::atomic<uint64_t> tx{0};
     std::atomic<uint64_t> rx{0};
@@ -122,7 +116,7 @@ struct Stream {
     }
 };
 
-class Receiver final : public librmcs::board::RmcsBoardEcatBridge::Callback {
+class Receiver final : public librmcs::board::RmcsBoardHpm6e8y::Callback {
 public:
     Stream pair01; // CAN0 -> CAN1
     Stream pair23; // CAN2 -> CAN3
@@ -161,21 +155,26 @@ void print_line(const char* tag, const Stream& s, uint64_t rx_delta, double dt_s
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        fprintf(stderr, "usage: %s <interface> [seconds] [rate_fps_per_stream]\n", argv[0]);
-        return 1;
-    }
-    const int duration_s = argc > 2 ? std::atoi(argv[2]) : 10;
-    const uint32_t rate = argc > 3 ? static_cast<uint32_t>(std::atoi(argv[3])) : 5000;
+    const int duration_s = argc > 1 ? std::atoi(argv[1]) : 10;
+    const uint32_t rate = argc > 2 ? static_cast<uint32_t>(std::atoi(argv[2])) : 5000;
+    const std::string_view serial_filter = argc > 3 ? argv[3] : std::string_view{};
 
     std::signal(SIGINT, on_sigint);
 
     Receiver rx;
     try {
+        // The EtherCAT-bridge firmware advertises its product string as
+        // "RMCS EtherCAT Bridge v<ver>" rather than the "RMCS Agent v<ver>" the
+        // USB transport's exact-match version check expects. The protocol
+        // version itself matches (same build), only the product name differs, so
+        // skip the string check here.
+        librmcs::board::AdvancedOptions options;
+        options.set_dangerously_skip_version_checks(true);
+
         // Session establishment happens inside the constructor; returning means
-        // EtherCAT is OPERATIONAL and the protocol handshake passed.
-        librmcs::board::RmcsBoardEcatBridge board{argv[1], rx};
-        printf("EtherCAT bridge connected on %s, session established.\n", argv[1]);
+        // the USB device is open and the protocol handshake passed.
+        librmcs::board::RmcsBoardHpm6e8y board{rx, serial_filter, options};
+        printf("HPM6E8Y USB board connected, session established.\n");
         printf(
             "CAN-FD stress: CAN0->CAN1 and CAN2->CAN3, target %u f/s per stream for %d s "
             "(Ctrl-C to stop early)\n\n",

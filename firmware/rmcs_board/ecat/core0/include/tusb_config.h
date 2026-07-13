@@ -42,9 +42,18 @@ extern "C" {
 #define CFG_TUD_MSC         0
 #define CFG_TUD_HID         0
 #define CFG_TUD_MIDI        0
-#define CFG_TUD_VENDOR      0
+// Vendor (bulk) data interface: the USB twin of the EtherCAT process-data
+// stream. Same host-facing protocol as the standalone USB app, so the host
+// librmcs USB transport (bulk EP 0x01/0x81) binds unchanged.
+#define CFG_TUD_VENDOR      1
 #define CFG_TUD_DFU_RUNTIME 1
 #define CFG_TUD_DFU         0
+
+// Vendor endpoint FIFO sizes. One high-speed bulk max-packet each way is
+// enough for the byte-shuttle pump (usb_runtime.cpp) that drains them every
+// USB interrupt into the cross-core rings.
+#define CFG_TUD_VENDOR_RX_BUFSIZE 512
+#define CFG_TUD_VENDOR_TX_BUFSIZE 512
 
 #ifdef __cplusplus
 }

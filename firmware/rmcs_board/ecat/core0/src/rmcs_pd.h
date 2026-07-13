@@ -2,6 +2,7 @@
 #define FIRMWARE_RMCS_BOARD_ECAT_CORE0_SRC_RMCS_PD_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -46,6 +47,41 @@ bool rmcs_pd_uplink_pending(void);
  * shared MBX0 clock the fieldbus core needs to poke HPM_MBX0B. Implemented in
  * ecat_appl.c alongside the handler. */
 void rmcs_uplink_doorbell_init(void);
+
+/*
+ * USB transport path (usb_runtime.cpp). The same cross-core rings carry the
+ * raw protocol byte stream regardless of transport, so USB does not need the
+ * ARQ endpoint: USB is already reliable and in-order. These helpers let the
+ * USB byte-shuttle move bytes directly between the bulk endpoints and the
+ * rings. All are core0-only and expect the arbitration below to guarantee the
+ * ESC hooks are inert while USB owns the rings (single-producer / single-
+ * consumer per ring is preserved).
+ */
+
+/* Free space (bytes) in the host->device (downlink) ring right now. The USB
+ * shuttle reads at most this many bytes out of the bulk-OUT FIFO so a push
+ * never has to be partially dropped. */
+size_t rmcs_pd_downlink_free(void);
+
+/* Push host->device bytes into the downlink ring. Returns the number written
+ * (len on success, 0 if it would not fit -- callers size against
+ * rmcs_pd_downlink_free()). */
+size_t rmcs_pd_push_downlink(const uint8_t* data, size_t len);
+
+/* Pop device->host bytes from the uplink ring into buffer (up to capacity).
+ * Returns the number copied. */
+size_t rmcs_pd_pop_uplink(uint8_t* buffer, size_t capacity);
+
+/* Transport arbitration ("whichever host is active"): the single ring pair is
+ * served by EXACTLY ONE transport at a time. When usb_active is true the ESC
+ * PDO hooks (rmcs_pd_on_outputs / rmcs_pd_build_inputs) go inert -- outputs are
+ * ignored and inputs emit an idle chunk -- and the USB shuttle owns the rings;
+ * when false the EtherCAT ARQ endpoint owns them. Toggling resets the ARQ
+ * endpoint and bumps the link epoch so the fieldbus core restarts its session
+ * on the new transport. rmcs_pd_reset() (SAFEOP->OP) also clears the USB claim,
+ * so bringing up an EtherCAT master hands the link back to EtherCAT. */
+void rmcs_pd_set_usb_active(bool usb_active);
+bool rmcs_pd_usb_active(void);
 
 #ifdef __cplusplus
 }

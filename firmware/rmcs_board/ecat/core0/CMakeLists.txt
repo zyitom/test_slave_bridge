@@ -118,6 +118,9 @@ sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/device/usbd.c")
 sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/device/usbd_control.c")
 sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/portable/hpm/dcd_hpm.c")
 sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/class/dfu/dfu_rt_device.c")
+# Vendor (bulk) data class: the USB co-transport (src/usb_runtime.cpp) enables
+# CFG_TUD_VENDOR, so usbd.c needs the vendor class driver linked in.
+sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/class/vendor/vendor_device.c")
 
 set_property(TARGET app PROPERTY CXX_STANDARD 23)
 set_property(TARGET app PROPERTY CXX_STANDARD_REQUIRED ON)
