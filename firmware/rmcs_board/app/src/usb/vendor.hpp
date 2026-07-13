@@ -18,6 +18,8 @@
 
 namespace librmcs::firmware::usb {
 
+void poll_dfu_runtime_reboot();
+
 // USB vendor-class host transport: TinyUSB bring-up plus the transmission
 // shape (max-packet chunking + ZLP termination). Session lifecycle and
 // downlink dispatch live in the shared link::HostSession.

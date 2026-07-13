@@ -12,6 +12,7 @@
 #include "firmware/c_board/bootloader/src/flash/validation.hpp"
 #include "firmware/c_board/bootloader/src/flash/writer.hpp"
 #include "firmware/c_board/bootloader/src/utility/assert.hpp"
+#include "firmware/c_board/bootloader/src/utility/boot_mailbox.hpp"
 
 namespace librmcs::firmware::usb {
 
@@ -109,6 +110,7 @@ public:
             return fail(DFU_STATUS_ERR_FIRMWARE);
         }
 
+        utility::boot_mailbox.request_boot_app_once();
         reset_transfer_state();
         reset_requested_ = true;
         reset_requested_tick_ = HAL_GetTick();

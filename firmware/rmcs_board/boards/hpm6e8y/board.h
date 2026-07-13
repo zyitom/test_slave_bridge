@@ -37,6 +37,7 @@
 #define BOARD_APP_XPI_NOR_CFG_OPT_HDR  (0xfcf90002U)
 #define BOARD_APP_XPI_NOR_CFG_OPT_OPT0 (0x00000007U)
 #define BOARD_APP_XPI_NOR_CFG_OPT_OPT1 (0x00001000U)
+#define BOARD_BGPR                     HPM_BGPR0
 
 /* EtherCAT definitions consumed by the SDK port layer
  * (samples/ethercat/port). */

@@ -11,24 +11,24 @@
 #include <board.h>
 #include <class/dfu/dfu.h>
 #include <common/tusb_types.h>
+#include <device/dcd.h>
 #include <device/usbd.h>
+#include <hpm_clock_drv.h>
 #include <hpm_interrupt.h>
+#include <hpm_mchtmr_drv.h>
 #include <hpm_otp_drv.h>
-#include <hpm_ppor_drv.h>
 #include <hpm_soc.h>
-#include <hpm_sysctl_drv.h>
 #include <tusb.h>
 #include <tusb_config.h>
 #include <tusb_option.h>
 
+#include "firmware/rmcs_board/common/boot_mailbox.hpp"
 #include "rmcs_pd.h"
 
 namespace {
 
-constexpr uint32_t kMailboxMagic = 0x524D4353U;
-constexpr uint32_t kMailboxRequestEnterDfu = 0x44465530U;
-constexpr uint8_t kMagicGprIndex = 12U;
 constexpr uint8_t kUsbIrqPriority = 2U;
+constexpr uint32_t kDfuRuntimeResetDelayMs = 50U;
 
 constexpr size_t kUuidWordCount = OTP_SOC_UUID_LEN / sizeof(uint32_t);
 static_assert((OTP_SOC_UUID_LEN % sizeof(uint32_t)) == 0);
@@ -37,6 +37,8 @@ static_assert(kUuidWordCount == 4U);
 std::array<char, 43> g_serial_string{"EC-0000-0000-0000-0000-0000-0000-0000-0000"};
 std::array<uint16_t, 128> g_descriptor_string_buffer{};
 bool g_serial_string_ready = false;
+volatile bool g_dfu_runtime_reboot_requested = false;
+volatile uint32_t g_dfu_runtime_reboot_requested_ms = 0U;
 
 constexpr tusb_desc_device_t kDeviceDescriptor = {
     .bLength = sizeof(tusb_desc_device_t),
@@ -131,6 +133,12 @@ char* write_hex_u16(uint16_t value, char* buffer) {
     return buffer;
 }
 
+uint32_t runtime_ms() {
+    const uint64_t ticks_per_ms =
+        static_cast<uint64_t>(clock_get_frequency(clock_mchtmr0)) / 1000U;
+    return static_cast<uint32_t>(mchtmr_get_count(HPM_MCHTMR) / ticks_per_ms);
+}
+
 void update_serial_string() {
     if (g_serial_string_ready) {
         return;
@@ -152,13 +160,25 @@ void update_serial_string() {
     g_serial_string_ready = true;
 }
 
+void request_reboot_to_bootloader() {
+    librmcs::firmware::boot::BootMailbox::request_enter_dfu();
+    g_dfu_runtime_reboot_requested_ms = runtime_ms();
+    g_dfu_runtime_reboot_requested = true;
+    dcd_sof_enable(0, true);
+}
+
 [[noreturn]] void reboot_to_bootloader() {
-    uint32_t values[2] = {kMailboxMagic, kMailboxRequestEnterDfu};
-    (void)sysctl_cpu0_set_gpr(HPM_SYSCTL, kMagicGprIndex, 2U, values, false);
-    ppor_reset_mask_set_source_enable(HPM_PPOR, ppor_reset_software);
-    ppor_reset_set_hot_reset_enable(HPM_PPOR, ppor_reset_software);
-    ppor_sw_reset(HPM_PPOR, 10U);
-    while (true) {}
+    librmcs::firmware::boot::BootMailbox::reboot();
+}
+
+void poll_dfu_runtime_reboot() {
+    if (!g_dfu_runtime_reboot_requested)
+        return;
+
+    if ((runtime_ms() - g_dfu_runtime_reboot_requested_ms) < kDfuRuntimeResetDelayMs)
+        return;
+
+    reboot_to_bootloader();
 }
 
 // Byte-shuttle between the USB bulk endpoints and the cross-core rings. Called
@@ -226,6 +246,7 @@ void rmcs_usb0_isr(void) {
     // are the known cause of "Cannot set alternate interface: LIBUSB_ERROR_OTHER"
     // wedges that made reflashing require the KEYA force-bootloader dance.
     tud_task();
+    poll_dfu_runtime_reboot();
     // NOTE: the vendor DATA pump does NOT run here. It runs only in
     // rmcs_usb_runtime_task() (main loop, with this IRQ masked), so the vendor
     // FIFOs and the cross-core rings have exactly ONE core0-side accessor -- a
@@ -291,7 +312,7 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
     return g_descriptor_string_buffer.data();
 }
 
-void tud_dfu_runtime_reboot_to_dfu_cb(void) { reboot_to_bootloader(); }
+void tud_dfu_runtime_reboot_to_dfu_cb(void) { request_reboot_to_bootloader(); }
 
 void rmcs_usb_runtime_init(void) {
     board_init_usb();
@@ -313,9 +334,11 @@ void rmcs_usb_runtime_init(void) {
 // thread-context pump never races tud_task()/the ISR-side pump on the vendor
 // FIFOs (the ISR is the only other toucher; priority persists across the mask).
 void rmcs_usb_runtime_task(void) {
+    poll_dfu_runtime_reboot();
     intc_m_disable_irq(IRQn_USB0);
     pump_vendor_data();
     intc_m_enable_irq(IRQn_USB0);
+    poll_dfu_runtime_reboot();
 }
 
 } // extern "C"

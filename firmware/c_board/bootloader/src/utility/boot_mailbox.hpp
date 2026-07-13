@@ -6,8 +6,9 @@
 namespace librmcs::firmware::utility {
 
 struct BootMailbox {
-    static constexpr uint32_t kMailboxMagic = 0x524D4353;           // "RMCS"
-    static constexpr uint32_t kMailboxRequestEnterDfu = 0x44465530; // "DFU0"
+    static constexpr uint32_t kMailboxMagic = 0x524D4353;              // "RMCS"
+    static constexpr uint32_t kMailboxRequestEnterDfu = 0x44465530;    // "DFU0"
+    static constexpr uint32_t kMailboxRequestBootAppOnce = 0x41505031; // "APP1"
 
     volatile uint32_t magic;
     volatile uint32_t request;
@@ -17,10 +18,15 @@ struct BootMailbox {
         request = 0;
     }
 
-    bool consume_enter_dfu_request() {
-        const bool requested = magic == kMailboxMagic && request == kMailboxRequestEnterDfu;
+    void request_boot_app_once() {
+        request = kMailboxRequestBootAppOnce;
+        magic = kMailboxMagic;
+    }
+
+    uint32_t consume_request() {
+        const uint32_t consumed_request = (magic == kMailboxMagic) ? request : 0U;
         clear();
-        return requested;
+        return consumed_request;
     }
 };
 inline BootMailbox boot_mailbox __attribute__((section(".boot_mailbox"), aligned(4), used));

@@ -87,6 +87,7 @@ App::App() {
 [[noreturn]] void App::run() {
     while (true) {
         tud_task();
+        usb::poll_dfu_runtime_reboot();
 
         gpio::gpio->poll_periodic_input_samples();
         usb::vendor->try_transmit();

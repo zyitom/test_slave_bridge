@@ -48,8 +48,10 @@ int main() {
 
     using namespace librmcs::firmware; // NOLINT(google-build-using-namespace)
 
-    const bool force_dfu = utility::boot_mailbox.consume_enter_dfu_request();
-    if (!force_stay && !force_dfu) {
+    const uint32_t boot_request = utility::boot_mailbox.consume_request();
+    const bool force_dfu = boot_request == utility::BootMailbox::kMailboxRequestEnterDfu;
+    const bool boot_app_once = boot_request == utility::BootMailbox::kMailboxRequestBootAppOnce;
+    if (!force_stay && (boot_app_once || !force_dfu)) {
         if (flash::validate_app_image())
             utility::jump_to_app(flash::kAppStartAddress);
     }

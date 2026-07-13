@@ -5,11 +5,29 @@
 
 #include <common/tusb_types.h>
 #include <device/usbd.h>
+#include <hpm_clock_drv.h>
 #include <hpm_interrupt.h>
+#include <hpm_mchtmr_drv.h>
+#include <hpm_soc.h>
 
 #include "core/src/protocol/serializer.hpp"
 #include "firmware/rmcs_board/app/src/link/uplink.hpp"
 #include "firmware/rmcs_board/app/src/utility/boot_mailbox.hpp"
+
+namespace {
+
+constexpr uint32_t kDfuRuntimeResetDelayMs = 50U;
+
+volatile bool g_dfu_runtime_reboot_requested = false;
+volatile uint32_t g_dfu_runtime_reboot_requested_ms = 0U;
+
+uint32_t runtime_ms() {
+    const uint64_t ticks_per_ms =
+        static_cast<uint64_t>(clock_get_frequency(clock_mchtmr0)) / 1000U;
+    return static_cast<uint32_t>(mchtmr_get_count(HPM_MCHTMR) / ticks_per_ms);
+}
+
+} // namespace
 
 namespace librmcs::firmware::link {
 
@@ -20,6 +38,16 @@ bool uplink_enabled() { return usb::vendor->session_established(); }
 } // namespace librmcs::firmware::link
 
 namespace librmcs::firmware::usb {
+
+void poll_dfu_runtime_reboot() {
+    if (!g_dfu_runtime_reboot_requested)
+        return;
+
+    if ((runtime_ms() - g_dfu_runtime_reboot_requested_ms) < kDfuRuntimeResetDelayMs)
+        return;
+
+    boot::BootMailbox::reboot_to_bootloader();
+}
 
 // TinyUSB device callbacks
 extern "C" {
@@ -42,7 +70,11 @@ void tud_vendor_rx_cb(uint8_t itf, const uint8_t* buffer, uint16_t size) {
         {reinterpret_cast<const std::byte*>(buffer), size}, size < max_packet_size);
 }
 
-void tud_dfu_runtime_reboot_to_dfu_cb() { boot::BootMailbox::reboot_to_bootloader(); }
+void tud_dfu_runtime_reboot_to_dfu_cb() {
+    boot::BootMailbox::request_enter_dfu();
+    g_dfu_runtime_reboot_requested_ms = runtime_ms();
+    g_dfu_runtime_reboot_requested = true;
+}
 
 void tud_suspend_cb(bool remote_wakeup_en) {
     (void)remote_wakeup_en;

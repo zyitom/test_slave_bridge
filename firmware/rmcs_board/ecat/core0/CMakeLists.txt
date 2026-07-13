@@ -108,6 +108,7 @@ sdk_inc(src)
 # ../../../../core/include: shared librmcs headers (the pd_stream chunk
 # layout lives there because the host SOEM transport uses the same code).
 sdk_app_inc(src ../common ../../../../core/include ${HPM_SDK_BASE}/samples/multicore/common)
+sdk_app_inc("${LIBRMCS_PROJECT_ROOT}")
 sdk_app_src(${HPM_SDK_BASE}/samples/multicore/common/multicore_common.c)
 sdk_app_src(src/ecat_main.c)
 sdk_app_src(src/ecat_appl.c)

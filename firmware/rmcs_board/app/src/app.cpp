@@ -50,6 +50,7 @@ App::App() {
     uint32_t last_tick = 0;
     while (true) {
         tud_task();
+        usb::poll_dfu_runtime_reboot();
 
         // LED bookkeeping runs here at the 1 kHz tick pace instead of inside the
         // mchtmr ISR: MTIP bypasses the PLIC priority threshold, so ISR-side work

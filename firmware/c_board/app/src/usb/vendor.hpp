@@ -28,6 +28,8 @@
 
 namespace librmcs::firmware::usb {
 
+void poll_dfu_runtime_reboot();
+
 class Vendor
     : private core::protocol::DeserializeCallback
     , private core::utility::Immovable {
