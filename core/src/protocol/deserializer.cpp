@@ -99,24 +99,24 @@ coroutine::LifoTask<bool> Deserializer::process_can_field(FieldId field_id) {
     }
     consume_peeked();
 
-    if (can_data_length) {
-        const auto* can_data_bytes = co_await peek_bytes(can_data_length);
-        if (!can_data_bytes) [[unlikely]]
+    // A later peek may reuse the pending cache, so keep the payload and its
+    // timestamp in one window until the callback has consumed can_data.
+    const size_t tail_size = can_data_length + (has_timestamp ? sizeof(uint32_t) : 0);
+    if (tail_size) {
+        const auto* tail_bytes = co_await peek_bytes(tail_size);
+        if (!tail_bytes) [[unlikely]]
             co_return false;
-        data_view.can_data = std::span<const std::byte>{can_data_bytes, can_data_length};
+
+        data_view.can_data = std::span<const std::byte>{tail_bytes, can_data_length};
+        if (has_timestamp) {
+            const auto* ts_bytes = tail_bytes + can_data_length;
+            uint32_t ts;
+            std::memcpy(&ts, ts_bytes, sizeof(ts));
+            data_view.timestamp_us = ts;
+        }
         consume_peeked();
     } else {
         data_view.can_data = std::span<const std::byte>{};
-    }
-
-    if (has_timestamp) {
-        const auto* ts_bytes = co_await peek_bytes(sizeof(uint32_t));
-        if (!ts_bytes) [[unlikely]]
-            co_return false;
-        uint32_t ts;
-        std::memcpy(&ts, ts_bytes, sizeof(ts));
-        data_view.timestamp_us = ts;
-        consume_peeked();
     }
 
     co_return callback_.can_deserialized_callback(field_id, data_view);

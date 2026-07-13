@@ -1,6 +1,6 @@
 # HPM6E8Y EtherCAT Bridge Bring-up Notes
 
-Date: 2026-07-10
+Updated: 2026-07-13
 
 This note records the traps found while bringing up the `hpm6e8y` EtherCAT
 bridge on hardware without a schematic. Keep it close to the board port: several
@@ -20,6 +20,169 @@ EtherCAT link closing: 364428 cycles total, 0 wkc errors
 
 This means the EtherCAT physical link, ESC, PDO mapping, WKC, and protocol
 session are working.
+
+### 2026-07-13 IgH loss and latency validation
+
+Two host-side protocol bugs previously looked like transport or dual-core loss:
+
+1. The CAN deserializer exposed a payload span backed by its pending-byte
+   cache, then reused that cache while reading the following hardware
+   timestamp. When both pieces crossed input chunks, the timestamp replaced
+   the first four payload bytes. Captured bad values decoded exactly as board
+   uptime in microseconds. Payload and timestamp are now read with one
+   contiguous `peek_bytes()` window.
+2. The host treated every libusb receive completion as a complete protocol
+   datagram and discarded a field split at that boundary. USB bulk completions
+   are arbitrary slices of a reliable byte stream, especially with the
+   EtherCAT bridge's cross-core-ring shuttle. USB and EtherCAT reception now
+   retain partial deserializer state across callbacks.
+
+The USB transmit pool also applies backpressure when all 64 asynchronous
+transfers are in use. It no longer returns an empty buffer and silently omits a
+packet under load.
+
+Hardware results with CAN0 connected to CAN1 and CAN2 connected to CAN3, CAN-FD
+at 1 Mbit/s arbitration and 5 Mbit/s data phase:
+
+```text
+IgH, 12k frame/s/stream, 30 s:
+  352907 sent / 352907 received on each stream
+  gap=0 corrupt=0 reorder=0
+  1122973 EtherCAT cycles, 0 WKC errors
+
+IgH, 16k target frame/s/stream, 20 s:
+  312145 sent / 312145 received on each stream (~15.6k actual)
+  gap=0 corrupt=0 reorder=0
+  739822 EtherCAT cycles, 0 WKC errors
+
+IgH with SCHED_FIFO, 16k frame/s/stream, 12 s:
+  192000 sent / 192000 received on each stream
+  gap=0 corrupt=0 reorder=0, 0 WKC errors
+
+IgH with SCHED_FIFO, 18k frame/s/stream, 12 s:
+  216003 sent / 216003 received on each stream
+  gap=0 corrupt=0 reorder=0, 0 WKC errors
+
+USB, 16k target frame/s/stream, 20 s:
+  239359 sent / 239359 received on each stream (~12.0k actual)
+  gap=0 corrupt=0 reorder=0
+  80642 pacing slots skipped by non-realtime host scheduling
+
+USB with SCHED_FIFO, 18k frame/s/stream, 10 s:
+  180001 sent / 180001 received on each stream
+  gap=0 corrupt=0 reorder=0
+
+USB and IgH with SCHED_FIFO, 20k target frame/s/stream:
+  CAN0 plateaued near 19.4k frame/s
+  CAN2 plateaued near 19.8k frame/s
+  EtherCAT still reported 0 WKC errors and both transports reported 0 corruption
+```
+
+`missed pacing slots` are frames the stress generator never submitted after a
+scheduler delay or transport backpressure. They are not packets lost after
+submission; compare the explicit sent/received counters for that.
+
+The nearly identical 20k USB and IgH plateaus identify the physical CAN/TX
+path as the sustained-rate limit. A 20k command period is 50 us, while the
+observed frames occupy about 51.5 us on CAN0 and 50.5 us on CAN2 (the CAN ID and
+payload affect bit stuffing). Once the 32-element nonblocking MCAN TX FIFO is
+full, the firmware reports `downlink_buffer_full` and drops that command;
+EtherCAT and USB cannot add capacity to the CAN wire.
+
+The four-byte receive timestamp is not the sustained-rate bottleneck in the
+measured two-stream setup. A standard 8-byte CAN uplink field is 15 bytes with a
+timestamp and 11 bytes without one. At two 18k streams, timestamped uplink
+traffic is only 0.54 MB/s. Removing the timestamp reduces byte load by 26.7%
+and increases byte headroom by 36.4%, but it does not raise the approximately
+19.4-19.8k physical CAN ceiling.
+
+Do not extend that conclusion unchanged to four synchronized buses. Four
+timestamped fields occupy 60 bytes and therefore cross two 44-byte ARQ payload
+chunks; four fields without timestamps occupy exactly 44 bytes and fit in one.
+At four times 18k frame/s, the byte rates are 1.08 MB/s with timestamps and
+0.792 MB/s without them. The former has almost no margin against the measured
+full-duplex IgH byte-echo rate below. Thus timestamps are not the present
+two-bus loss cause, but removing or making them optional is useful if all four
+buses must run near 18k simultaneously. The gross PDO budget
+(`44 bytes * approximately 38 kHz = approximately 1.67 MB/s`) is not the same
+as sustained application-stream throughput.
+
+One 18k run showed 21-22 missing uplink fields near a five-second cycle-rate
+log, but a fresh 12-second run crossed two log points with `216003/216003` per
+stream. The transient has not been reproduced, so it cannot be attributed to
+logging as a confirmed root cause. Synchronous formatting and output still do
+not belong in a production real-time cycle thread; publish counters and log
+them from a lower-priority thread instead.
+
+Queue-free CAN0-to-CAN1 RTT with one CAN-FD frame in flight, the transport
+thread on isolated CPU 7 at `SCHED_FIFO 80`, and the sender on CPU 6 at
+`SCHED_FIFO 70`:
+
+```text
+USB (50000 samples): p50 125.0 us, p99 152.2 us, p99.9 209.5 us,
+  max 1111.1 us, 0 timeouts
+IgH (50000 samples): p50 129.8 us, p99 140.6 us, p99.9 150.9 us,
+  max 291.9 us, 0 timeouts, 0 WKC errors
+```
+
+Configure the sender's CPU affinity and `SCHED_FIFO` policy only after the board
+object has been constructed. Doing it before construction makes the SDK's
+250 ms keepalive thread inherit the sender's CPU and FIFO priority. The
+busy-waiting sender then starves that thread, the firmware's 1000 ms session
+lease expires after approximately 7.5k queue-free frames, and every later CAN
+command is ignored even though EtherCAT continues with zero WKC errors. This
+was a host benchmark scheduling bug, not CAN or EtherCAT loss.
+
+The measured IgH cycle rate was approximately 37 kHz, or a 27 us process-data
+period. The full CAN loopback RTT is several such scheduling/transport stages
+plus CAN wire time; moving ESC/SSC to core1 may reduce internal handoff cost,
+but it was not the cause of the observed corruption or loss.
+
+### 2026-07-13 transport-only USB versus IgH comparison
+
+The core1 byte-echo validation image isolates the host transport, core0 shuttle,
+cross-core rings and core1 handoff from the external CAN wiring. The same host
+tool and CPU placement were used for both modes: the I/O thread ran on CPU 7 at
+`SCHED_FIFO 80`, the sender was pinned to CPU 6, and one frame was in flight for
+the latency runs.
+
+```text
+44-byte frame (one ARQ payload chunk):
+  USB, 20 s: 233850/233850, corrupt 0
+    RTT p50 80.1 us, p99 110.9 us, p99.9 123.8 us, max 1019.7 us
+  IgH, 20 s: 252574/252574, corrupt 0, 0 WKC errors
+    RTT p50 78.2 us, p99 87.6 us, p99.9 109.6 us, max 135.3 us
+
+64-byte frame (two ARQ payload chunks):
+  USB, 30 s: 350541/350541, corrupt 0, RTT p50 80.1 us, p99 112.1 us
+  IgH, 30 s: 236916/236916, corrupt 0, 0 WKC errors,
+    RTT p50 131.8 us, p99 137.0 us
+
+44-byte frame, 64 in flight, 10 s:
+  USB: 360819/360819, 1550.4 KiB/s per direction, corrupt 0
+  IgH: 247928/247928, 1065.3 KiB/s per direction, corrupt 0, 0 WKC errors
+```
+
+The 44-byte result is the relevant single-PDO case: USB and IgH have essentially
+the same median, while IgH has the tighter tail. Crossing from 44 to 64 bytes
+adds approximately 54 us to the IgH median because the frame needs a second
+ARQ chunk; USB is not quantized by the EtherCAT PDO size. The transport-only
+results also survived USB to IgH to USB ownership changes with no reset and no
+missing bytes.
+
+An absolute one-way number cannot be recovered from these software timestamps:
+the host steady clock and the board clock are not synchronized. Under the
+explicit assumption that downlink and uplink are symmetric, half of the
+44-byte RTT gives a median one-way estimate of 40.1 us for USB and 39.1 us for
+IgH; the p99 estimates are 55.5 us and 43.8 us respectively. Use synchronized
+hardware clocks or a scope/logic analyzer for ground-truth one-way latency.
+
+The USB runtime product string is `RMCS EtherCAT Bridge v<version>`, not
+`RMCS Agent v<version>`. The host scanner now accepts that exact identity only
+for HPM6E8Y PID `0xA904`, while still requiring the exact protocol version.
+USB stress and latency tools no longer use `dangerously_skip_version_checks`.
+After restoring the normal core1 image, the default USB API completed the real
+protocol session handshake, confirming both cross-core directions were live.
 
 `done: 0 CAN frames, 0 UART bytes received` from `ecat_board_test` does not mean
 EtherCAT failed. That example sends CAN0 and UART0 traffic and counts what the
@@ -206,6 +369,11 @@ The firmware drives ESC link state through `GPR_CFG2`:
 
 Do not force both ports up. With one cable connected, a false-up empty port can
 prevent the ESC from closing the loop and the master may not receive frames.
+
+Normal firmware polls both PHY BMSR link bits every 100 ms and refreshes the GPR
+state. A startup-only poll leaves the ESC with stale link state when the cable is
+inserted after boot or after a transient disconnect, making recovery appear to
+require a power cycle.
 
 ### 8. Force 100M MII mode at startup
 

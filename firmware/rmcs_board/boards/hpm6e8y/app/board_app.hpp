@@ -25,6 +25,9 @@ namespace librmcs::firmware::board {
 // LED. The EtherCAT side (ESC, core0) is configured in ../board.c and does not
 // appear here.
 
+// USB0 uses the HPM6E80 high-speed device controller and PHY.
+bool usb_use_high_speed();
+
 // CAN ports in logical order, mapped to the four physical silk ports CAN0..CAN3
 // (= MCAN0..MCAN3). Pin routing recovered by the CAN pin scanner and recorded in
 // CAN_PIN_REVERSE_ENGINEERING.md:

@@ -24,15 +24,28 @@ public:
         return dfu;
     }
 
-    static uint32_t get_timeout_ms(uint8_t alt, uint8_t state) {
+    uint32_t get_timeout_ms(uint8_t alt, uint8_t state) const {
         if (alt != kDfuAltFlash)
             return 0U;
 
-        if (state == DFU_DNBUSY)
-            return 1U;
+        if (state == DFU_DNBUSY) {
+            // TinyUSB invokes download() after acknowledging GETSTATUS. Most
+            // blocks only fill the RAM sector buffer, but every fourth block
+            // synchronously erases and programs a 4 KiB flash sector. Give the
+            // host an honest poll interval for those operations so it does not
+            // start another control transfer while the ROM flash call is busy.
+            if (!session_started_)
+                return kSectorCommitTimeoutMs;
+
+            const uint32_t sector_offset = downloaded_size_ % flash::kFlashSectorSize;
+            if (sector_offset + flash::Writer::kTransferBlockSize >= flash::kFlashSectorSize)
+                return kSectorCommitTimeoutMs;
+
+            return kBufferedBlockTimeoutMs;
+        }
 
         if (state == DFU_MANIFEST)
-            return 100U;
+            return kManifestTimeoutMs;
 
         return 0U;
     }
@@ -140,6 +153,10 @@ public:
 private:
     static constexpr uint8_t kDfuAltFlash = 0U;
     static constexpr uint32_t kResetDelayMs = 1500U;
+    static constexpr uint32_t kBufferedBlockTimeoutMs = 1U;
+    static constexpr uint32_t kSectorCommitTimeoutMs = 100U;
+    static constexpr uint32_t kManifestTimeoutMs = 250U;
+    static_assert(flash::Writer::kTransferBlockSize <= flash::kFlashSectorSize);
 
     Dfu() = default;
 

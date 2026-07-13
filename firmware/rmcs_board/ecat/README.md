@@ -47,12 +47,13 @@ CPU0 (EtherCAT 域)                     CPU1 (现场总线域)
   该 ISR 与刷新路径经 core0 定制链接脚本落在 ILM,免 XIP 取指抖动。host 侧
   soem transport 对称地在交付回调后留 ~3us 响应窗口,再省一个周期。
 
-## USB 协处传输(EtherCAT + USB 同核共存)
+## USB 协处传输(同固件双接口,数据面互斥)
 
 core0 除了 ESC 还挂着一个 USB 设备(原本只做 DFU 刷机)。因为跨核环
 (`down`/`up`)承载的是**与传输无关的原始协议字节流**,给这个 USB 设备再加一个
 vendor bulk 数据接口、直接对接同一对环,就得到"一个固件、两种传输"——host 用
-EtherCAT 或 USB 都能跟 core1 的 CAN/UART 说话,**代码全在 core0,core1 一行不动**。
+EtherCAT 或 USB 都能跟 core1 的 CAN/UART 说话,**但两个 host 数据客户端不能并发**。
+代码全在 core0,core1 一行不动。
 
 ```
               core0
@@ -61,23 +62,26 @@ EtherCAT 或 USB 都能跟 core1 的 CAN/UART 说话,**代码全在 core0,core1 
   USB host --(vendor bulk EP1)-------/
 ```
 
-- **USB 不需要 ARQ**:bulk 本身可靠有序,所以 USB 路径只是把 bulk 字节和环对拷
-  (`usb_runtime.cpp` 的 `pump_vendor_data`,在 USB ISR 内紧跟 `tud_task()` 执行,
-  所有 tinyusb FIFO 访问都在同一上下文,无重入)。
-- **仲裁(谁占用用谁)**:同一对环同一时刻只由一种传输驱动。host 在 vendor OUT 上
+- **USB 不需要 ARQ**:bulk 本身可靠有序,所以 USB 路径只是把 bulk 字节和环对拷。
+  USB ISR 运行 `tud_task()` 保障枚举/DFU;vendor 数据 pump 在 core0 主循环运行,并在
+  访问 tinyusb FIFO 时屏蔽 USB IRQ,确保只有一个数据 pump 上下文。
+- **仲裁(谁占用用谁,不是同时使用)**:同一对环同一时刻只由一种传输驱动。仅插 USB
+  线或仅枚举不会抢占数据面;host 在 vendor OUT 上
   发数据 → `tud_vendor_rx_cb` 置 USB active,ESC 的 PDO 钩子随即变惰性(忽略输出、
   输入发空闲 chunk);USB 拔出(`tud_umount_cb`)或 EtherCAT 进入 OP
   (`rmcs_pd_reset`)则交还给 EtherCAT。切换时 reset ARQ 端点并 bump link epoch,
-  core1 据此重启会话。见 `src/rmcs_pd.h` 的 `rmcs_pd_set_usb_active` 等。
+  core1 据此重启会话。切换前应先退出旧 host 程序:若 USB 和 IgH 数据程序并发,
+  USB keepalive 会反复发送 vendor OUT 并重新取得 ownership,EtherCAT 会看到空闲 PDO。
+  见 `src/rmcs_pd.h` 的 `rmcs_pd_set_usb_active` 等。
 - **复合 USB 描述符**:vendor(接口 0,bulk EP `0x01`/`0x81`,HS 512B)+ DFU-RT
   (接口 1)。接口 0 = vendor 与 host `transport::usb`(认领接口 0)及独立 USB app
   的布局一致;**DFU-RT 保留**,所以任何镜像都能通过 DFU 刷回,不会变砖。
 - host 侧:`host/include/librmcs/board/rmcs_board_hpm6e8y.hpp`(USB,`a11c:a904`,
   4 路 CAN)+ 例程 `host/examples/usb_canfd_stress.cpp`,与 `ecat_canfd_stress`
   同校验,可直接对比 USB vs EtherCAT。
-- **状态**:代码完成并通过 RISC-V 工具链语法/类型检查;**尚未上板验证**。重点复核项:
-  HS 下 vendor 枚举/端点、`pump` 在纯上行空闲时的唤醒(当前依赖回环双向流量频繁触发
-  USB ISR;若纯上行场景卡顿,需引入 SOF 或跨核门铃触发)、以及仲裁切换的时序。
+- **状态**:已上板验证 USB→IgH→USB 和 IgH→USB→IgH 切换。正常协议 CAN-FD
+  回环中,USB 与 IgH 各 50000 次 queue-free RTT 均为 50000/50000,无超时/损坏;
+  IgH 为 0 WKC error。DFU runtime 和正常 USB session 也已验证。
 
 ## 构建前提
 

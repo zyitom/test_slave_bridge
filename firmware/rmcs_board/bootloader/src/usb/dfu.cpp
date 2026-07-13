@@ -21,7 +21,7 @@ SDK_DECLARE_EXT_ISR_M(IRQn_USB0, rmcs_usb0_isr)
 void rmcs_usb0_isr(void) { dcd_int_handler(0); }
 
 uint32_t tud_dfu_get_timeout_cb(uint8_t alt, uint8_t state) {
-    return Dfu::get_timeout_ms(alt, state);
+    return Dfu::instance().get_timeout_ms(alt, state);
 }
 
 void tud_dfu_download_cb(uint8_t alt, uint16_t block_num, uint8_t const* data, uint16_t length) {

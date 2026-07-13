@@ -21,6 +21,8 @@
 #include "rmcs_pd.h"
 #include "usb_runtime.h"
 
+#define RMCS_ECAT_PHY_LINK_POLL_INTERVAL_MS (100U)
+
 int main(void) {
     hpm_stat_t stat;
 
@@ -62,9 +64,21 @@ int main(void) {
     APPL_GenerateMapping(&nPdInputSize, &nPdOutputSize);
 
     bRunApplication = TRUE;
+    uint32_t last_phy_link_poll_ms = HW_GetTimer();
     while (bRunApplication == TRUE) {
         rmcs_usb_runtime_task();
         MainLoop();
+
+        /* The internal PHY link signals reach the ESC through software-driven
+         * GPR bits, not dedicated LINK pins. Refresh them throughout runtime so
+         * cable insertion after boot and transient link loss recover without a
+         * power cycle. The PDI IRQ preempts this thread-context MDIO poll. */
+        const uint32_t now_ms = HW_GetTimer();
+        if ((uint32_t)(now_ms - last_phy_link_poll_ms)
+            >= RMCS_ECAT_PHY_LINK_POLL_INTERVAL_MS) {
+            last_phy_link_poll_ms = now_ms;
+            (void)board_ecat_refresh_internal_phy_link();
+        }
     }
 
     return 0;

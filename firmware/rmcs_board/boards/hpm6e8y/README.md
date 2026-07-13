@@ -28,7 +28,7 @@
 ## 背景
 
 - **芯片**: HPM6E00（USB PID `34b7:0006`，Boot ROM 模式）
-- **板子**: hpm6e00evk 等效硬件，使用**外部 XPI NOR Flash**（16MB）
+- **板子**: hpm6e00evk 等效硬件，使用**外部 XPI NOR Flash**（4MB）
 - **固件**: 来自 `rmcs_board/ecat` 的 EtherCAT Bridge 双核应用
 - **原始 board**: `hpm6e80ivm1`（FCFG `0xfcf90001`，option 0）
 - **新 board**: `hpm6e8y`（FCFG `0xfcf90002`，option 1）
@@ -251,7 +251,7 @@ write-memory 0x10000 0x80020000 demo.bin
 
 芯片重新上电后，用 `lsusb` 检查：
 - `34b7:0006` → Boot ROM 模式，**启动失败**，回退 ISP
-- `34b7:0A904`（或你在 CMakeLists.txt 设的 PID）→ **启动成功**，bootloader 在运行
+- `a11c:a904`（或你在 CMakeLists.txt 设的 PID）→ **启动成功**，bootloader 在运行
 
 ---
 
@@ -339,8 +339,8 @@ diff <(xxd /tmp/verify.bin) \
 
 重新上电后检查 USB 设备：
 ```bash
-lsusb | grep 34b7
-# 期望: 34b7:0A904 (bootloader DFU 模式)
+lsusb | grep -Ei '34b7:0006|a11c:a904'
+# 期望: a11c:a904 (bootloader DFU 模式)
 # 失败: 34b7:0006 (Boot ROM，说明启动失败回退 ISP)
 ```
 

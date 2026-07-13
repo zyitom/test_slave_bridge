@@ -1,89 +1,132 @@
 #!/usr/bin/env bash
 #
-# Flash the rmcs_ecat_bridge (hpm6e80ivm1) application over USB DFU.
+# Build and flash the HPM6E8Y EtherCAT bridge application over USB DFU.
 #
-# The single .dfu file contains BOTH cores: core1's program is embedded in the
-# core0 image as a C array and loaded into core1's ILM at boot, so the dual-core
-# chip flashes exactly like the single-core boards. Prerequisite: the DFU
-# bootloader is on the board (one-time, see ./flash-ecat-bootloader.sh). Put the
-# device into DFU mode by powering up with no valid app, or by holding the user
-# key KEYA (PB24) through reset; a running app that exposes the DFU runtime
-# interface is detached automatically.
+# The DFU image contains core0 plus the embedded core1 image. The bootloader
+# writes only the application slot at 0x80020000 and commits its ready metadata
+# after validating the complete image.
 #
 # Usage:
-#   ./flash-ecat.sh                   # builds the release preset, then flashes
-#   PRESET=debug ./flash-ecat.sh      # debuggable (-O0/-Og) image -- NOTE: the
-#                                     # PDI ISR and SSC stack get several times
-#                                     # slower; never measure latency on debug
-#   LOOPBACK=1 ./flash-ecat.sh        # P1 bring-up image (core1 = lossless echo,
-#                                     # pairs with host/build/examples/ecat_stream_latency)
+#   ./flash-ecat.sh
+#   BUILD_ONLY=1 ./flash-ecat.sh
+#   PRESET=debug ./flash-ecat.sh
+#   LOOPBACK=1 ./flash-ecat.sh
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ECAT_DIR="$SCRIPT_DIR/firmware/rmcs_board/ecat"
-# The image name and its baked-in USB id both track the selected board
-# (rmcs_ecat_bridge_<board>.dfu, PID per boards/<board>/CMakeLists.txt), so
-# derive both from the produced file AFTER the build rather than hard-coding a
-# board -- otherwise switching BOARD in the CMake cache silently breaks this.
-OUTPUT_DIR="$ECAT_DIR/build/rmcs_ecat_core0/output"
+BOARD="${BOARD:-hpm6e8y}"
+BUILD_DIR="${BUILD_DIR:-$ECAT_DIR/build_${BOARD}}"
+OUTPUT_DIR="$BUILD_DIR/rmcs_ecat_core0/output"
+PRESET="${PRESET:-release}"
+BUILD_ONLY="${BUILD_ONLY:-0}"
+
+if [[ -z "${GNURISCV_TOOLCHAIN_PATH:-}" ]]; then
+    for candidate in \
+        "$HOME/3rd_party/rv32imac_zicsr_zifencei_multilib_b_ext-linux" \
+        "$HOME/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux"; do
+        if [[ -x "$candidate/bin/riscv32-unknown-elf-gcc" ]]; then
+            export GNURISCV_TOOLCHAIN_PATH="$candidate"
+            break
+        fi
+    done
+fi
+
+: "${GNURISCV_TOOLCHAIN_PATH:?GNURISCV_TOOLCHAIN_PATH must point to the RISC-V toolchain root}"
+if [[ ! -x "$GNURISCV_TOOLCHAIN_PATH/bin/riscv32-unknown-elf-gcc" ]]; then
+    echo "error: riscv32-unknown-elf-gcc not found under $GNURISCV_TOOLCHAIN_PATH/bin" >&2
+    exit 1
+fi
+export PATH="$GNURISCV_TOOLCHAIN_PATH/bin:$PATH"
+
+command -v dfu-suffix >/dev/null 2>&1 || {
+    echo "error: dfu-suffix not found (dfu-util >= 0.11 is required)" >&2
+    exit 1
+}
+
+LOOPBACK_FLAG="OFF"
+if [[ "${LOOPBACK:-0}" != "0" ]]; then
+    LOOPBACK_FLAG="ON"
+fi
+
+echo ">> Building rmcs_ecat core1+core0 (preset: $PRESET, BOARD=$BOARD, loopback: $LOOPBACK_FLAG)"
+cmake --preset "$PRESET" -S "$ECAT_DIR" -B "$BUILD_DIR" \
+    -DBOARD="$BOARD" \
+    -DBOARD_SEARCH_PATH="$SCRIPT_DIR/firmware/rmcs_board/boards" \
+    -DRMCS_ECAT_CORE1_LOOPBACK="$LOOPBACK_FLAG"
+# Force a core1 relink so sec_core_img.c always matches the selected loopback
+# variant even when an existing nested build cache is reused.
+touch "$ECAT_DIR/core1/src/main.cpp"
+cmake --build "$BUILD_DIR" --target rmcs_ecat_core0
+
+DFU_IMAGE="$OUTPUT_DIR/rmcs_ecat_bridge_${BOARD}.dfu"
+if [[ ! -f "$DFU_IMAGE" ]]; then
+    echo "error: $DFU_IMAGE not found after the build" >&2
+    exit 1
+fi
+
+# dfu-suffix validates the standard 16-byte suffix CRC. Validate the project
+# ImageHash suffix immediately before it as well: magic + SHA-256(payload).
+DFU_SUFFIX="$(dfu-suffix -c "$DFU_IMAGE" 2>&1)"
+DFU_SIZE="$(stat -c '%s' "$DFU_IMAGE")"
+readonly PROJECT_SUFFIX_SIZE=36
+readonly DFU_SUFFIX_SIZE=16
+if ((DFU_SIZE <= PROJECT_SUFFIX_SIZE + DFU_SUFFIX_SIZE)); then
+    echo "error: DFU image is too small to contain both required suffixes" >&2
+    exit 1
+fi
+PAYLOAD_SIZE=$((DFU_SIZE - PROJECT_SUFFIX_SIZE - DFU_SUFFIX_SIZE))
+HASH_MAGIC="$(od -An -tx4 -j "$PAYLOAD_SIZE" -N4 "$DFU_IMAGE" | tr -d ' \n')"
+EXPECTED_HASH="$(
+    dd if="$DFU_IMAGE" bs=1 skip=$((PAYLOAD_SIZE + 4)) count=32 status=none \
+        | od -An -tx1 -v | tr -d ' \n'
+)"
+ACTUAL_HASH="$(head -c "$PAYLOAD_SIZE" "$DFU_IMAGE" | sha256sum | awk '{print $1}')"
+if [[ "$HASH_MAGIC" != "48415348" || "$EXPECTED_HASH" != "$ACTUAL_HASH" ]]; then
+    echo "error: invalid ImageHash suffix in $DFU_IMAGE" >&2
+    exit 1
+fi
+
+DFU_VID="$(printf '%s\n' "$DFU_SUFFIX" \
+    | sed -n 's/.*Vendor ID:[^0-9a-fA-Fx]*0x\([0-9a-fA-F]*\).*/\1/p')"
+DFU_PID="$(printf '%s\n' "$DFU_SUFFIX" \
+    | sed -n 's/.*Product ID:[^0-9a-fA-Fx]*0x\([0-9a-fA-F]*\).*/\1/p')"
+if [[ -z "$DFU_VID" || -z "$DFU_PID" ]]; then
+    echo "error: could not read USB IDs from $DFU_IMAGE" >&2
+    exit 1
+fi
+DFU_ID="$(printf '0x%s:0x%s' "${DFU_VID,,}" "${DFU_PID,,}")"
+
+echo ">> Verified $DFU_IMAGE"
+echo "   payload: $PAYLOAD_SIZE bytes"
+echo "   SHA-256: $ACTUAL_HASH"
+echo "   USB ID: $DFU_ID"
+
+if [[ "$BUILD_ONLY" != "0" ]]; then
+    echo ">> BUILD_ONLY requested; no device was written"
+    exit 0
+fi
 
 command -v dfu-util >/dev/null 2>&1 || {
     echo "error: dfu-util not found (need >= 0.11)" >&2
     exit 1
 }
-
-PRESET="${PRESET:-release}"
-# Default to the known local toolchain install when the env var is not set.
-DEFAULT_TOOLCHAIN="$HOME/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux"
-if [[ -z "${GNURISCV_TOOLCHAIN_PATH:-}" && -d "$DEFAULT_TOOLCHAIN" ]]; then
-    export GNURISCV_TOOLCHAIN_PATH="$DEFAULT_TOOLCHAIN"
-fi
-: "${GNURISCV_TOOLCHAIN_PATH:?GNURISCV_TOOLCHAIN_PATH must point to the RISC-V toolchain root}"
-# Always pass the flag explicitly so a previous run's cache value is reset.
-LOOPBACK_FLAG="OFF"
-[[ "${LOOPBACK:-0}" != "0" ]] && LOOPBACK_FLAG="ON"
-
-echo ">> Building rmcs_ecat core1+core0 (preset: $PRESET, loopback: $LOOPBACK_FLAG)"
-cmake --preset "$PRESET" -S "$ECAT_DIR" \
-    -DRMCS_ECAT_CORE1_LOOPBACK="$LOOPBACK_FLAG"
-# Force a core1 relink so the embedded sec_core_img.c always matches the
-# requested variant (the emit step only runs when core1 itself relinks).
-touch "$ECAT_DIR/core1/src/main.cpp"
-cmake --build "$ECAT_DIR/build" --target rmcs_ecat_core0
-
-shopt -s nullglob
-DFU_IMAGES=("$OUTPUT_DIR"/rmcs_ecat_bridge_*.dfu)
-shopt -u nullglob
-if [[ ${#DFU_IMAGES[@]} -eq 0 ]]; then
-    echo "error: no rmcs_ecat_bridge_*.dfu found in $OUTPUT_DIR after the build." >&2
+command -v lsusb >/dev/null 2>&1 || {
+    echo "error: lsusb not found" >&2
     exit 1
-elif [[ ${#DFU_IMAGES[@]} -gt 1 ]]; then
-    echo "error: multiple .dfu images in $OUTPUT_DIR; clean the build dir:" >&2
-    printf '   %s\n' "${DFU_IMAGES[@]}" >&2
+}
+
+MATCHING_DEVICES="$(lsusb 2>/dev/null \
+    | grep -Eic "ID ${DFU_VID}:${DFU_PID}( |$)" || true)"
+if [[ "$MATCHING_DEVICES" != "1" ]]; then
+    echo "error: expected exactly one $DFU_ID USB device, found $MATCHING_DEVICES" >&2
+    echo "       connect USB0 and put the board in app runtime or DFU mode" >&2
     exit 1
 fi
-DFU_IMAGE="${DFU_IMAGES[0]}"
 
-# Read the VENDOR:PRODUCT the board baked into the DFU suffix, so the -d match
-# always follows the actual board instead of a hard-coded pair.
-DFU_SUFFIX="$(dfu-suffix -c "$DFU_IMAGE" 2>/dev/null)"
-DFU_VID="$(printf '%s\n' "$DFU_SUFFIX" | sed -n 's/.*Vendor ID:[^0-9a-fA-Fx]*0x\([0-9a-fA-F]*\).*/\1/p')"
-DFU_PID="$(printf '%s\n' "$DFU_SUFFIX" | sed -n 's/.*Product ID:[^0-9a-fA-Fx]*0x\([0-9a-fA-F]*\).*/\1/p')"
-if [[ -z "$DFU_VID" || -z "$DFU_PID" ]]; then
-    echo "error: could not read the USB id from $DFU_IMAGE's DFU suffix." >&2
-    exit 1
-fi
-DFU_ID="$(printf '0x%s:0x%s' "${DFU_VID,,}" "${DFU_PID,,}") " # alt 0 = Internal Flash
-DFU_ID="${DFU_ID// /}"
-
-echo ">> ecat bridge image (core0 + embedded core1): $DFU_IMAGE"
-echo ">> DFU devices currently visible (matching $DFU_ID):"
-dfu-util -l 2>/dev/null | grep -i "${DFU_VID,,}:${DFU_PID,,}" || \
-    echo "   (none in DFU mode yet; dfu-util will try to detach a running app)"
-
-echo ">> Flashing needs root to access the DFU USB device; you may be asked for your password."
+echo ">> Flashing application slot over USB DFU"
+echo "   Keep power stable until dfu-util finishes the manifest phase."
 sudo dfu-util -d "$DFU_ID" -a 0 -D "$DFU_IMAGE"
 
-echo ">> Done. The bootloader verifies the image and resets into the app."
-echo "   (A 'lost device' / status-read error from dfu-util at the end is normal.)"
+echo ">> DFU download completed; the bootloader will validate and cold-reset into the app"

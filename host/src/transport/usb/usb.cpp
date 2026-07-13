@@ -1,4 +1,5 @@
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -69,9 +70,10 @@ public:
 
     ~Usb() override {
         {
-            const std::scoped_lock guard{transmit_transfer_push_mutex_};
+            const std::scoped_lock guard{transmit_transfer_mutex_};
             stop_handling_events_.store(true, std::memory_order::relaxed);
         }
+        transmit_transfer_cv_.notify_all();
         destroy_free_transmit_transfers();
 
         libusb_release_interface(libusb_device_handle_, kTargetInterface);
@@ -89,12 +91,17 @@ public:
     std::unique_ptr<TransportBuffer> acquire_transmit_buffer() noexcept override {
         TransferWrapper* transfer = nullptr;
         {
-            const std::scoped_lock guard{transmit_transfer_pop_mutex_};
+            std::unique_lock guard{transmit_transfer_mutex_};
+            transmit_transfer_cv_.wait(guard, [this]() {
+                return stop_handling_events_.load(std::memory_order::relaxed)
+                    || free_transmit_transfers_.readable() != 0;
+            });
+            if (stop_handling_events_.load(std::memory_order::relaxed))
+                return nullptr;
             free_transmit_transfers_.pop_front(
                 [&transfer](TransferWrapper* value) noexcept { transfer = value; });
         }
-        if (!transfer)
-            return nullptr;
+        core::utility::assert_debug(transfer != nullptr);
 
         return std::unique_ptr<TransportBuffer>{transfer};
     }
@@ -124,11 +131,13 @@ public:
     void release_transmit_buffer(std::unique_ptr<TransportBuffer> buffer) override {
         core::utility::assert_debug(static_cast<bool>(buffer));
 
-        const std::scoped_lock guard{transmit_transfer_push_mutex_};
-
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast)
-        auto* wrapper = static_cast<TransferWrapper*>(buffer.release());
-        free_transmit_transfers_.emplace_back(wrapper);
+        {
+            const std::scoped_lock guard{transmit_transfer_mutex_};
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast)
+            auto* wrapper = static_cast<TransferWrapper*>(buffer.release());
+            free_transmit_transfers_.emplace_back(wrapper);
+        }
+        transmit_transfer_cv_.notify_one();
     }
 
     void receive(std::function<void(std::span<const std::byte>)> callback) override {
@@ -277,7 +286,7 @@ private:
 
     void usb_transmit_complete_callback(TransferWrapper* wrapper) {
         // Share mutex with teardown so destructor can block callbacks before draining the queue
-        const std::scoped_lock guard{transmit_transfer_push_mutex_};
+        const std::scoped_lock guard{transmit_transfer_mutex_};
 
         if (stop_handling_events_.load(std::memory_order::relaxed)) [[unlikely]] {
             wrapper->destroy();
@@ -286,6 +295,7 @@ private:
         }
 
         free_transmit_transfers_.emplace_back(wrapper);
+        transmit_transfer_cv_.notify_one();
     }
 
     void usb_receive_complete_callback(libusb_transfer* transfer) {
@@ -356,7 +366,8 @@ private:
     std::atomic<bool> stop_handling_events_ = false;
 
     utility::RingBuffer<TransferWrapper*> free_transmit_transfers_;
-    std::mutex transmit_transfer_pop_mutex_, transmit_transfer_push_mutex_;
+    std::mutex transmit_transfer_mutex_;
+    std::condition_variable transmit_transfer_cv_;
 
     std::function<void(std::span<const std::byte>)> receive_callback_;
 };

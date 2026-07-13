@@ -1,25 +1,26 @@
-// P1 validation tool for the rmcs_board EtherCAT stream bridge
-// (firmware/rmcs_board/ecat): the core1 firmware echoes the byte stream
-// losslessly, so this tool verifies stream integrity end to end (ESC, SSC,
-// ARQ, cross-core rings, dual-core boot) and measures round-trip latency and
-// throughput of the stream-over-PDO link.
+// P1 validation tool for the rmcs_board bridge loopback firmware: core1 echoes
+// the byte stream losslessly, so this tool verifies stream integrity end to
+// end and measures round-trip latency and throughput over either USB or
+// EtherCAT. Both modes include the cross-core rings and dual-core handoff;
+// EtherCAT additionally includes ESC, SSC and stream-over-PDO ARQ.
 //
 // Build:  cmake -DLIBRMCS_ENABLE_SOEM=ON ... (see host/CMakeLists.txt)
-// Run:    sudo ./ecat_stream_latency <interface> [seconds] [pin_core] [inflight]
+// Run:    sudo ./ecat_stream_latency usb [seconds] [pin_core] [inflight] [frame_bytes]
+//         sudo env RMCS_ECAT_BACKEND=igh ./ecat_stream_latency
+//             <interface> [seconds] [pin_core] [inflight] [frame_bytes]
 //
-// pin_core, if given (>= 0), pins the EtherCAT busy-poll cycle thread (the one
-// timestamping receives) to that CPU core via thread_setup, cutting the
-// scheduling-preemption jitter that shows up as tail latency. Pair it with an
-// isolcpus/nohz_full-isolated core for the full effect. The cycle thread also
-// requests SCHED_FIFO unconditionally (harmless no-op without privileges).
+// pin_core, if given (>= 0), pins the transport I/O thread (the one timestamping
+// receives) to that CPU core via thread_setup, cutting the scheduling-preemption
+// jitter that shows up as tail latency. The thread also requests SCHED_FIFO
+// unconditionally (harmless no-op without privileges).
 // The SENDER (main) thread busy-spins too; for the last microseconds pin it
 // on the command line to a second isolated core, e.g.:
 //   sudo taskset -c 14 ./ecat_stream_latency enp44s0 10 15
 //
 // inflight (default 1) is the number of unacknowledged frames kept in the
 // pipe: 1 measures pure link round-trip latency; larger values measure
-// throughput-under-load instead, because frames queue behind the
-// 124-byte-per-exchange stop-and-wait ARQ and their RTT includes queueing.
+// throughput-under-load instead, because frames queue in the transport (and,
+// for EtherCAT, behind the 44-byte-per-cycle ARQ) and their RTT includes queueing.
 //
 // Every frame carries a monotonic sequence number and the send timestamp; the
 // receive path checks bytes exactly and reports an RTT percentile summary.
@@ -50,7 +51,9 @@
 
 namespace {
 
-constexpr std::size_t kFrameSize = 64; // representative protocol frame size
+constexpr std::size_t kDefaultFrameSize = 64;
+constexpr std::size_t kMinimumFrameSize = 16; // sequence plus send timestamp
+constexpr auto kDrainTimeout = std::chrono::seconds{2};
 
 struct Stats {
     std::vector<double> rtts_us;
@@ -74,12 +77,25 @@ double percentile(const std::vector<double>& sorted, double p) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::println(stderr, "usage: {} <interface> [seconds] [pin_core] [inflight]", argv[0]);
+        std::println(
+            stderr,
+            "usage: {} <usb|interface> [seconds] [pin_core] [inflight] [frame_bytes]",
+            argv[0]);
         return 1;
     }
     const int duration_s = argc > 2 ? std::atoi(argv[2]) : 10;
     const int pin_core = argc > 3 ? std::atoi(argv[3]) : -1;
     const std::uint64_t inflight = argc > 4 ? std::strtoull(argv[4], nullptr, 10) : 1;
+    const std::size_t frame_size =
+        argc > 5 ? static_cast<std::size_t>(std::strtoull(argv[5], nullptr, 10))
+                 : kDefaultFrameSize;
+    if (duration_s <= 0 || inflight == 0 || frame_size < kMinimumFrameSize
+        || frame_size > librmcs::core::protocol::kProtocolBufferSize) {
+        std::println(
+            stderr, "seconds/inflight must be positive and frame_bytes must be in [{}, {}]",
+            kMinimumFrameSize, librmcs::core::protocol::kProtocolBufferSize);
+        return 1;
+    }
 
     using namespace librmcs::host;
     auto options = librmcs::board::bind_advanced_options([pin_core]() noexcept {
@@ -98,13 +114,17 @@ int main(int argc, char** argv) {
         if (sched_setaffinity(0, sizeof(set), &set) == 0)
             std::println("cycle thread: pinned to CPU {}", pin_core);
     });
-    // Backend selection. The tool builds against whichever EtherCAT backends
-    // the SDK was compiled with (SOEM and/or IgH); pick at run time with
-    // RMCS_ECAT_BACKEND=soem|igh (default: igh if available, else soem). For
-    // IgH, argv[1] is only an advisory interface hint (the master is chosen by
-    // ethercat.conf); for SOEM it is the raw interface bound with CAP_NET_RAW.
     std::unique_ptr<transport::Transport> link;
-    {
+    std::string_view transport_name;
+    if (std::string_view{argv[1]} == "usb") {
+        constexpr uint16_t kUsbVendorId = 0xA11C;
+        constexpr uint16_t kHpm6e8yUsbProductId = 0xA904;
+        link = transport::usb::create_transport(kUsbVendorId, kHpm6e8yUsbProductId, {}, options);
+        transport_name = "USB";
+    } else {
+        // The tool builds against whichever EtherCAT backends the SDK enables.
+        // IgH selects the master through ethercat.conf; argv[1] is an advisory
+        // interface hint retained for parity with SOEM.
         const char* backend_env = std::getenv("RMCS_ECAT_BACKEND");
 #if defined(EXAMPLE_HAVE_IGH)
         const std::string_view backend = backend_env ? backend_env : "igh";
@@ -123,13 +143,14 @@ int main(int argc, char** argv) {
             std::println(stderr, "unknown or unavailable EtherCAT backend \"{}\"", backend);
             return 1;
         }
-        std::println("EtherCAT backend: {}", backend);
+        transport_name = backend == "igh" ? "EtherCAT (IgH)" : "EtherCAT (SOEM)";
     }
+    std::println("transport: {}", transport_name);
 
     Stats stats;
     std::atomic<std::uint64_t> acked{0};
     std::uint64_t expected_seq = 0;
-    std::byte reassembly[kFrameSize];
+    std::vector<std::byte> reassembly(frame_size);
     std::size_t reassembled = 0;
 
     // Warm-up: the first RTT samples include ARQ start-up, cold caches and NIC
@@ -144,16 +165,16 @@ int main(int argc, char** argv) {
         // The stream has no framing of its own here; frames are fixed-size.
         for (const std::byte b : data) {
             reassembly[reassembled++] = b;
-            if (reassembled < kFrameSize)
+            if (reassembled < frame_size)
                 continue;
             reassembled = 0;
 
             std::uint64_t seq = 0;
             std::int64_t t_send = 0;
-            std::memcpy(&seq, reassembly, sizeof(seq));
-            std::memcpy(&t_send, reassembly + 8, sizeof(t_send));
+            std::memcpy(&seq, reassembly.data(), sizeof(seq));
+            std::memcpy(&t_send, reassembly.data() + 8, sizeof(t_send));
             bool ok = seq == expected_seq;
-            for (std::size_t i = 16; ok && i < kFrameSize; i++)
+            for (std::size_t i = 16; ok && i < frame_size; i++)
                 ok = reassembly[i] == static_cast<std::byte>(seq + i);
             if (!ok) {
                 stats.corrupt++;
@@ -163,18 +184,19 @@ int main(int argc, char** argv) {
             }
             expected_seq = seq + 1;
             stats.frames++;
-            stats.bytes += kFrameSize;
+            stats.bytes += frame_size;
             acked.fetch_add(1, std::memory_order_relaxed);
         }
     });
 
     std::println(
-        "streaming {}-byte frames for {} s ({} in flight)...", kFrameSize, duration_s, inflight);
+        "streaming {}-byte frames over {} for {} s ({} in flight)...", frame_size,
+        transport_name, duration_s, inflight);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(duration_s);
     std::uint64_t seq = 0;
     while (std::chrono::steady_clock::now() < deadline) {
         // Bound the number of unacknowledged frames: 1 = pure RTT, more =
-        // queueing on top of the stop-and-wait ARQ (see the header comment).
+        // queueing on top of the transport and ARQ (see the header comment).
         // Busy-spin (no yield): yield() parks this thread for a scheduler
         // quantum, and that wake-up latency lands INSIDE the next frame's
         // RTT -- it measurably added whole poll cycles per frame.
@@ -187,25 +209,34 @@ int main(int argc, char** argv) {
         const std::int64_t t_send = std::chrono::steady_clock::now().time_since_epoch().count();
         std::memcpy(span.data(), &seq, sizeof(seq));
         std::memcpy(span.data() + 8, &t_send, sizeof(t_send));
-        for (std::size_t i = 16; i < kFrameSize; i++)
+        for (std::size_t i = 16; i < frame_size; i++)
             span[i] = static_cast<std::byte>(seq + i);
-        link->transmit(std::move(buffer), kFrameSize);
+        link->transmit(std::move(buffer), frame_size);
         seq++;
     }
 
-    // Give the last frames a moment to come back, then tear down.
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Drain the bounded in-flight window. A fixed sleep can report PASS when
+    // the final frame never returns, especially at a low EtherCAT cycle rate.
+    const auto drain_deadline = std::chrono::steady_clock::now() + kDrainTimeout;
+    while (acked.load(std::memory_order_relaxed) < seq
+           && std::chrono::steady_clock::now() < drain_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
     link.reset();
 
+    const std::uint64_t missing = seq > stats.frames ? seq - stats.frames : 0;
     std::println(
-        "frames {}  corrupt {}  throughput {:.1f} KiB/s per direction", stats.frames, stats.corrupt,
+        "sent {}  received {}  missing {}  corrupt {}  throughput {:.1f} KiB/s per direction", seq,
+        stats.frames, missing, stats.corrupt,
         static_cast<double>(stats.bytes) / 1024.0 / duration_s);
     if (!stats.rtts_us.empty()) {
         std::sort(stats.rtts_us.begin(), stats.rtts_us.end());
         std::println(
-            "rtt us: p50 {:.1f}  p90 {:.1f}  p99 {:.1f}  max {:.1f}  (n={})",
+            "rtt us: p50 {:.1f}  p90 {:.1f}  p99 {:.1f}  p99.9 {:.1f}  max {:.1f}  (n={})",
             percentile(stats.rtts_us, 0.50), percentile(stats.rtts_us, 0.90),
-            percentile(stats.rtts_us, 0.99), stats.rtts_us.back(), stats.rtts_us.size());
+            percentile(stats.rtts_us, 0.99), percentile(stats.rtts_us, 0.999),
+            stats.rtts_us.back(), stats.rtts_us.size());
     }
-    return stats.corrupt == 0 ? 0 : 2;
+    const bool clean = seq > 0 && stats.frames == seq && reassembled == 0 && stats.corrupt == 0;
+    return clean ? 0 : 2;
 }

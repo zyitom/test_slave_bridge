@@ -25,7 +25,7 @@
 #define SEC_CORE_IMG_START CORE1_ILM_LOCAL_BASE
 
 #define BOARD_FLASH_BASE_ADDRESS (0x80000000UL)
-#define BOARD_FLASH_SIZE         (16 * SIZE_1MB)
+#define BOARD_FLASH_SIZE         (4 * SIZE_1MB)
 /* The app image must end below the EtherCAT flash-emulated EEPROM region at
  * offset 2 MiB (BOARD_ECAT_FLASH_EMULATE_EEPROM_ADDR); the bootloader caps
  * accepted image sizes with this. */

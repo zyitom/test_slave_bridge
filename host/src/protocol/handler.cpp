@@ -36,27 +36,16 @@ public:
     static constexpr size_t kSessionAckRetryCount = 5;
     static constexpr auto kSessionRefreshInterval = std::chrono::milliseconds{250};
 
-    // How receive() callbacks relate to protocol frame boundaries:
-    // - kDatagram (USB): every callback is one complete transfer, so a
-    //   truncated frame at its end can never complete -- finish the transfer
-    //   after each feed for framing recovery.
-    // - kStream (EtherCAT process data): callbacks are arbitrary slices of a
-    //   continuous byte stream; frames routinely span callbacks, so the
-    //   deserializer must keep its partial state (mirrors the firmware side,
-    //   ecat/core1/host_link.hpp).
-    enum class TransferFraming : uint8_t { kDatagram, kStream };
-
     explicit Impl(
-        std::unique_ptr<transport::Transport> transport, data::DataCallback& callback,
-        TransferFraming framing = TransferFraming::kDatagram)
+        std::unique_ptr<transport::Transport> transport, data::DataCallback& callback)
         : callback_(callback)
         , deserializer_(*this)
         , expected_session_nonce_(generate_session_nonce())
         , transport_(std::move(transport)) {
-        transport_->receive([this, framing](std::span<const std::byte> buffer) {
+        // USB bulk completions and EtherCAT callbacks are both arbitrary
+        // slices of one reliable byte stream, not protocol-field boundaries.
+        transport_->receive([this](std::span<const std::byte> buffer) {
             deserializer_.feed(buffer);
-            if (framing == TransferFraming::kDatagram)
-                deserializer_.finish_transfer();
         });
 
         establish_session();
@@ -452,9 +441,7 @@ std::unique_ptr<transport::Transport> create_ethercat_transport(
 Handler::Handler(
     std::string_view ethercat_interface_name, const board::AdvancedOptions& options,
     data::DataCallback& callback)
-    : impl_(new Impl(
-          create_ethercat_transport(ethercat_interface_name, options), callback,
-          Impl::TransferFraming::kStream)) {}
+    : impl_(new Impl(create_ethercat_transport(ethercat_interface_name, options), callback)) {}
 #else
 Handler::Handler(
     std::string_view ethercat_interface_name, const board::AdvancedOptions& options,

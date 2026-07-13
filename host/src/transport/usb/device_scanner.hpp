@@ -245,11 +245,20 @@ private:
         }
 
         const std::string_view product_string{product_buf, static_cast<size_t>(n)};
-        if (product_string != "RMCS Agent v" LIBRMCS_PROJECT_VERSION_STRING) {
+        constexpr uint16_t kHpm6e8yProductId = 0xA904;
+        constexpr std::string_view kAgentProduct =
+            "RMCS Agent v" LIBRMCS_PROJECT_VERSION_STRING;
+        constexpr std::string_view kEthercatBridgeProduct =
+            "RMCS EtherCAT Bridge v" LIBRMCS_PROJECT_VERSION_STRING;
+        const bool product_matches =
+            product_string == kAgentProduct
+            || (info.descriptor.idProduct == kHpm6e8yProductId
+                && product_string == kEthercatBridgeProduct);
+        if (!product_matches) {
             if (warn_only_when_mismatch) {
                 logging::get_logger().warn(
-                    "USB device firmware version mismatch: found '{}', expected "
-                    "'RMCS Agent v{}'. Continuing because "
+                    "USB device firmware version mismatch: found '{}', expected a compatible "
+                    "product at version {}. Continuing because "
                     "dangerously_skip_version_checks is enabled.",
                     product_string, LIBRMCS_PROJECT_VERSION_STRING);
                 return true;

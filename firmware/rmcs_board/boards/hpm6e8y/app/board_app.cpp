@@ -50,6 +50,8 @@ uint32_t init_uart_clock(UART_Type* ptr) {
 
 } // namespace
 
+bool usb_use_high_speed() { return true; }
+
 uint32_t init_can(MCAN_Type* ptr) {
     // RX pads: pull-up enabled + Schmitt trigger, so an idle/unconnected bus
     // reads recessive cleanly. TX pads take the IOC default drive.

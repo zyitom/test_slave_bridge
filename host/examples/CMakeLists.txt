@@ -53,4 +53,8 @@ if(LIBRMCS_ENABLE_SOEM OR LIBRMCS_ENABLE_IGH)
     # CAN-FD loopback stress over the EtherCAT bridge (CAN0->CAN1, CAN2->CAN3).
     add_executable(ecat_canfd_stress ecat_canfd_stress.cpp)
     target_link_libraries(ecat_canfd_stress PRIVATE librmcs-sdk)
+
+    # Queue-free CAN0->CAN1 RTT comparison over USB or EtherCAT.
+    add_executable(bridge_can_loopback_latency bridge_can_loopback_latency.cpp)
+    target_link_libraries(bridge_can_loopback_latency PRIVATE librmcs-sdk)
 endif()

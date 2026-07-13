@@ -131,7 +131,7 @@ build_hpm6e8y/rmcs_ecat_core0/output/rmcs_ecat_bridge_hpm6e8y.dfu
 ## 5. 烧录(简述)
 
 用 HPMicro Manufacturing Tool(DFU 方式),把板子的 USB0 接开发 PC,上电进
-bootloader(`lsusb` 见 `34b7:0A904` 表示 bootloader 在跑),再用 `.dfu` 包烧录。
+bootloader(`lsusb` 见 `a11c:a904` 表示 bootloader 在跑),再用 `.dfu` 包烧录。
 FCFG / 详细步骤见 `boards/hpm6e8y/README.md`。
 
 ---
