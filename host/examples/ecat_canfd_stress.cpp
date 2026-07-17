@@ -19,11 +19,35 @@
 // 32-bit hash of it. The receiver validates the hash (corruption) and the
 // sequence continuity (loss / reordering), all in host time.
 //
+// LATENCY: each frame's send instant is recorded against its sequence number, so
+// a returning frame yields a round-trip time measured entirely on the host
+// clock -- the host and board clocks are not synchronized, which is exactly why
+// the frame has to come back rather than be timestamped on arrival at the board.
+// The reported RTT covers the whole chain:
+//
+//   T0 --EtherCAT--> core1 --CAN0 TX--> wire --CAN1 RX--> core1 --EtherCAT--> T1
+//
+// i.e. EtherCAT down + firmware + CAN wire time + firmware + EtherCAT up. To
+// isolate the CAN segment, run ecat_stream_latency against the LOOPBACK image
+// (core1 echoes the byte stream without touching CAN) and subtract its RTT:
+// the difference is CAN wire time plus the firmware forwarding path.
+//
+// Two caveats when reading the numbers:
+//  - RATE. This is a stress tool first: at a high rate frames queue behind the
+//    stop-and-wait ARQ and their RTT includes that queueing, which measures
+//    latency-under-load. For latency alone, use a low rate (e.g. 200) so each
+//    frame travels an empty pipe.
+//  - QUANTIZATION. The ARQ turns the RTT into a small multiple of the EtherCAT
+//    cycle period (tens of us), so percentiles cluster on cycle boundaries
+//    rather than forming a smooth distribution. That granularity is the floor
+//    of this method, not noise.
+//
 // Build:  cmake -DLIBRMCS_ENABLE_IGH=ON ... (see host/CMakeLists.txt)
 // Run:    sudo ./ecat_canfd_stress <interface> [seconds] [rate_fps_per_stream]
 //         The EtherCAT backend defaults to IgH when compiled in; override with
 //         RMCS_ECAT_BACKEND=soem|igh. (for steadier pacing:
-//         sudo chrt -f 80 ./ecat_canfd_stress enp2s0 30 8000)
+//         sudo chrt -f 80 ./ecat_canfd_stress enp2s0 30 8000; for latency:
+//         sudo chrt -f 80 ./ecat_canfd_stress enp2s0 10 200)
 
 #include <algorithm>
 #include <array>
@@ -35,8 +59,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <optional>
 #include <span>
 #include <thread>
+#include <vector>
 
 #include <librmcs/board/rmcs_board_ecat_bridge.hpp>
 
@@ -50,8 +76,35 @@ constexpr size_t kPayloadBytes = 8;
 constexpr size_t kCorruptionEvidenceCount = 8;
 constexpr auto kDrainTimeout = std::chrono::seconds{2};
 
+// The first RTT samples include ARQ start-up, cold caches and NIC ramp-up; keep
+// them out of the percentiles (same rationale as ecat_stream_latency).
+constexpr auto kWarmup = std::chrono::milliseconds{500};
+
+// Send instants indexed by sequence number, so a returning frame can be matched
+// to its transmission. Both pairs' frames carry the same seq and leave in the
+// same packet, so one ring serves both streams. Sized far above any plausible
+// in-flight count (rate x RTT), which keeps a slot from being recycled while
+// its frame is still on the wire.
+constexpr size_t kSendTimeRingSize = 1U << 16;
+constexpr uint32_t kSendTimeRingMask = kSendTimeRingSize - 1U;
+std::array<std::atomic<int64_t>, kSendTimeRingSize> g_send_time_ns{};
+
+// Set once before the first frame is sent, then read by the poll thread.
+std::atomic<int64_t> g_warmup_end_ns{0};
+
 std::atomic<bool> g_stop{false};
 void on_sigint(int) { g_stop.store(true, std::memory_order_relaxed); }
+
+// Index into an ALREADY SORTED sample vector. (Sorting once is unambiguous;
+// running nth_element per percentile combines with unspecified argument
+// evaluation order to produce impossible output like max < p99 -- the same
+// trap ecat_stream_latency documents.)
+double percentile(const std::vector<double>& sorted, double p) {
+    if (sorted.empty())
+        return 0.0;
+    const auto i = static_cast<size_t>(p * static_cast<double>(sorted.size() - 1));
+    return sorted[i];
+}
 
 // A cheap 32-bit avalanche mix, so a single flipped payload bit is caught.
 uint32_t mix(uint32_t x) {
@@ -118,6 +171,27 @@ struct Stream {
     bool started = false;
     uint32_t next_expected = 0;
 
+    // Round-trip samples. Like the sequence state above, this is touched only by
+    // the poll thread; the main thread reads it after destroying the bridge,
+    // which joins that thread (see main()).
+    std::vector<double> rtts_us;
+
+    // Match a validated frame to its send instant. Only hash-valid frames get
+    // here, so the sequence number can be trusted to index the ring.
+    void record_rtt(uint32_t seq, int64_t now_ns) {
+        const int64_t sent_ns =
+            g_send_time_ns[seq & kSendTimeRingMask].load(std::memory_order_acquire);
+        // sent_ns == 0 means the slot was never written, and now_ns < sent_ns
+        // means it was overwritten by a sequence exactly one ring apart -- i.e.
+        // a frame so late that its slot has been recycled. Neither can happen
+        // at any sane rate; discard rather than report a bogus RTT.
+        if (sent_ns == 0 || now_ns < sent_ns)
+            return;
+        if (now_ns < g_warmup_end_ns.load(std::memory_order_relaxed))
+            return;
+        rtts_us.push_back(static_cast<double>(now_ns - sent_ns) / 1e3);
+    }
+
     void record_corruption(CorruptionKind kind, const librmcs::data::CanDataView& data) {
         corrupt.fetch_add(1, std::memory_order_relaxed);
         const size_t index = evidence_total.fetch_add(1, std::memory_order_relaxed);
@@ -137,6 +211,9 @@ struct Stream {
     }
 
     void verify(const librmcs::data::CanDataView& data, uint32_t expected_can_id) {
+        // Stamp on entry so frame validation below is not billed to the RTT.
+        const int64_t now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
+
         if (data.can_data.size() != kPayloadBytes) {
             bad_length.fetch_add(1, std::memory_order_relaxed);
             record_corruption(CorruptionKind::kLength, data);
@@ -158,6 +235,10 @@ struct Stream {
             rx.fetch_add(1, std::memory_order_relaxed);
             return;
         }
+
+        // Every intact frame carries a usable RTT, whether or not it arrives in
+        // order, so this precedes the sequence bookkeeping below.
+        record_rtt(seq, now_ns);
 
         if (!started) {
             started = true;
@@ -215,6 +296,21 @@ void print_line(const char* tag, const Stream& s, uint64_t rx_delta, double dt_s
         static_cast<unsigned long long>(s.corrupt.load()),
         static_cast<unsigned long long>(s.reorder.load()), fps,
         fps * kPayloadBytes / 1024.0);
+}
+
+// Sorts the samples in place, so call it once, after the poll thread is joined.
+void print_latency(const char* tag, Stream& stream) {
+    if (stream.rtts_us.empty()) {
+        printf("  %s  rtt: no samples (nothing returned after the %lld ms warm-up)\n", tag,
+               static_cast<long long>(kWarmup.count()));
+        return;
+    }
+    std::sort(stream.rtts_us.begin(), stream.rtts_us.end());
+    printf(
+        "  %s  rtt us: p50 %-8.1f p90 %-8.1f p99 %-8.1f p99.9 %-8.1f max %-8.1f (n=%zu)\n", tag,
+        percentile(stream.rtts_us, 0.50), percentile(stream.rtts_us, 0.90),
+        percentile(stream.rtts_us, 0.99), percentile(stream.rtts_us, 0.999),
+        stream.rtts_us.back(), stream.rtts_us.size());
 }
 
 const char* corruption_kind_name(CorruptionKind kind) {
@@ -281,8 +377,12 @@ int main(int argc, char** argv) {
     Receiver rx;
     try {
         // Session establishment happens inside the constructor; returning means
-        // EtherCAT is OPERATIONAL and the protocol handshake passed.
-        librmcs::board::RmcsBoardEcatBridge board{argv[1], rx};
+        // EtherCAT is OPERATIONAL and the protocol handshake passed. Held in an
+        // optional (the bridge is immovable, so emplace constructs in place) to
+        // make the teardown explicit: destroying it joins the poll thread, which
+        // is what makes the latency samples safe to read afterwards.
+        std::optional<librmcs::board::RmcsBoardEcatBridge> board;
+        board.emplace(argv[1], rx);
         printf("EtherCAT bridge connected on %s, session established.\n", argv[1]);
         printf(
             "CAN-FD stress: CAN0->CAN1 and CAN2->CAN3, target %u f/s per stream for %d s "
@@ -291,6 +391,9 @@ int main(int argc, char** argv) {
 
         using clock = std::chrono::steady_clock;
         const auto start = clock::now();
+        // Safe to publish before any frame is sent: nothing can return yet.
+        g_warmup_end_ns.store(
+            (start + kWarmup).time_since_epoch().count(), std::memory_order_relaxed);
         const auto deadline = start + std::chrono::seconds{duration_s};
         const auto send_period = std::chrono::duration_cast<clock::duration>(
             std::chrono::nanoseconds{1'000'000'000U / rate});
@@ -306,15 +409,22 @@ int main(int argc, char** argv) {
             const double elapsed_s = std::chrono::duration<double>(now - start).count();
 
             if (now >= next_send) {
+                const auto seq = static_cast<uint32_t>(sent);
                 std::byte a[kPayloadBytes];
                 std::byte b[kPayloadBytes];
-                encode(a, static_cast<uint32_t>(sent));
-                encode(b, static_cast<uint32_t>(sent));
+                encode(a, seq);
+                encode(b, seq);
+
+                // Publish the send instant before handing the frames to the
+                // transport, so the slot is always populated by the time the
+                // poll thread can see the frame come back.
+                g_send_time_ns[seq & kSendTimeRingMask].store(
+                    clock::now().time_since_epoch().count(), std::memory_order_release);
 
                 // One packet carries both pairs' frames. The builder API does
                 // not surface transport enqueue failure; the final tx/rx
                 // equality check catches a command lost at any layer.
-                board.start_transmit()
+                board->start_transmit()
                     .can0_transmit(
                         {.can_id = kCanId0, .can_data = a, .is_fdcan = true})
                     .can2_transmit(
@@ -362,9 +472,16 @@ int main(int argc, char** argv) {
             std::this_thread::sleep_for(std::chrono::milliseconds{1});
         }
 
+        // Stop the transport before touching the latency samples: rtts_us is
+        // owned by the poll thread, and this join is what ends the race.
+        // Counters stay readable -- they are atomics.
+        board.reset();
+
         printf("\n=== summary ===\n");
         print_line("01", rx.pair01, 0, 0);
         print_line("23", rx.pair23, 0, 0);
+        print_latency("01", rx.pair01);
+        print_latency("23", rx.pair23);
         print_corruption_evidence("01", rx.pair01);
         print_corruption_evidence("23", rx.pair23);
         printf("  missed pacing slots: %llu\n",
