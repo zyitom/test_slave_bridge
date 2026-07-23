@@ -353,7 +353,11 @@ private:
     static constexpr unsigned char kInEndpoint = 0x81;
 
     static constexpr size_t kTransmitTransferCount = 64;
-    static constexpr size_t kReceiveTransferCount = 4;
+    // Depth of the pre-submitted async RX transfer pool. At USB 3.0 SuperSpeed
+    // (5 Gbit/s) a 4-deep pool cannot hide the submit/callback round-trip and
+    // caps throughput well below the link rate; 16 keeps the bulk-IN pipe full.
+    // Harmless for FS/HS boards (just a little more pinned buffer memory).
+    static constexpr size_t kReceiveTransferCount = 16;
 
     logging::Logger& logger_;
 
