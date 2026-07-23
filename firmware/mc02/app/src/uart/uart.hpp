@@ -39,6 +39,52 @@ public:
         core::utility::assert_always(trigger_hal_receive());
     }
 
+    // Runtime baudrate switch requested by the host. Writes BRR directly rather
+    // than re-running HAL_UART_Init, so every other setting stays exactly as
+    // CubeMX generated it and the running DMA is not torn down.
+    //
+    // This mirrors UART_SetConfig() in the STM32H7 HAL. Unlike the F4 parts,
+    // H7 UARTs take their kernel clock from a selectable source (not simply
+    // PCLK) and pass it through Init.ClockPrescaler, so the divisor must be
+    // computed from HAL_RCCEx_GetPeriphCLKFreq and the prescaler table -- using
+    // HAL_RCC_GetPCLKxFreq here would silently produce the wrong baudrate.
+    //
+    // RX bytes arriving inside the switch window may be garbled; the host is
+    // expected to quiesce the link first.
+    bool handle_config(const data::UartConfigView& data) {
+        if (!data.baudrate.has_value() || *data.baudrate == 0) [[unlikely]]
+            return false;
+
+        const uint32_t kernel_clock_hz = peripheral_clock_hz();
+        if (kernel_clock_hz == 0U) [[unlikely]]
+            return false;
+
+        // Bounds per the HAL: a divisor outside them would misconfigure the
+        // peripheral, so reject instead of writing garbage.
+        constexpr uint32_t kBrrMin = 0x10U;
+        constexpr uint32_t kBrrMax = 0xFFFFU;
+
+        uint32_t brr;
+        if (hal_uart_handle_->Init.OverSampling == UART_OVERSAMPLING_8) {
+            const uint32_t usartdiv = UART_DIV_SAMPLING8(
+                kernel_clock_hz, *data.baudrate, hal_uart_handle_->Init.ClockPrescaler);
+            if (usartdiv < kBrrMin || usartdiv > kBrrMax) [[unlikely]]
+                return false;
+            // Oversampling-by-8 packs BRR[3] as zero and shifts the low nibble.
+            brr = (usartdiv & 0xFFF0U) | ((usartdiv & 0x000FU) >> 1U);
+        } else {
+            const uint32_t usartdiv = UART_DIV_SAMPLING16(
+                kernel_clock_hz, *data.baudrate, hal_uart_handle_->Init.ClockPrescaler);
+            if (usartdiv < kBrrMin || usartdiv > kBrrMax) [[unlikely]]
+                return false;
+            brr = usartdiv;
+        }
+
+        hal_uart_handle_->Init.BaudRate = *data.baudrate;
+        hal_uart_handle_->Instance->BRR = brr;
+        return true;
+    }
+
     void handle_downlink(const data::UartDataView& data) {
         const auto size = data.uart_data.size();
         if (!size)
@@ -132,6 +178,15 @@ private:
                    reinterpret_cast<uint8_t*>(receive_buffer_),
                    max_receive_size_)
             == HAL_OK;
+    }
+
+    // STM32H723 groups UART kernel clocks: USART1/6/9/10 share one selectable
+    // source, UART2/3/4/5/7/8 another. This board uses USART1, USART10, UART7
+    // and UART5.
+    [[nodiscard]] uint32_t peripheral_clock_hz() const {
+        if (hal_uart_handle_ == &huart1 || hal_uart_handle_ == &huart10)
+            return HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_USART16910);
+        return HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_USART234578);
     }
 
     data::DataId data_id_;

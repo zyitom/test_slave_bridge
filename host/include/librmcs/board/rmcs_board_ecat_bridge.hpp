@@ -7,6 +7,8 @@
 #include <librmcs/board/common.hpp>
 #include <librmcs/data/datas.hpp>
 #include <librmcs/protocol/handler.hpp>
+#include <librmcs/spec/rmcs_board_ecat_bridge/can.hpp>
+#include <librmcs/spec/rmcs_board_ecat_bridge/uart.hpp>
 
 namespace librmcs::board {
 
@@ -29,6 +31,26 @@ class RmcsBoardEcatBridge final {
 public:
     class Callback : public data::DataCallback {
     public:
+        // Channel descriptors for this board. Addressing a channel through its
+        // descriptor is what lets generic code reach data_id and, for UARTs,
+        // config_data_id without a second lookup table.
+        struct Spec {
+            using Can = spec::rmcs_board_ecat_bridge::CanDescriptor;
+            static constexpr spec::rmcs_board_ecat_bridge::internal::CanDescriptors kCans{};
+
+            using Uart = spec::rmcs_board_ecat_bridge::UartDescriptor;
+            static constexpr spec::rmcs_board_ecat_bridge::internal::UartDescriptors kUarts{};
+        };
+
+        struct View {
+            using Can = data::CanDataView;
+            using Uart = data::UartDataView;
+            using UartConfig = data::UartConfigView;
+            using ImuAccelerometer = data::ImuAccelerometerDataView;
+            using ImuGyroscope = data::ImuGyroscopeDataView;
+            using ImuTemperature = data::ImuTemperatureDataView;
+        };
+
         virtual void can0_receive_callback(const librmcs::data::CanDataView& data) { (void)data; }
         virtual void can1_receive_callback(const librmcs::data::CanDataView& data) { (void)data; }
         virtual void can2_receive_callback(const librmcs::data::CanDataView& data) { (void)data; }
@@ -37,13 +59,13 @@ public:
         virtual void uart0_receive_callback(const librmcs::data::UartDataView& data) { (void)data; }
 
         void accelerometer_receive_callback(
-            const librmcs::data::AccelerometerDataView& data) override {
+            const librmcs::data::ImuAccelerometerDataView& data) override {
             (void)data;
         }
-        void gyroscope_receive_callback(const librmcs::data::GyroscopeDataView& data) override {
+        void gyroscope_receive_callback(const librmcs::data::ImuGyroscopeDataView& data) override {
             (void)data;
         }
-        void temperature_receive_callback(const librmcs::data::TemperatureDataView& data) override {
+        void temperature_receive_callback(const librmcs::data::ImuTemperatureDataView& data) override {
             (void)data;
         }
 
@@ -124,13 +146,33 @@ public:
             return *this;
         }
 
+        // Runtime reconfiguration of UART0. Rides the same downlink stream as the
+        // data above, so it is ordered against it: bytes queued earlier in this
+        // batch are sent at the old baudrate, later ones at the new one.
+        PacketBuilder& uart0_config(const librmcs::data::UartConfigView& config) {
+            if (!builder_.write_uart_config(data::DataId::kUart0Config, config)) [[unlikely]]
+                throw std::invalid_argument{"UART0 configuration failed: Invalid UART config"};
+            return *this;
+        }
+
     private:
         explicit PacketBuilder(host::protocol::Handler& handler) noexcept
             : builder_(handler.start_transmit()) {}
 
+        struct CyclicTag {};
+        PacketBuilder(host::protocol::Handler& handler, CyclicTag) noexcept
+            : builder_(handler.start_cyclic_transmit()) {}
+
         host::protocol::Handler::PacketBuilder builder_;
     };
     PacketBuilder start_transmit() noexcept { return PacketBuilder{handler_}; }
+
+    // Explicit latest-wins batch for the 4 x 7-slot hybrid PDO. Unlike
+    // start_transmit(), two batches committed before an EtherCAT cycle may
+    // collapse to the newest one by design. See Handler::start_cyclic_transmit.
+    PacketBuilder start_cyclic_transmit() noexcept {
+        return PacketBuilder{handler_, PacketBuilder::CyclicTag{}};
+    }
 
 private:
     static inline Callback default_callback_{};

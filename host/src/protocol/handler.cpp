@@ -47,6 +47,23 @@ public:
         transport_->receive([this](std::span<const std::byte> buffer) {
             deserializer_.feed(buffer);
         });
+        transport_->receive_cyclic_can(
+            [this](data::DataId id, const data::CanDataView& data) {
+                (void)can_deserialized_callback(id, data);
+            });
+        transport_->on_link_restart([this] {
+            // A new ARQ generation cannot continue a partially received
+            // protocol field. The callback runs on the transport receive
+            // thread, so it is serialized with deserializer_.feed().
+            deserializer_.finish_transfer();
+            {
+                // Pair the state change with the condition-variable mutex so
+                // the keepalive thread cannot miss the restart notification.
+                const std::scoped_lock guard{session_mutex_};
+                session_established_.store(false, std::memory_order_release);
+            }
+            session_cv_.notify_all();
+        });
 
         establish_session();
         keepalive_thread_ = std::thread{[this] { keepalive_loop(); }};
@@ -61,7 +78,9 @@ public:
         transport_.reset();
     }
 
-    PacketBuilder start_transmit() { return PacketBuilder{transport_.get()}; }
+    PacketBuilder start_transmit(bool cyclic) {
+        return PacketBuilder{transport_.get(), cyclic};
+    }
 
     bool can_deserialized_callback(
         core::protocol::FieldId id, const data::CanDataView& data) override {
@@ -83,6 +102,19 @@ public:
             return false;
         }
         return true;
+    }
+
+    // UART config is a downlink-only channel: the host emits it, boards never
+    // send it back. Receiving one on the uplink means the peer is confused, so
+    // report it as a routing error rather than silently ignoring it.
+    bool uart_config_deserialized_callback(
+        core::protocol::FieldId id, const data::UartConfigView& data) override {
+        (void)data;
+        if (!session_established())
+            return true;
+        logging::get_logger().error(
+            "Unexpected uart config field on uplink: ", static_cast<int>(id));
+        return false;
     }
 
     bool gpio_digital_data_deserialized_callback(
@@ -129,19 +161,19 @@ public:
         return false;
     }
 
-    void accelerometer_deserialized_callback(const data::AccelerometerDataView& data) override {
+    void accelerometer_deserialized_callback(const data::ImuAccelerometerDataView& data) override {
         if (!session_established())
             return;
         callback_.accelerometer_receive_callback(data);
     }
 
-    void gyroscope_deserialized_callback(const data::GyroscopeDataView& data) override {
+    void gyroscope_deserialized_callback(const data::ImuGyroscopeDataView& data) override {
         if (!session_established())
             return;
         callback_.gyroscope_receive_callback(data);
     }
 
-    void temperature_deserialized_callback(const data::TemperatureDataView& data) override {
+    void temperature_deserialized_callback(const data::ImuTemperatureDataView& data) override {
         if (!session_established())
             return;
         callback_.temperature_receive_callback(data);
@@ -156,7 +188,7 @@ public:
             const std::scoped_lock guard{session_mutex_};
             switch (data.type) {
             case data::SessionType::kStartAck:
-                session_established_.store(true, std::memory_order_relaxed);
+                session_established_.store(true, std::memory_order_release);
                 ++session_start_ack_count_;
                 notify = true;
                 break;
@@ -177,7 +209,7 @@ public:
 
 private:
     [[nodiscard]] bool session_established() const {
-        return session_established_.load(std::memory_order_relaxed);
+        return session_established_.load(std::memory_order_acquire);
     }
 
     void establish_session() {
@@ -193,8 +225,11 @@ private:
             std::unique_lock lock{session_mutex_};
             if (session_cv_.wait_for(
                     lock, kSessionAckTimeout, [this, previous_session_start_ack_count] {
-                        return session_start_ack_count_ > previous_session_start_ack_count;
+                        return stop_keepalive_.load(std::memory_order_relaxed)
+                            || session_start_ack_count_ > previous_session_start_ack_count;
                     })) {
+                if (stop_keepalive_.load(std::memory_order_relaxed))
+                    return;
                 return;
             }
         }
@@ -206,6 +241,9 @@ private:
 
     void refresh_session() {
         for (size_t attempt = 0; attempt < kSessionAckRetryCount; ++attempt) {
+            if (!session_established())
+                return;
+
             uint64_t previous_session_keepalive_ack_count = 0;
             {
                 const std::scoped_lock guard{session_mutex_};
@@ -218,6 +256,7 @@ private:
             if (session_cv_.wait_for(
                     lock, kSessionAckTimeout, [this, previous_session_keepalive_ack_count] {
                         return stop_keepalive_.load(std::memory_order_relaxed)
+                            || !session_established()
                             || session_keepalive_ack_count_ > previous_session_keepalive_ack_count;
                     })) {
                 return;
@@ -250,12 +289,21 @@ private:
 
     void keepalive_loop() {
         while (!stop_keepalive_.load(std::memory_order_relaxed)) {
-            std::this_thread::sleep_for(kSessionRefreshInterval);
+            {
+                std::unique_lock lock{session_mutex_};
+                (void)session_cv_.wait_for(lock, kSessionRefreshInterval, [this] {
+                    return stop_keepalive_.load(std::memory_order_relaxed)
+                        || !session_established();
+                });
+            }
             if (stop_keepalive_.load(std::memory_order_relaxed))
                 break;
 
             try {
-                refresh_session();
+                if (session_established())
+                    refresh_session();
+                else
+                    establish_session();
             } catch (const std::exception& exception) {
                 logging::get_logger().error(
                     "Failed to refresh session: {}. Terminating...", exception.what());
@@ -289,8 +337,8 @@ private:
 namespace {
 
 struct PacketBuilderImpl {
-    explicit PacketBuilderImpl(transport::Transport& transport) noexcept
-        : buffer_(transport)
+    explicit PacketBuilderImpl(transport::Transport& transport, bool cyclic) noexcept
+        : buffer_(transport, cyclic)
         , serializer_(buffer_) {}
 
     PacketBuilderImpl(PacketBuilderImpl&& other) noexcept
@@ -306,15 +354,30 @@ struct PacketBuilderImpl {
     // - `kInvalidArgument` => `false` (user error)
     // - `kBadAlloc` => logged and ignored (`true`) (internal/transient)
     [[nodiscard]] bool write_can(data::DataId field_id, const data::CanDataView& view) noexcept {
+        if (buffer_.strict_cyclic_can())
+            return buffer_.try_stage_cyclic_can(field_id, view);
+        if (buffer_.try_stage_cyclic_can(field_id, view))
+            return true;
         return process_result(serializer_.write_can(field_id, view));
     }
 
     [[nodiscard]] bool write_uart(data::DataId field_id, const data::UartDataView& view) noexcept {
+        if (reject_non_can_cyclic_batch())
+            return false;
         return process_result(serializer_.write_uart(field_id, view));
+    }
+
+    [[nodiscard]] bool
+        write_uart_config(data::DataId field_id, const data::UartConfigView& view) noexcept {
+        if (reject_non_can_cyclic_batch())
+            return false;
+        return process_result(serializer_.write_uart_config(field_id, view));
     }
 
     [[nodiscard]] bool write_gpio_digital_data(
         uint8_t channel_index, const data::GpioDigitalDataView& view) noexcept {
+        if (reject_non_can_cyclic_batch())
+            return false;
         if (view.timestamp_quarter_us.has_value()) [[unlikely]]
             return false;
         return process_result(serializer_.write_gpio_digital_value(channel_index, view));
@@ -322,23 +385,34 @@ struct PacketBuilderImpl {
 
     [[nodiscard]] bool write_gpio_digital_read_config(
         uint8_t channel_index, const data::GpioReadConfigView& view) noexcept {
+        if (reject_non_can_cyclic_batch())
+            return false;
         return process_result(serializer_.write_gpio_digital_read_config(channel_index, view));
     }
 
     [[nodiscard]] bool write_gpio_analog_data(
         uint8_t channel_index, const data::GpioAnalogDataView& view) noexcept {
+        if (reject_non_can_cyclic_batch())
+            return false;
         return process_result(serializer_.write_gpio_analog_value(channel_index, view));
     }
 
-    [[nodiscard]] bool write_imu_accelerometer(const data::AccelerometerDataView& view) noexcept {
+    [[nodiscard]] bool write_imu_accelerometer(const data::ImuAccelerometerDataView& view) noexcept {
         return process_result(serializer_.write_imu_accelerometer(view));
     }
 
-    [[nodiscard]] bool write_imu_gyroscope(const data::GyroscopeDataView& view) noexcept {
+    [[nodiscard]] bool write_imu_gyroscope(const data::ImuGyroscopeDataView& view) noexcept {
         return process_result(serializer_.write_imu_gyroscope(view));
     }
 
 private:
+    bool reject_non_can_cyclic_batch() noexcept {
+        if (!buffer_.strict_cyclic_can())
+            return false;
+        buffer_.reject_cyclic_can_batch();
+        return true;
+    }
+
     static bool process_result(core::protocol::Serializer::SerializeResult result) {
         using core::protocol::Serializer;
         if (result == Serializer::SerializeResult::kSuccess) [[likely]]
@@ -359,12 +433,12 @@ private:
 
 } // namespace
 
-Handler::PacketBuilder::PacketBuilder(void* transport_ptr) noexcept {
+Handler::PacketBuilder::PacketBuilder(void* transport_ptr, bool cyclic) noexcept {
     static_assert(sizeof(PacketBuilderImpl) <= sizeof(storage_));
     static_assert(alignof(PacketBuilderImpl) <= alignof(std::uintptr_t));
 
     auto& transport_ref = *static_cast<transport::Transport*>(transport_ptr);
-    std::construct_at(reinterpret_cast<PacketBuilderImpl*>(storage_), transport_ref);
+    std::construct_at(reinterpret_cast<PacketBuilderImpl*>(storage_), transport_ref, cyclic);
 }
 
 Handler::PacketBuilder::~PacketBuilder() noexcept {
@@ -379,6 +453,12 @@ bool Handler::PacketBuilder::write_can(
 bool Handler::PacketBuilder::write_uart(
     data::DataId field_id, const data::UartDataView& view) noexcept {
     return std::launder(reinterpret_cast<PacketBuilderImpl*>(storage_))->write_uart(field_id, view);
+}
+
+bool Handler::PacketBuilder::write_uart_config(
+    data::DataId field_id, const data::UartConfigView& view) noexcept {
+    return std::launder(reinterpret_cast<PacketBuilderImpl*>(storage_))
+        ->write_uart_config(field_id, view);
 }
 
 bool Handler::PacketBuilder::write_gpio_digital_data(
@@ -470,7 +550,12 @@ Handler::~Handler() noexcept { delete impl_; }
 
 Handler::PacketBuilder Handler::start_transmit() noexcept {
     core::utility::assert_debug(impl_);
-    return impl_->start_transmit();
+    return impl_->start_transmit(false);
+}
+
+Handler::PacketBuilder Handler::start_cyclic_transmit() noexcept {
+    core::utility::assert_debug(impl_);
+    return impl_->start_transmit(true);
 }
 
 } // namespace librmcs::host::protocol

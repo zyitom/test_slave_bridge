@@ -130,6 +130,31 @@ public:
         return SerializeResult::kSuccess;
     }
 
+    // Sparse patch semantics: a view with nothing set writes no bytes at all and
+    // reports success, so callers can pass a partially filled config through
+    // unconditionally.
+    SerializeResult write_uart_config(FieldId field_id, const data::UartConfigView& view) noexcept {
+        if (!view.baudrate.has_value())
+            return SerializeResult::kSuccess;
+
+        const std::size_t required = required_uart_config_size(field_id, *view.baudrate);
+        LIBRMCS_VERIFY_LIKELY(required, SerializeResult::kInvalidArgument);
+
+        auto dst = buffer_.allocate(required);
+        LIBRMCS_VERIFY_LIKELY(!dst.empty(), SerializeResult::kBadAlloc);
+        utility::assert_debug(dst.size() == required);
+        std::byte* cursor = dst.data();
+
+        write_field_header(cursor, field_id);
+
+        auto payload = UartConfigPayload::Ref(cursor);
+        cursor += sizeof(UartConfigPayload);
+        payload.set<UartConfigPayload::Baudrate>(*view.baudrate);
+
+        utility::assert_debug(cursor == dst.data() + dst.size());
+        return SerializeResult::kSuccess;
+    }
+
     SerializeResult write_gpio_digital_value(
         uint8_t channel_index, const data::GpioDigitalDataView& view) noexcept {
         utility::assert_debug(channel_index < (1U << GpioHeader::ChannelIndex::kBitWidth));
@@ -259,7 +284,7 @@ public:
         return SerializeResult::kSuccess;
     }
 
-    SerializeResult write_imu_accelerometer(const data::AccelerometerDataView& view) noexcept {
+    SerializeResult write_imu_accelerometer(const data::ImuAccelerometerDataView& view) noexcept {
         const std::size_t required = required_imu_size(FieldId::kImu, ImuPayload::kAccelerometer);
         LIBRMCS_VERIFY_LIKELY(required, SerializeResult::kInvalidArgument);
 
@@ -285,7 +310,7 @@ public:
         return SerializeResult::kSuccess;
     }
 
-    SerializeResult write_imu_gyroscope(const data::GyroscopeDataView& view) noexcept {
+    SerializeResult write_imu_gyroscope(const data::ImuGyroscopeDataView& view) noexcept {
         const std::size_t required = required_imu_size(FieldId::kImu, ImuPayload::kGyroscope);
         LIBRMCS_VERIFY_LIKELY(required, SerializeResult::kInvalidArgument);
 
@@ -311,7 +336,7 @@ public:
         return SerializeResult::kSuccess;
     }
 
-    SerializeResult write_imu_temperature(const data::TemperatureDataView& view) noexcept {
+    SerializeResult write_imu_temperature(const data::ImuTemperatureDataView& view) noexcept {
         const std::size_t required = required_imu_size(FieldId::kImu, ImuPayload::kTemperature);
         LIBRMCS_VERIFY_LIKELY(required, SerializeResult::kInvalidArgument);
 
@@ -411,6 +436,30 @@ private:
 
         const std::size_t total = (field_header_bytes + uart_header_bytes - 1) + uart_data_length;
         LIBRMCS_VERIFY_LIKELY(total <= kProtocolBufferSize, 0);
+
+        return total;
+    }
+
+    static constexpr bool is_uart_config_field_id(FieldId field_id) {
+        switch (field_id) {
+        case FieldId::kUartDbusConfig:
+        case FieldId::kUart0Config:
+        case FieldId::kUart1Config:
+        case FieldId::kUart2Config:
+        case FieldId::kUart3Config: return true;
+        default: return false;
+        }
+    }
+
+    static std::size_t required_uart_config_size(FieldId field_id, uint32_t baudrate) noexcept {
+        LIBRMCS_VERIFY_LIKELY(is_uart_config_field_id(field_id), 0);
+        LIBRMCS_VERIFY_LIKELY(baudrate != 0, 0);
+
+        // The payload's low nibble shares a byte with the field header's id, so
+        // one FieldHeader worth of overlap comes back out of the total.
+        const std::size_t total =
+            required_field_header_size(field_id) + sizeof(UartConfigPayload) - sizeof(FieldHeader);
+        utility::assert_debug(total <= kProtocolBufferSize);
 
         return total;
     }

@@ -135,9 +135,18 @@ public:
 
         mcan_init(can_base_, &config, can_source_clock_freq);
         mcan_enable_interrupts(
-            can_base_, MCAN_INT_RXFIFO0_NEW_MSG | MCAN_INT_BUS_OFF_STATUS | MCAN_INT_WARNING_STATUS
-                           | MCAN_INT_ERROR_PASSIVE | MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE
-                           | MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE);
+            can_base_,
+#if defined(RMCS_ECAT_NATIVE_CAN) && RMCS_ECAT_NATIVE_CAN
+            // Native variant polls RX FIFO0 from the core1 loop (read_native),
+            // so the RX-new-message interrupt is left disabled -- its ISR path
+            // reaches host_link, which the native build does not construct.
+            MCAN_INT_BUS_OFF_STATUS | MCAN_INT_WARNING_STATUS | MCAN_INT_ERROR_PASSIVE
+                | MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE | MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE);
+#else
+            MCAN_INT_RXFIFO0_NEW_MSG | MCAN_INT_BUS_OFF_STATUS | MCAN_INT_WARNING_STATUS
+                | MCAN_INT_ERROR_PASSIVE | MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE
+                | MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE);
+#endif
         // CAN RX is the forwarding-critical path (motor feedback -> host).
         // Priority 3: above USB (2) and UART (1) — ensures CAN frames are
         // never delayed by bulk USB transfers or DMA callbacks.
@@ -155,7 +164,41 @@ public:
     bool handle_uplink(core::protocol::FieldId field_id, core::protocol::Serializer& serializer);
     void irq_handler();
 
+    // Native variant (RMCS_ECAT_NATIVE_CAN): read one frame straight out of RX
+    // FIFO0 into `out`, copying its data bytes into caller-owned `storage[8]`.
+    // Returns false when the FIFO is empty. Frames whose stored payload was
+    // truncated by the 8-byte element size (FD DLC > 8) are dropped while the
+    // drain continues, mirroring handle_uplink(). This bypasses the serializer
+    // so the core1 poll loop can forward representable frames as raw mailbox
+    // records; that loop explicitly drops extended and RTR frames.
+    bool read_native(data::CanDataView& out, uint8_t storage[8]) {
+        for (;;) {
+            mcan_rx_message_t rx;
+            if (mcan_read_rxfifo(can_base_, 0, &rx) != status_success)
+                return false;
+            if (rx.canfd_frame && rx.dlc > 8) [[unlikely]]
+                continue; // drained but unforwardable; keep draining
+            const size_t length = rx.rtr ? 0U : (rx.dlc > 8U ? 8U : rx.dlc);
+            out.is_fdcan = rx.canfd_frame;
+            out.is_extended_can_id = rx.use_ext_id;
+            out.is_remote_transmission = rx.rtr;
+            out.can_id = out.is_extended_can_id ? rx.ext_id : rx.std_id;
+            if (length != 0)
+                std::memcpy(storage, rx.data_8, length);
+            out.can_data = {reinterpret_cast<const std::byte*>(storage), length};
+            return true;
+        }
+    }
+
 private:
+    // Read and normalize one RX FIFO frame. `true` means an element was
+    // consumed; `valid` distinguishes a representable frame from an FD payload
+    // that the configured 8-byte RX element had to truncate.
+    bool read_uplink(data::CanDataView& out, uint8_t storage[8], bool& valid);
+    static void serialize_uplink(
+        core::protocol::FieldId field_id, const data::CanDataView& data,
+        core::protocol::Serializer& serializer);
+
     // Classifies an MCAN Last Error Code (arbitration or data phase) into an
     // indicator-LED state -- the granularity a CAN controller can actually back
     // up electrically:

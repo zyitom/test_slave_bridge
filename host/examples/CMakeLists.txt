@@ -22,6 +22,9 @@ target_link_libraries(can_error_test PRIVATE librmcs-sdk)
 add_executable(can_loopback_latency can_loopback_latency.cpp)
 target_link_libraries(can_loopback_latency PRIVATE librmcs-sdk)
 
+add_executable(can_frame_type_test can_frame_type_test.cpp)
+target_link_libraries(can_frame_type_test PRIVATE librmcs-sdk)
+
 # CAN-FD loopback stress over the HPM6E8Y USB transport (CAN0->CAN1, CAN2->CAN3).
 # The USB-transport twin of ecat_canfd_stress; no EtherCAT backend required.
 add_executable(usb_canfd_stress usb_canfd_stress.cpp)

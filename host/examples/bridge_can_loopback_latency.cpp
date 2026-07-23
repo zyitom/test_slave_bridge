@@ -6,6 +6,13 @@
 // Run:
 //   sudo ./bridge_can_loopback_latency usb [samples] [io_core] [main_core]
 //   sudo env RMCS_ECAT_BACKEND=igh ./bridge_can_loopback_latency ecat enp2s0 2000 7 6
+//
+// A third mode, "usb-paced", models a fixed-rate control loop instead of a
+// back-to-back ping-pong: one sample is sent every 1/hz second (default 1000
+// Hz), and the RTT distribution a 1 kHz loop would see over USB is reported
+// with the jitter (p99-p50) called out. It is the USB baseline for the paced
+// EtherCAT reference tool (reference/ecat_hybrid_cyclic_bench.cpp).
+//   sudo ./bridge_can_loopback_latency usb-paced [hz] [samples] [io_core] [main_core]
 
 #include <algorithm>
 #include <atomic>
@@ -224,6 +231,108 @@ int run_latency(Board& board, Receiver& receiver, uint32_t samples, std::string_
     return clean ? 0 : 2;
 }
 
+// Print the RTT distribution plus the jitter line (p99-p50 explicitly, since
+// jitter is the metric a control loop cares about). rtts_us is sorted in place.
+void print_rtt_distribution(std::vector<double>& rtts_us) {
+    std::sort(rtts_us.begin(), rtts_us.end());
+    double sum = 0.0;
+    for (const double value : rtts_us)
+        sum += value;
+    const double p50 = percentile(rtts_us, 0.50);
+    const double p99 = percentile(rtts_us, 0.99);
+    const double p999 = percentile(rtts_us, 0.999);
+    printf(
+        "rtt us: min %.1f  p50 %.1f  p90 %.1f  p99 %.1f  p99.9 %.1f  avg %.1f  max %.1f\n",
+        rtts_us.front(), p50, percentile(rtts_us, 0.90), p99, p999,
+        sum / static_cast<double>(rtts_us.size()), rtts_us.back());
+    printf(
+        "jitter us: p99-p50 %.1f  p99.9-p50 %.1f  max-p50 %.1f\n", p99 - p50, p999 - p50,
+        rtts_us.back() - p50);
+}
+
+// Paced (fixed-rate control loop) variant of run_latency: instead of sending
+// the next sample the instant the previous echo returns, send exactly one
+// sample per 1/hz tick. Because the loopback RTT (~125us over USB) is far below
+// a 1 kHz period, one sample is outstanding at a time, so this measures the RTT
+// a real timed control loop observes -- the honest comparison against a paced
+// EtherCAT run. The tick boundary is hit by busy-waiting (SCHED_FIFO), and the
+// achieved tick period is reported so master/scheduler jitter is visible.
+template <typename Board>
+int run_latency_paced(
+    Board& board, Receiver& receiver, uint32_t samples, uint32_t hz, std::string_view transport) {
+    using Clock = Receiver::Clock;
+    const auto period = std::chrono::duration_cast<Clock::duration>(
+        std::chrono::duration<double>{1.0 / static_cast<double>(hz)});
+
+    std::vector<double> rtts_us;
+    rtts_us.reserve(samples);
+    std::vector<double> tick_us;
+    tick_us.reserve(samples);
+    uint32_t timeouts = 0;
+
+    printf(
+        "%.*s paced: %u round trips at %u Hz after %u warm-up samples\n",
+        static_cast<int>(transport.size()), transport.data(), samples, hz, kWarmupSamples);
+
+    auto next_tick = Clock::now() + period;
+    Clock::time_point last_tick{};
+    bool have_last = false;
+    for (uint32_t sequence = 0; sequence < samples + kWarmupSamples; ++sequence) {
+        while (Clock::now() < next_tick) {}
+        const auto tick_time = Clock::now();
+        if (have_last && sequence >= kWarmupSamples)
+            tick_us.push_back(
+                std::chrono::duration<double, std::micro>(tick_time - last_tick).count());
+        last_tick = tick_time;
+        have_last = true;
+
+        std::byte payload[kPayloadSize];
+        put_u32_le(payload, sequence);
+        put_u32_le(payload + 4, mix(sequence));
+
+        receiver.arm(sequence, tick_time);
+        board.start_transmit().can0_transmit(
+            {.can_id = kCanId, .can_data = payload, .is_fdcan = true});
+
+        double rtt_us = 0.0;
+        if (receiver.wait(sequence, rtt_us)) {
+            if (sequence >= kWarmupSamples)
+                rtts_us.push_back(rtt_us);
+        } else if (sequence >= kWarmupSamples) {
+            ++timeouts;
+        }
+
+        next_tick += period;
+        // Resync if a slow iteration overran a whole period, so the cadence does
+        // not spiral into a permanent catch-up.
+        const auto now = Clock::now();
+        if (next_tick < now)
+            next_tick = now + period;
+    }
+
+    if (rtts_us.empty()) {
+        fprintf(stderr, "no valid loopback frames received\n");
+        return 2;
+    }
+
+    printf(
+        "samples=%zu timeout=%u invalid=%llu unexpected=%llu\n", rtts_us.size(), timeouts,
+        static_cast<unsigned long long>(receiver.invalid()),
+        static_cast<unsigned long long>(receiver.unexpected()));
+    print_rtt_distribution(rtts_us);
+    if (!tick_us.empty()) {
+        std::sort(tick_us.begin(), tick_us.end());
+        printf(
+            "tick period us: min %.1f  p50 %.1f  max %.1f (target %.1f)\n", tick_us.front(),
+            percentile(tick_us, 0.50), tick_us.back(), 1e6 / static_cast<double>(hz));
+    }
+
+    const bool clean = rtts_us.size() == samples && timeouts == 0 && receiver.invalid() == 0
+                    && receiver.unexpected() == 0;
+    printf("result: %s\n", clean ? "PASS" : "CHECK counters above");
+    return clean ? 0 : 2;
+}
+
 int parse_int(const char* value, int fallback) {
     return value ? std::atoi(value) : fallback;
 }
@@ -235,15 +344,17 @@ int main(int argc, char** argv) {
         fprintf(
             stderr,
             "usage: %s usb [samples] [io_core] [main_core]\n"
+            "       %s usb-paced [hz] [samples] [io_core] [main_core]\n"
             "       %s ecat <interface> [samples] [io_core] [main_core]\n",
-            argv[0], argv[0]);
+            argv[0], argv[0], argv[0]);
         return 1;
     }
 
     const std::string_view mode = argv[1];
     const bool use_ecat = mode == "ecat";
-    if (!use_ecat && mode != "usb") {
-        fprintf(stderr, "transport must be usb or ecat\n");
+    const bool paced = mode == "usb-paced";
+    if (!use_ecat && !paced && mode != "usb") {
+        fprintf(stderr, "transport must be usb, usb-paced, or ecat\n");
         return 1;
     }
     if (use_ecat && argc < 3) {
@@ -251,12 +362,26 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const int argument_base = use_ecat ? 3 : 2;
-    const int sample_value = parse_int(argc > argument_base ? argv[argument_base] : nullptr, 2000);
-    const int io_core =
-        parse_int(argc > argument_base + 1 ? argv[argument_base + 1] : nullptr, -1);
-    const int main_core =
-        parse_int(argc > argument_base + 2 ? argv[argument_base + 2] : nullptr, -1);
+    // Paced mode takes an extra leading hz argument: usb-paced [hz] [samples] ...
+    int hz = 1000;
+    int sample_value;
+    int io_core;
+    int main_core;
+    if (paced) {
+        hz = parse_int(argc > 2 ? argv[2] : nullptr, 1000);
+        sample_value = parse_int(argc > 3 ? argv[3] : nullptr, 2000);
+        io_core = parse_int(argc > 4 ? argv[4] : nullptr, -1);
+        main_core = parse_int(argc > 5 ? argv[5] : nullptr, -1);
+        if (hz <= 0) {
+            fprintf(stderr, "hz must be positive\n");
+            return 1;
+        }
+    } else {
+        const int argument_base = use_ecat ? 3 : 2;
+        sample_value = parse_int(argc > argument_base ? argv[argument_base] : nullptr, 2000);
+        io_core = parse_int(argc > argument_base + 1 ? argv[argument_base + 1] : nullptr, -1);
+        main_core = parse_int(argc > argument_base + 2 ? argv[argument_base + 2] : nullptr, -1);
+    }
     if (sample_value <= 0) {
         fprintf(stderr, "samples must be positive\n");
         return 1;
@@ -280,6 +405,10 @@ int main(int argc, char** argv) {
 
         librmcs::board::RmcsBoardHpm6e8y board{receiver, {}, options};
         configure_thread(main_core, 70, "bridge-lat-main");
+        if (paced)
+            return run_latency_paced(
+                board, receiver, static_cast<uint32_t>(sample_value), static_cast<uint32_t>(hz),
+                "USB");
         return run_latency(board, receiver, static_cast<uint32_t>(sample_value), "USB");
     } catch (const std::exception& error) {
         fprintf(stderr, "error: %s\n", error.what());

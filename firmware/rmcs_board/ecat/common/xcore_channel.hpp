@@ -23,7 +23,7 @@ namespace librmcs::firmware::ecat {
 // observe a half-initialized channel.
 
 inline constexpr std::uint32_t kXcoreChannelMagic = 0x524D5843U; // "RMXC"
-inline constexpr std::uint32_t kXcoreChannelVersion = 1;
+inline constexpr std::uint32_t kXcoreChannelVersion = 2;
 inline constexpr std::size_t kXcoreShareRamSize = 16 * 1024;
 
 // core0 -> core1: host command stream (fed to the protocol deserializer on
@@ -31,6 +31,15 @@ inline constexpr std::size_t kXcoreShareRamSize = 16 * 1024;
 inline constexpr std::size_t kXcoreDownRingSize = 4096;
 // core1 -> core0: telemetry stream towards the host.
 inline constexpr std::size_t kXcoreUpRingSize = 8192;
+
+#if defined(RMCS_ECAT_HYBRID_PD) && RMCS_ECAT_HYBRID_PD
+// Hybrid fixed-PDO variant: a SECOND ring pair carries the raw cyclic CAN
+// records (16 bytes each, native_can.hpp) alongside the protocol stream, which
+// keeps using down/up above. One complete downlink tick is 28 records (448
+// bytes); the rings cover that atomically published batch plus uplink headroom.
+inline constexpr std::size_t kXcoreMailboxDownRingSize = 512;
+inline constexpr std::size_t kXcoreMailboxUpRingSize = 1024;
+#endif
 
 struct XcoreChannel {
     std::atomic<std::uint32_t> magic{0};
@@ -40,8 +49,21 @@ struct XcoreChannel {
     // OP cycles (flush vs. keep) is deliberately NOT decided here; it belongs
     // to the protocol session policy (see ../README.md).
     std::atomic<std::uint32_t> link_epoch{0};
+    // Cross-core transport ownership. Core0 updates this together with its USB
+    // arbitration state; hybrid core1 reads it in the CAN RX ISR so USB keeps
+    // receiving CAN feedback through the reliable serializer while it owns the
+    // shared stream rings.
+    std::atomic<std::uint32_t> usb_active{0};
     XcoreRing<kXcoreDownRingSize> down;
     XcoreRing<kXcoreUpRingSize> up;
+#if defined(RMCS_ECAT_HYBRID_PD) && RMCS_ECAT_HYBRID_PD
+    // core0 -> core1: downlink CAN frames to transmit. Hybrid records carry
+    // link_epoch low16 so transport handovers invalidate queued commands.
+    XcoreRing<kXcoreMailboxDownRingSize> mailbox_down;
+    // core1 -> core0: received CAN frames. The same epoch tag prevents feedback
+    // from an old ownership interval entering the next fixed PDO image.
+    XcoreRing<kXcoreMailboxUpRingSize> mailbox_up;
+#endif
 };
 static_assert(std::is_trivially_destructible_v<XcoreChannel>);
 static_assert(sizeof(XcoreChannel) <= kXcoreShareRamSize);

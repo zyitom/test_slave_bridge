@@ -132,6 +132,19 @@ private:
         return false;
     }
 
+    bool uart_config_deserialized_callback(
+        core::protocol::FieldId id, const data::UartConfigView& data) override {
+        if (!session_established_)
+            return true;
+        for (auto& board_uart : uart::uart_array) {
+            if (static_cast<core::protocol::FieldId>(board_uart->config_data_id()) == id) {
+                board_uart->handle_config(data);
+                return true;
+            }
+        }
+        return false;
+    }
+
     // This board has no GPIO application; GPIO commands from the host are ignored.
     bool gpio_digital_data_deserialized_callback(
         uint8_t channel_index, const data::GpioDigitalDataView& data) override {
@@ -169,15 +182,15 @@ private:
         return false;
     }
 
-    void accelerometer_deserialized_callback(const data::AccelerometerDataView& data) override {
+    void accelerometer_deserialized_callback(const data::ImuAccelerometerDataView& data) override {
         (void)data;
     }
 
-    void gyroscope_deserialized_callback(const data::GyroscopeDataView& data) override {
+    void gyroscope_deserialized_callback(const data::ImuGyroscopeDataView& data) override {
         (void)data;
     }
 
-    void temperature_deserialized_callback(const data::TemperatureDataView& data) override {
+    void temperature_deserialized_callback(const data::ImuTemperatureDataView& data) override {
         (void)data;
     }
 

@@ -18,8 +18,17 @@ extern "C" {
  * Process data image size per direction. MUST equal the byte-array PDO size
  * configured in the SSC Tool project and the ESI file (see ../README.md);
  * pd_glue.cpp statically asserts it against the protocol constants.
+ *
+ * Hybrid fixed-PDO variant (RMCS_ECAT_HYBRID_PD): 352 bytes = 28 x 12-byte
+ * cyclic CAN slots + a 16-byte pd_stream chunk (see
+ * librmcs/ecat/hybrid_pd.hpp and hybrid_glue.cpp). Stock and native variants
+ * keep 48.
  */
+#if defined(RMCS_ECAT_HYBRID_PD) && RMCS_ECAT_HYBRID_PD
+#define RMCS_PD_CHUNK_SIZE (352U)
+#else
 #define RMCS_PD_CHUNK_SIZE (48U)
+#endif
 
 /* Construct and publish the shared-memory channel. Must be called BEFORE
  * releasing core1 and before any other rmcs_pd_* function. */

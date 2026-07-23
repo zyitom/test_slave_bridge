@@ -20,6 +20,17 @@ endif()
 set(BOARD "hpm6e80ivm1" CACHE STRING "Target board")
 set(BOARD_SEARCH_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../boards" CACHE PATH "Board search path")
 
+# Native CAN mailbox variant: swaps pd_glue.cpp (ARQ byte stream) for
+# native_glue.cpp (four per-bus mailboxes over the same 48-byte PDO).
+option(RMCS_ECAT_NATIVE_CAN "Build the native CAN mailbox variant" OFF)
+# Hybrid fixed-PDO variant: swaps pd_glue.cpp for hybrid_glue.cpp (28 x 12-byte
+# cyclic CAN slots + a 16-byte pd_stream chunk over a 352-byte PDO).
+option(RMCS_ECAT_HYBRID_PD "Build the hybrid fixed-PDO variant" OFF)
+
+if(RMCS_ECAT_NATIVE_CAN AND RMCS_ECAT_HYBRID_PD)
+    message(FATAL_ERROR "RMCS_ECAT_NATIVE_CAN and RMCS_ECAT_HYBRID_PD are mutually exclusive.")
+endif()
+
 # Enables the SDK flash-EEPROM-emulation component (must precede find_package).
 set(CONFIG_EEPROM_EMULATION 1)
 set(CONFIG_TINYUSB 1)
@@ -73,10 +84,16 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/sec_core_img.c")
 endif()
 
 # Process data buffer sizes for the SSC (guarded by #ifndef in the generated
-# ecat_def.h). One 48-byte stream chunk per direction; must equal
-# RMCS_PD_CHUNK_SIZE (src/rmcs_pd.h) -- ecat_appl.c static-asserts it. Applied
-# SDK-wide so every stack translation unit sees the same buffer layout.
-sdk_compile_definitions(-DMAX_PD_INPUT_SIZE=0x30 -DMAX_PD_OUTPUT_SIZE=0x30)
+# ecat_def.h). Must equal RMCS_PD_CHUNK_SIZE (src/rmcs_pd.h) -- ecat_appl.c
+# static-asserts it. Applied SDK-wide so every stack translation unit sees the
+# same buffer layout. Stock/native: one 48-byte chunk (0x30). Hybrid: a
+# 352-byte PDO (0x160) = 336-byte cyclic region + 16-byte stream chunk.
+if(RMCS_ECAT_HYBRID_PD)
+    sdk_compile_definitions(-DMAX_PD_INPUT_SIZE=0x160 -DMAX_PD_OUTPUT_SIZE=0x160)
+    sdk_compile_definitions(-DRMCS_ECAT_HYBRID_PD=1)
+else()
+    sdk_compile_definitions(-DMAX_PD_INPUT_SIZE=0x30 -DMAX_PD_OUTPUT_SIZE=0x30)
+endif()
 sdk_compile_definitions(-DLIBRMCS_PROJECT_VERSION_STRING="${LIBRMCS_PROJECT_VERSION}")
 sdk_compile_definitions(-DCFG_TUSB_MCU=OPT_MCU_HPM)
 sdk_compile_definitions(-DUSB_HOST_MCU_CORE=HPM_CORE0)
@@ -85,7 +102,32 @@ sdk_inc("${CMAKE_CURRENT_SOURCE_DIR}/include")
 # Beckhoff SSC (generated).
 sdk_inc(SSC/Src)
 sdk_src(SSC/Src/coeappl.c)
-sdk_src(SSC/Src/ecatappl.c)
+if(RMCS_ECAT_HYBRID_PD)
+    # ecatappl.c is the only translation unit that #include "eeprom.h" (the SII
+    # image byte array). It is a quoted include resolved relative to the file's
+    # OWN directory (SSC/Src), so a prepended -I cannot override it. To install
+    # the hybrid SII (revision 5, 352-byte SMs) WITHOUT editing the tracked SSC
+    # sources, compile a build-tree COPY of ecatappl.c from a staging directory
+    # that also holds a copy of the hybrid eeprom named eeprom.h: same-directory
+    # resolution then picks up the hybrid image, while every other quoted SSC
+    # include (ecatappl.h, digital_io.h, ...) still resolves via sdk_inc(SSC/Src).
+    #
+    # ROLLBACK TRAP (device side): the port refreshes its emulated EEPROM only
+    # when the built-in revision is GREATER than the stored one. Once a board has
+    # booted the hybrid image (revision 5), reverting to the stock stream image
+    # (revision 3) will NOT refresh -- bump the stock REVISION above 5 in
+    # tools/patch_sii.py and regenerate SSC/Src/eeprom.h before reverting.
+    set(_rmcs_hybrid_ssc "${CMAKE_CURRENT_BINARY_DIR}/hybrid_ssc")
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/ssc_overrides/eeprom_hybrid.h"
+        "${_rmcs_hybrid_ssc}/eeprom.h" COPYONLY)
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/SSC/Src/ecatappl.c"
+        "${_rmcs_hybrid_ssc}/ecatappl.c" COPYONLY)
+    sdk_src("${_rmcs_hybrid_ssc}/ecatappl.c")
+else()
+    sdk_src(SSC/Src/ecatappl.c)
+endif()
 sdk_src(SSC/Src/ecatcoe.c)
 sdk_src(SSC/Src/ecatslv.c)
 sdk_src(SSC/Src/mailbox.c)
@@ -112,7 +154,15 @@ sdk_app_inc("${LIBRMCS_PROJECT_ROOT}")
 sdk_app_src(${HPM_SDK_BASE}/samples/multicore/common/multicore_common.c)
 sdk_app_src(src/ecat_main.c)
 sdk_app_src(src/ecat_appl.c)
-sdk_app_src(src/pd_glue.cpp)
+if(RMCS_ECAT_NATIVE_CAN)
+    sdk_compile_definitions(-DRMCS_ECAT_NATIVE_CAN=1)
+    sdk_app_src(src/native_glue.cpp)
+elseif(RMCS_ECAT_HYBRID_PD)
+    # RMCS_ECAT_HYBRID_PD is already defined above.
+    sdk_app_src(src/hybrid_glue.cpp)
+else()
+    sdk_app_src(src/pd_glue.cpp)
+endif()
 sdk_app_src(src/sec_core_img.c)
 sdk_app_src(src/usb_runtime.cpp)
 sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/device/usbd.c")

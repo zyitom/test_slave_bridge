@@ -51,7 +51,9 @@ void Can::handle_downlink(const data::CanDataView& data) {
 }
 
 ATTR_PLACE_AT(".fast")
-bool Can::handle_uplink(core::protocol::FieldId field_id, core::protocol::Serializer& serializer) {
+bool Can::read_uplink(data::CanDataView& data, uint8_t storage[8], bool& valid) {
+    valid = false;
+    data = {};
     mcan_rx_message_t rx;
     if (mcan_read_rxfifo(can_base_, 0, &rx) != status_success)
         return false;
@@ -73,12 +75,13 @@ bool Can::handle_uplink(core::protocol::FieldId field_id, core::protocol::Serial
         return true;
     const size_t data_length = rx.rtr ? 0 : std::min<size_t>(rx.dlc, 8);
 
-    data::CanDataView data;
     data.is_fdcan = rx.canfd_frame;
     data.is_extended_can_id = rx.use_ext_id;
     data.is_remote_transmission = rx.rtr;
     data.can_id = data.is_extended_can_id ? rx.ext_id : rx.std_id;
-    data.can_data = {reinterpret_cast<const std::byte*>(rx.data_8), data_length};
+    if (data_length != 0)
+        std::memcpy(storage, rx.data_8, data_length);
+    data.can_data = {reinterpret_cast<const std::byte*>(storage), data_length};
 
     // 64-bit TSU timestamp captured at SOF from the shared PTPC0 timebase.
     // PTPC delivers an IEEE-1588 {seconds:nanoseconds} pair (high 32 bits =
@@ -105,6 +108,15 @@ bool Can::handle_uplink(core::protocol::FieldId field_id, core::protocol::Serial
         data.timestamp_us = sec * (1'000'000'000U / kTsNsPerUs) + (sec * 2U) / 3U + ns / kTsNsPerUs;
     }
 
+    valid = true;
+    return true;
+}
+
+ATTR_PLACE_AT(".fast")
+void Can::serialize_uplink(
+    core::protocol::FieldId field_id, const data::CanDataView& data,
+    core::protocol::Serializer& serializer) {
+
     const auto result = serializer.write_can(field_id, data);
     if (result == core::protocol::Serializer::SerializeResult::kBadAlloc) [[unlikely]]
         led::led->uplink_buffer_full();
@@ -112,6 +124,17 @@ bool Can::handle_uplink(core::protocol::FieldId field_id, core::protocol::Serial
     // against internal contract regressions.
     core::utility::assert_always(
         result != core::protocol::Serializer::SerializeResult::kInvalidArgument);
+}
+
+ATTR_PLACE_AT(".fast")
+bool Can::handle_uplink(core::protocol::FieldId field_id, core::protocol::Serializer& serializer) {
+    data::CanDataView data;
+    uint8_t storage[8];
+    bool valid = false;
+    if (!read_uplink(data, storage, valid))
+        return false;
+    if (valid)
+        serialize_uplink(field_id, data, serializer);
 
     return true;
 }
@@ -130,9 +153,45 @@ void Can::irq_handler() {
     // ISR simply runs again.
     mcan_clear_interrupt_flags(can_base_, flags);
 
+#if !(defined(RMCS_ECAT_NATIVE_CAN) && RMCS_ECAT_NATIVE_CAN)
     if (flags & MCAN_INT_RXFIFO0_NEW_MSG) [[likely]] {
         // Drain the FIFO completely: RF0N is a status bit, not a counter, so
         // one interrupt may stand for several buffered frames.
+#if defined(RMCS_ECAT_HYBRID_PD) && RMCS_ECAT_HYBRID_PD
+        if (!link::hybrid_fixed_active()) {
+            // USB owns the shared stream: preserve the original serializer path
+            // byte-for-byte, including extended/RTR frames and timestamps.
+            if (link::uplink_enabled()) {
+                auto& serializer = link::uplink_serializer();
+                while (handle_uplink(data_id_, serializer)) {}
+            } else {
+                mcan_rx_message_t rx;
+                while (mcan_read_rxfifo(can_base_, 0, &rx) == status_success) {}
+            }
+        } else {
+            // EtherCAT owns the link. Standard <=8-byte frames use one of seven
+            // per-bus fixed slots; unsupported frames or a full fixed ring fall
+            // back to the reliable protocol stream rather than being dropped.
+            data::CanDataView view;
+            uint8_t storage[8];
+            bool forwarded = false;
+            bool valid = false;
+            while (read_uplink(view, storage, valid)) {
+                if (!valid)
+                    continue;
+                if (link::hybrid_can_uplink(
+                        static_cast<size_t>(data_id_)
+                            - static_cast<size_t>(data::DataId::kCan0),
+                        view)) {
+                    forwarded = true;
+                } else if (link::uplink_enabled()) {
+                    serialize_uplink(data_id_, view, link::uplink_serializer());
+                }
+            }
+            if (forwarded)
+                link::hybrid_uplink_notify();
+        }
+#else
         if (link::uplink_enabled()) {
             auto& serializer = link::uplink_serializer();
             while (handle_uplink(data_id_, serializer)) {}
@@ -140,7 +199,12 @@ void Can::irq_handler() {
             mcan_rx_message_t rx;
             while (mcan_read_rxfifo(can_base_, 0, &rx) == status_success) {}
         }
+#endif
     }
+#endif
+    // Native variant: RX FIFO0 is drained by the core1 poll loop, and the
+    // RX-new-message interrupt is not enabled, so this ISR only handles the
+    // error/status flags below.
 
     if (flags
         & (MCAN_INT_BUS_OFF_STATUS | MCAN_INT_WARNING_STATUS | MCAN_INT_ERROR_PASSIVE

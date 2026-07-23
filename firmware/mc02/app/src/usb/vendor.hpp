@@ -128,6 +128,19 @@ private:
         }
     }
 
+    bool uart_config_deserialized_callback(
+        core::protocol::FieldId id, const data::UartConfigView& data) override {
+        if (!session_established_)
+            return true;
+        switch (id) {
+        case data::DataId::kUartDbusConfig: return uart::uart_dbus->handle_config(data);
+        case data::DataId::kUart1Config: return uart::uart1->handle_config(data);
+        case data::DataId::kUart2Config: return uart::uart2->handle_config(data);
+        case data::DataId::kUart3Config: return uart::uart3->handle_config(data);
+        default: return false;
+        }
+    }
+
     bool gpio_digital_data_deserialized_callback(
         uint8_t channel_index, const data::GpioDigitalDataView& data) override {
         if (!session_established_)
@@ -178,15 +191,15 @@ private:
         return false;
     }
 
-    void accelerometer_deserialized_callback(const data::AccelerometerDataView& data) override {
+    void accelerometer_deserialized_callback(const data::ImuAccelerometerDataView& data) override {
         (void)data;
     }
 
-    void gyroscope_deserialized_callback(const data::GyroscopeDataView& data) override {
+    void gyroscope_deserialized_callback(const data::ImuGyroscopeDataView& data) override {
         (void)data;
     }
 
-    void temperature_deserialized_callback(const data::TemperatureDataView& data) override {
+    void temperature_deserialized_callback(const data::ImuTemperatureDataView& data) override {
         (void)data;
     }
 

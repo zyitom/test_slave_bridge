@@ -18,6 +18,9 @@ struct UartPort {
     uint32_t dma_src_tx;
     uint32_t dma_src_rx;
     data::DataId data_id;
+    // Downlink id that carries runtime configuration (baudrate) for this port.
+    // Pairs with data_id: kUart0 -> kUart0Config, kUartDbus -> kUartDbusConfig.
+    data::DataId config_data_id;
     uint32_t baudrate;
     parity_setting_t parity;
 };

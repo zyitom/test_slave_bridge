@@ -57,7 +57,7 @@ constexpr clock_name_t kMchtmrClockName = clock_mchtmr0;
 // DBUS receiver.
 constexpr UartPort kUartPorts[] = {
     {HPM_UART2_BASE, IRQn_UART2, HPM_DMA_SRC_UART2_TX, HPM_DMA_SRC_UART2_RX,
-     data::DataId::kUart0, 921600, parity_none},
+     data::DataId::kUart0, data::DataId::kUart0Config, 921600, parity_none},
 };
 
 uint32_t init_uart(UART_Type* ptr);

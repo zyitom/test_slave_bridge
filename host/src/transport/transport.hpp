@@ -9,6 +9,7 @@
 
 #include "core/src/protocol/constant.hpp"
 #include "librmcs/board/common.hpp"
+#include "librmcs/data/datas.hpp"
 
 namespace librmcs::host::transport {
 
@@ -46,6 +47,22 @@ public:
      * must return a span pointing to the same underlying memory.
      */
     virtual BufferSpanType data() const noexcept = 0;
+
+    // Optional cyclic CAN sideband used by the explicit EtherCAT hybrid API.
+    // Ordinary USB/SOEM/stream buffers keep the default `false` behavior, so
+    // their protocol bytes and reliable event semantics are unchanged.
+    virtual bool try_stage_cyclic_can(
+        data::DataId field_id, const data::CanDataView& view) noexcept {
+        (void)field_id;
+        (void)view;
+        return false;
+    }
+    // Returns true when a cyclic builder is a strict fixed-PDO batch. Such a
+    // builder must not spill fields into the reliable stream, because doing so
+    // would lose batch ordering and deterministic completion semantics.
+    virtual bool begin_cyclic_can_batch() noexcept { return false; }
+    virtual void reject_cyclic_can_batch() noexcept {}
+    virtual bool has_cyclic_data() const noexcept { return false; }
 };
 
 /**
@@ -137,6 +154,19 @@ public:
      *   shared with other threads.
      */
     virtual void receive(std::function<void(std::span<const std::byte>)> callback) = 0;
+
+    // Optional direct receive path paired with try_stage_cyclic_can(). The
+    // callback is invoked on the same transport cycle thread as receive(), so a
+    // hybrid transport never calls the Handler concurrently from two threads.
+    virtual void receive_cyclic_can(
+        std::function<void(data::DataId, const data::CanDataView&)> callback) {
+        (void)callback;
+    }
+
+    // Optional transport-link restart notification. The callback runs on the
+    // same receive thread and must not block it; Handler uses it to invalidate
+    // the protocol session and lets its keepalive thread establish a new one.
+    virtual void on_link_restart(std::function<void()> callback) { (void)callback; }
 };
 
 namespace usb {

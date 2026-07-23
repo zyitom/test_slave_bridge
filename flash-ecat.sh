@@ -11,6 +11,9 @@
 #   BUILD_ONLY=1 ./flash-ecat.sh
 #   PRESET=debug ./flash-ecat.sh
 #   LOOPBACK=1 ./flash-ecat.sh
+#   NATIVE=1 ./flash-ecat.sh    # native CAN mailbox variant (RMCS_ECAT_NATIVE_CAN)
+#   HYBRID=1 ./flash-ecat.sh    # hybrid fixed-PDO variant (RMCS_ECAT_HYBRID_PD)
+#   (NATIVE and HYBRID are mutually exclusive)
 #
 set -euo pipefail
 
@@ -49,15 +52,39 @@ LOOPBACK_FLAG="OFF"
 if [[ "${LOOPBACK:-0}" != "0" ]]; then
     LOOPBACK_FLAG="ON"
 fi
+NATIVE_FLAG="OFF"
+if [[ "${NATIVE:-0}" != "0" ]]; then
+    NATIVE_FLAG="ON"
+fi
+HYBRID_FLAG="OFF"
+if [[ "${HYBRID:-0}" != "0" ]]; then
+    HYBRID_FLAG="ON"
+fi
+if [[ "$NATIVE_FLAG" == "ON" && "$HYBRID_FLAG" == "ON" ]]; then
+    echo "error: NATIVE and HYBRID are mutually exclusive; enable at most one" >&2
+    exit 1
+fi
+if [[ "$LOOPBACK_FLAG" == "ON" && ( "$NATIVE_FLAG" == "ON" || "$HYBRID_FLAG" == "ON" ) ]]; then
+    echo "error: LOOPBACK cannot be combined with NATIVE or HYBRID" >&2
+    exit 1
+fi
 
-echo ">> Building rmcs_ecat core1+core0 (preset: $PRESET, BOARD=$BOARD, loopback: $LOOPBACK_FLAG)"
+echo ">> Building rmcs_ecat core1+core0" \
+    "(preset: $PRESET, BOARD=$BOARD, loopback: $LOOPBACK_FLAG," \
+    "native: $NATIVE_FLAG, hybrid: $HYBRID_FLAG)"
 cmake --preset "$PRESET" -S "$ECAT_DIR" -B "$BUILD_DIR" \
     -DBOARD="$BOARD" \
     -DBOARD_SEARCH_PATH="$SCRIPT_DIR/firmware/rmcs_board/boards" \
-    -DRMCS_ECAT_CORE1_LOOPBACK="$LOOPBACK_FLAG"
-# Force a core1 relink so sec_core_img.c always matches the selected loopback
-# variant even when an existing nested build cache is reused.
-touch "$ECAT_DIR/core1/src/main.cpp"
+    -DRMCS_ECAT_CORE1_LOOPBACK="$LOOPBACK_FLAG" \
+    -DRMCS_ECAT_NATIVE_CAN="$NATIVE_FLAG" \
+    -DRMCS_ECAT_HYBRID_PD="$HYBRID_FLAG"
+# Force a core1 relink so sec_core_img.c always matches the selected variant
+# even when an existing nested build cache is reused. Touch the native/stream/
+# hybrid glue and CAN driver too, since the variant changes their compilation.
+touch "$ECAT_DIR/core1/src/main.cpp" \
+    "$ECAT_DIR/core0/src/native_glue.cpp" "$ECAT_DIR/core0/src/pd_glue.cpp" \
+    "$ECAT_DIR/core0/src/hybrid_glue.cpp" "$ECAT_DIR/core1/src/hybrid_link.cpp" \
+    "$SCRIPT_DIR/firmware/rmcs_board/app/src/can/can.cpp"
 cmake --build "$BUILD_DIR" --target rmcs_ecat_core0
 
 DFU_IMAGE="$OUTPUT_DIR/rmcs_ecat_bridge_${BOARD}.dfu"

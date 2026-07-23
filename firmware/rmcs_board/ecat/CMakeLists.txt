@@ -24,6 +24,23 @@ set(RV_ABI "ilp32" CACHE STRING "RISC-V ABI")
 set(BOARD_BOOTLOADER_MODE "auto" CACHE STRING "Bootloader mode (auto / manual)")
 set_property(CACHE BOARD_BOOTLOADER_MODE PROPERTY STRINGS auto manual)
 option(RMCS_ECAT_CORE1_LOOPBACK "Build the P1 loopback bring-up image on core1" OFF)
+# Native CAN mailbox variant: the 48-byte PDO carries four per-bus CAN mailboxes
+# (latest-wins, no ARQ) instead of the byte stream. Experimental latency
+# demonstrator; both cores must agree, so the flag reaches both sub-builds.
+option(RMCS_ECAT_NATIVE_CAN "Build the native CAN mailbox variant" OFF)
+# Hybrid fixed-PDO variant: 352-byte PDO = 28 x 12-byte cyclic CAN slots
+# (latest-wins) + a 16-byte pd_stream ARQ chunk (protocol/session stays alive).
+# Mutually exclusive with the native variant; both cores must agree.
+option(RMCS_ECAT_HYBRID_PD "Build the hybrid fixed-PDO variant" OFF)
+
+if(RMCS_ECAT_NATIVE_CAN AND RMCS_ECAT_HYBRID_PD)
+    message(FATAL_ERROR
+        "RMCS_ECAT_NATIVE_CAN and RMCS_ECAT_HYBRID_PD are mutually exclusive; enable at most one.")
+endif()
+if(RMCS_ECAT_CORE1_LOOPBACK AND (RMCS_ECAT_NATIVE_CAN OR RMCS_ECAT_HYBRID_PD))
+    message(FATAL_ERROR
+        "RMCS_ECAT_CORE1_LOOPBACK cannot be combined with native or hybrid process data.")
+endif()
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "debug")
@@ -69,8 +86,15 @@ add_rmcs_ecat_subbuild(
     rmcs_ecat_core1
     "${CMAKE_CURRENT_SOURCE_DIR}/core1"
     -DRMCS_ECAT_CORE1_LOOPBACK=${RMCS_ECAT_CORE1_LOOPBACK}
+    -DRMCS_ECAT_NATIVE_CAN=${RMCS_ECAT_NATIVE_CAN}
+    -DRMCS_ECAT_HYBRID_PD=${RMCS_ECAT_HYBRID_PD}
 )
-add_rmcs_ecat_subbuild(rmcs_ecat_core0 "${CMAKE_CURRENT_SOURCE_DIR}/core0")
+add_rmcs_ecat_subbuild(
+    rmcs_ecat_core0
+    "${CMAKE_CURRENT_SOURCE_DIR}/core0"
+    -DRMCS_ECAT_NATIVE_CAN=${RMCS_ECAT_NATIVE_CAN}
+    -DRMCS_ECAT_HYBRID_PD=${RMCS_ECAT_HYBRID_PD}
+)
 # core0 compiles the sec_core_img.c that the core1 build emits.
 add_dependencies(rmcs_ecat_core0 rmcs_ecat_core1)
 

@@ -32,6 +32,26 @@ enum class DataId : uint8_t {
     kImu = 15,
 
     kSession = 16,
+
+    // Downlink configuration channels. These ride the same byte stream as the
+    // data fields above and are told apart by the field header alone; ids >= 15
+    // need the extended (2-byte) field header. The kCan*Config ids are reserved
+    // to keep the numbering aligned with upstream -- no CAN config payload is
+    // defined yet, so nothing serializes them.
+    kCan0Config = 17,
+    kCan1Config = 18,
+    kCan2Config = 19,
+    kCan3Config = 20,
+    kCan4Config = 21,
+    kCan5Config = 22,
+    kCan6Config = 23,
+    kCan7Config = 24,
+
+    kUartDbusConfig = 25,
+    kUart0Config = 26,
+    kUart1Config = 27,
+    kUart2Config = 28,
+    kUart3Config = 29,
 };
 
 enum class SessionType : uint8_t {
@@ -60,6 +80,12 @@ struct CanDataView {
 struct UartDataView {
     std::span<const std::byte> uart_data;
     bool idle_delimited = false;
+};
+
+// Sparse patch: an unset field leaves the corresponding setting untouched. An
+// entirely empty view is a deliberate no-op rather than an error.
+struct UartConfigView {
+    std::optional<uint32_t> baudrate = std::nullopt;
 };
 
 struct GpioDigitalDataView {
@@ -96,21 +122,21 @@ struct GpioReadConfigView {
     }
 };
 
-struct AccelerometerDataView {
+struct ImuAccelerometerDataView {
     int16_t x;
     int16_t y;
     int16_t z;
     uint32_t timestamp_quarter_us;
 };
 
-struct GyroscopeDataView {
+struct ImuGyroscopeDataView {
     int16_t x;
     int16_t y;
     int16_t z;
     uint32_t timestamp_quarter_us;
 };
 
-struct TemperatureDataView {
+struct ImuTemperatureDataView {
     uint16_t raw_register_value;
     uint32_t timestamp_quarter_us;
 };
@@ -148,9 +174,9 @@ public:
     [[nodiscard]] virtual bool
         gpio_analog_read_result_callback(uint8_t channel_index, const GpioAnalogDataView& data) = 0;
 
-    virtual void accelerometer_receive_callback(const AccelerometerDataView& data) = 0;
-    virtual void gyroscope_receive_callback(const GyroscopeDataView& data) = 0;
-    virtual void temperature_receive_callback(const TemperatureDataView& data) = 0;
+    virtual void accelerometer_receive_callback(const ImuAccelerometerDataView& data) = 0;
+    virtual void gyroscope_receive_callback(const ImuGyroscopeDataView& data) = 0;
+    virtual void temperature_receive_callback(const ImuTemperatureDataView& data) = 0;
 };
 
 } // namespace librmcs::data

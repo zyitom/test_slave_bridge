@@ -39,6 +39,7 @@ void rmcs_pd_reset(void) {
     // A fresh OP cycle means an EtherCAT master is (re)claiming the link, so
     // hand the rings back from any prior USB owner to the ESC path.
     usb_active.store(false, std::memory_order::release);
+    channel->usb_active.store(0, std::memory_order::release);
     // Ring contents are intentionally left untouched: core1 owns one end of
     // each ring, so clearing them from here would race. What survives an OP
     // cycle is a protocol-session decision made in later phases (README,
@@ -92,6 +93,7 @@ size_t rmcs_pd_pop_uplink(uint8_t* buffer, size_t capacity) {
 
 void rmcs_pd_set_usb_active(bool active) {
     const bool was = usb_active.exchange(active, std::memory_order::acq_rel);
+    channel->usb_active.store(active ? 1U : 0U, std::memory_order::release);
     if (was == active)
         return;
     // Handover between transports: reset the ARQ endpoint (stale on the USB

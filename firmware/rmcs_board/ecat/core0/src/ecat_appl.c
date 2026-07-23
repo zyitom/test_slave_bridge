@@ -43,6 +43,18 @@ _Static_assert(
     MAX_PD_INPUT_SIZE >= RMCS_PD_CHUNK_SIZE && MAX_PD_OUTPUT_SIZE >= RMCS_PD_CHUNK_SIZE,
     "SSC process data buffers too small; check core0/CMakeLists.txt definitions");
 
+#if defined(RMCS_ECAT_HYBRID_PD) && RMCS_ECAT_HYBRID_PD
+/* Hybrid fixed-PDO variant: 352 bytes = 28 x 12-byte cyclic CAN slots + a
+ * 16-byte pd_stream chunk. Compile-check every size relationship so a mismatch
+ * between the object dictionary, region split and SSC buffers cannot slip
+ * through. */
+_Static_assert(RMCS_PD_CHUNK_SIZE == 352, "hybrid PD is 352 bytes per direction");
+_Static_assert(RMCS_STREAM_ENTRY_COUNT == 88, "hybrid maps 84 fixed + 4 stream UNSIGNED32");
+_Static_assert(
+    336 /* fixed region */ + 16 /* stream chunk */ == RMCS_PD_CHUNK_SIZE,
+    "hybrid region offsets must partition the 352-byte PDO");
+#endif
+
 /* Called when an error state was acknowledged by the master. */
 void APPL_AckErrorInd(UINT16 stateTrans) { (void)stateTrans; }
 

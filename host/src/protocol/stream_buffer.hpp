@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <span>
@@ -66,11 +67,16 @@ public:
      * @param transport The transport to use for buffer acquisition and transmission.
      *                  Must outlive this StreamBuffer instance.
      */
-    explicit StreamBuffer(transport::Transport& transport) noexcept
-        : transport_(transport) {}
+    explicit StreamBuffer(transport::Transport& transport, bool cyclic = false) noexcept
+        : transport_and_flags_(
+              reinterpret_cast<std::uintptr_t>(&transport) | (cyclic ? kCyclicFlag : 0)) {
+        static_assert(alignof(transport::Transport) >= 2);
+        if (cyclic && init_buffer())
+            (void)buffer_->begin_cyclic_can_batch();
+    }
 
     StreamBuffer(StreamBuffer&& other) noexcept
-        : transport_(other.transport_)
+        : transport_and_flags_(other.transport_and_flags_)
         , buffer_(std::move(other.buffer_))
         , current_(other.current_)
         , end_(other.end_) {
@@ -190,11 +196,33 @@ public:
         return {begin, size};
     }
 
+    bool try_stage_cyclic_can(
+        data::DataId field_id, const data::CanDataView& view) noexcept {
+        if (!cyclic_enabled())
+            return false;
+        if (!buffer_ && !init_buffer())
+            return false;
+        return buffer_->try_stage_cyclic_can(field_id, view);
+    }
+
+    bool strict_cyclic_can() noexcept {
+        if (!cyclic_enabled())
+            return false;
+        if (!buffer_ && !init_buffer())
+            return false;
+        return buffer_->begin_cyclic_can_batch();
+    }
+
+    void reject_cyclic_can_batch() noexcept {
+        if (buffer_)
+            buffer_->reject_cyclic_can_batch();
+    }
+
 private:
     bool init_buffer() noexcept {
         core::utility::assert_debug(!buffer_ && !current_ && !end_);
 
-        buffer_ = transport_.acquire_transmit_buffer();
+        buffer_ = transport().acquire_transmit_buffer();
         if (!buffer_)
             return false;
 
@@ -211,14 +239,25 @@ private:
 
         const std::byte* begin = buffer_->data().data();
         const std::size_t payload_size = current_ - begin;
-        core::utility::assert_debug(payload_size > 0);
-
-        transport_.transmit(std::move(buffer_), payload_size);
+        if (payload_size == 0 && !buffer_->has_cyclic_data()) {
+            transport().release_transmit_buffer(std::move(buffer_));
+        } else {
+            transport().transmit(std::move(buffer_), payload_size);
+        }
         buffer_.reset();
         current_ = end_ = nullptr;
     }
 
-    transport::Transport& transport_;
+    transport::Transport& transport() const noexcept {
+        return *reinterpret_cast<transport::Transport*>(transport_and_flags_ & ~kCyclicFlag);
+    }
+
+    bool cyclic_enabled() const noexcept {
+        return (transport_and_flags_ & kCyclicFlag) != 0;
+    }
+
+    static constexpr std::uintptr_t kCyclicFlag = 1;
+    std::uintptr_t transport_and_flags_;
 
     std::unique_ptr<transport::TransportBuffer> buffer_ = nullptr;
     std::byte *current_ = nullptr, *end_ = nullptr;

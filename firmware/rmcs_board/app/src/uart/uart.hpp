@@ -43,6 +43,29 @@ public:
 
     [[nodiscard]] data::DataId data_id() const { return data_id_; }
 
+    [[nodiscard]] data::DataId config_data_id() const { return config_data_id_; }
+
+    // Runtime baudrate switch requested by the host. An empty view (no baudrate
+    // set) is a deliberate no-op per the sparse-patch semantics of the config
+    // type, reported as false so the caller can tell it apart from a hit.
+    //
+    // RX bytes arriving inside the switch window may be garbled -- the line rate
+    // changes mid-character and there is no way to synchronize with the peer.
+    // That is accepted; the host is expected to quiesce the link first.
+    bool handle_config(const data::UartConfigView& data) {
+        if (!data.baudrate.has_value() || *data.baudrate == 0) [[unlikely]]
+            return false;
+
+        // Bytes already handed to the DMA would be shifted out at the new rate.
+        TxBuffer::abort_transmit();
+
+        uart_set_baudrate(uart_base_, *data.baudrate, uart_clock_hz_);
+        // uart_set_baudrate leaves DLAB set to reach the divisor latch; clear it
+        // so subsequent register access hits RBR/THR instead of the latch.
+        uart_base_->LCR &= ~UART_LCR_DLAB_MASK;
+        return true;
+    }
+
     void handle_downlink(const data::UartDataView& data) {
         if (!TxBuffer::try_enqueue(data))
             led::led->downlink_buffer_full();
@@ -58,7 +81,7 @@ public:
     }
 
 private:
-    void init_uart(uint32_t irq_num, uint32_t baudrate, parity_setting_t parity) {
+    [[nodiscard]] uint32_t init_uart(uint32_t irq_num, uint32_t baudrate, parity_setting_t parity) {
         const uint32_t uart_clock = board::init_uart(uart_base_);
 
         uart_config_t config{};
@@ -84,6 +107,8 @@ private:
 
         core::utility::assert_always(uart_init(uart_base_, &config) == status_success);
         intc_m_enable_irq_with_priority(irq_num, 1);
+
+        return uart_clock;
     }
 
     void handle_uplink(
@@ -99,7 +124,11 @@ private:
     }
 
     const data::DataId data_id_;
+    const data::DataId config_data_id_;
     UART_Type* uart_base_;
+    // Source clock captured at init: uart_set_baudrate needs it to recompute the
+    // divisor on a runtime baudrate switch.
+    uint32_t uart_clock_hz_;
 
 public:
     // DMA buffer storage in a board-chosen non-cached region (AHB SRAM on
@@ -132,9 +161,9 @@ inline Uart::Uart(UartPort port, size_t storage_index)
           uart_rx_storage_[storage_index].data.data(),
           uart_rx_storage_[storage_index].descriptors.data())
     , data_id_(port.data_id)
-    , uart_base_(reinterpret_cast<UART_Type*>(port.base)) {
-    init_uart(port.irq_num, port.baudrate, port.parity);
-}
+    , config_data_id_(port.config_data_id)
+    , uart_base_(reinterpret_cast<UART_Type*>(port.base))
+    , uart_clock_hz_(init_uart(port.irq_num, port.baudrate, port.parity)) {}
 
 namespace internal {
 

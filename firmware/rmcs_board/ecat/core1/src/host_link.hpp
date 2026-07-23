@@ -22,11 +22,11 @@ public:
 
     HostLink() = default;
 
-    // Main loop, step 2: core0 bumped link_epoch (SAFEOP -> OP re-entry, i.e.
-    // the master restarted the PD stream). Session policy: drop the session
-    // and any partially deserialized frame; the host re-handshakes on top of
-    // the fresh ARQ stream, and stale uplink batches are cleared on the next
-    // kStart. Ring contents are left alone (core0 owns the other end).
+    // Before consuming downlink, core1 checks whether core0 bumped link_epoch
+    // (transport handover or SAFEOP -> OP re-entry). Session policy: drop the
+    // session and any partially deserialized frame; the host re-handshakes on
+    // top of the fresh ARQ stream, and stale uplink batches are cleared on the
+    // next kStart. Ring contents are left alone (core0 owns the other end).
     void handle_link_restart() {
         finish_downlink_transfer();
         deactivate_session();

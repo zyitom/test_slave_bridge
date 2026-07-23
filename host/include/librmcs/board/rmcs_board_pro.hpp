@@ -7,6 +7,8 @@
 #include <librmcs/board/common.hpp>
 #include <librmcs/data/datas.hpp>
 #include <librmcs/protocol/handler.hpp>
+#include <librmcs/spec/rmcs_board_pro/can.hpp>
+#include <librmcs/spec/rmcs_board_pro/uart.hpp>
 #include <librmcs/spec/gpio.hpp>
 #include <librmcs/spec/rmcs_board_pro/gpio.hpp>
 
@@ -35,6 +37,31 @@ class RmcsBoardPro final {
 public:
     class Callback : public data::DataCallback {
     public:
+        // Channel descriptors for this board. Addressing a channel through its
+        // descriptor is what lets generic code reach data_id and, for UARTs,
+        // config_data_id without a second lookup table.
+        struct Spec {
+            using Can = spec::rmcs_board_pro::CanDescriptor;
+            static constexpr spec::rmcs_board_pro::internal::CanDescriptors kCans{};
+
+            using Uart = spec::rmcs_board_pro::UartDescriptor;
+            static constexpr spec::rmcs_board_pro::internal::UartDescriptors kUarts{};
+
+            using Gpio = spec::rmcs_board_pro::GpioDescriptor;
+            static constexpr spec::rmcs_board_pro::internal::GpioDescriptors kGpios{};
+        };
+
+        struct View {
+            using Can = data::CanDataView;
+            using Uart = data::UartDataView;
+            using UartConfig = data::UartConfigView;
+            using GpioDigital = data::GpioDigitalDataView;
+            using GpioAnalog = data::GpioAnalogDataView;
+            using ImuAccelerometer = data::ImuAccelerometerDataView;
+            using ImuGyroscope = data::ImuGyroscopeDataView;
+            using ImuTemperature = data::ImuTemperatureDataView;
+        };
+
         virtual void can0_receive_callback(const librmcs::data::CanDataView& data) { (void)data; }
         virtual void can1_receive_callback(const librmcs::data::CanDataView& data) { (void)data; }
         virtual void can2_receive_callback(const librmcs::data::CanDataView& data) { (void)data; }
@@ -60,13 +87,13 @@ public:
         }
 
         void accelerometer_receive_callback(
-            const librmcs::data::AccelerometerDataView& data) override {
+            const librmcs::data::ImuAccelerometerDataView& data) override {
             (void)data;
         }
-        void gyroscope_receive_callback(const librmcs::data::GyroscopeDataView& data) override {
+        void gyroscope_receive_callback(const librmcs::data::ImuGyroscopeDataView& data) override {
             (void)data;
         }
-        void temperature_receive_callback(const librmcs::data::TemperatureDataView& data) override {
+        void temperature_receive_callback(const librmcs::data::ImuTemperatureDataView& data) override {
             (void)data;
         }
 
@@ -152,9 +179,27 @@ public:
                 throw std::invalid_argument{"UART0 transmission failed: Invalid UART data"};
             return *this;
         }
+
+        // Runtime reconfiguration of UART0. Rides the same downlink stream as
+        // the data above, so it is ordered against it: bytes queued earlier in
+        // this batch are sent at the old baudrate, later ones at the new one.
+        PacketBuilder& uart0_config(const librmcs::data::UartConfigView& config) {
+            if (!builder_.write_uart_config(data::DataId::kUart0Config, config)) [[unlikely]]
+                throw std::invalid_argument{"UART0 configuration failed: Invalid UART config"};
+            return *this;
+        }
         PacketBuilder& uart1_transmit(const librmcs::data::UartDataView& data) {
             if (!builder_.write_uart(data::DataId::kUart1, data)) [[unlikely]]
                 throw std::invalid_argument{"UART1 transmission failed: Invalid UART data"};
+            return *this;
+        }
+
+        // Runtime reconfiguration of UART1. Rides the same downlink stream as
+        // the data above, so it is ordered against it: bytes queued earlier in
+        // this batch are sent at the old baudrate, later ones at the new one.
+        PacketBuilder& uart1_config(const librmcs::data::UartConfigView& config) {
+            if (!builder_.write_uart_config(data::DataId::kUart1Config, config)) [[unlikely]]
+                throw std::invalid_argument{"UART1 configuration failed: Invalid UART config"};
             return *this;
         }
         PacketBuilder& uart2_transmit(const librmcs::data::UartDataView& data) {
@@ -162,9 +207,27 @@ public:
                 throw std::invalid_argument{"UART2 transmission failed: Invalid UART data"};
             return *this;
         }
+
+        // Runtime reconfiguration of UART2. Rides the same downlink stream as
+        // the data above, so it is ordered against it: bytes queued earlier in
+        // this batch are sent at the old baudrate, later ones at the new one.
+        PacketBuilder& uart2_config(const librmcs::data::UartConfigView& config) {
+            if (!builder_.write_uart_config(data::DataId::kUart2Config, config)) [[unlikely]]
+                throw std::invalid_argument{"UART2 configuration failed: Invalid UART config"};
+            return *this;
+        }
         PacketBuilder& uart3_transmit(const librmcs::data::UartDataView& data) {
             if (!builder_.write_uart(data::DataId::kUart3, data)) [[unlikely]]
                 throw std::invalid_argument{"UART3 transmission failed: Invalid UART data"};
+            return *this;
+        }
+
+        // Runtime reconfiguration of UART3. Rides the same downlink stream as
+        // the data above, so it is ordered against it: bytes queued earlier in
+        // this batch are sent at the old baudrate, later ones at the new one.
+        PacketBuilder& uart3_config(const librmcs::data::UartConfigView& config) {
+            if (!builder_.write_uart_config(data::DataId::kUart3Config, config)) [[unlikely]]
+                throw std::invalid_argument{"UART3 configuration failed: Invalid UART config"};
             return *this;
         }
 

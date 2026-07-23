@@ -74,9 +74,9 @@ public:
         (void)data;
     }
     virtual void on_dbus(const librmcs::data::UartDataView& data) { (void)data; }
-    virtual void on_accelerometer(const librmcs::data::AccelerometerDataView& data) { (void)data; }
-    virtual void on_gyroscope(const librmcs::data::GyroscopeDataView& data) { (void)data; }
-    virtual void on_temperature(const librmcs::data::TemperatureDataView& data) { (void)data; }
+    virtual void on_accelerometer(const librmcs::data::ImuAccelerometerDataView& data) { (void)data; }
+    virtual void on_gyroscope(const librmcs::data::ImuGyroscopeDataView& data) { (void)data; }
+    virtual void on_temperature(const librmcs::data::ImuTemperatureDataView& data) { (void)data; }
 };
 
 // Board-neutral packet builder, handed to the `transmit` callback. Writes are
@@ -194,13 +194,13 @@ private:
         receiver_.on_dbus(data);
     }
     void accelerometer_receive_callback(
-        const librmcs::data::AccelerometerDataView& data) override {
+        const librmcs::data::ImuAccelerometerDataView& data) override {
         receiver_.on_accelerometer(data);
     }
-    void gyroscope_receive_callback(const librmcs::data::GyroscopeDataView& data) override {
+    void gyroscope_receive_callback(const librmcs::data::ImuGyroscopeDataView& data) override {
         receiver_.on_gyroscope(data);
     }
-    void temperature_receive_callback(const librmcs::data::TemperatureDataView& data) override {
+    void temperature_receive_callback(const librmcs::data::ImuTemperatureDataView& data) override {
         receiver_.on_temperature(data);
     }
 
@@ -289,10 +289,10 @@ private:
         receiver_.on_dbus(data);
     }
     void accelerometer_receive_callback(
-        const librmcs::data::AccelerometerDataView& data) override {
+        const librmcs::data::ImuAccelerometerDataView& data) override {
         receiver_.on_accelerometer(data);
     }
-    void gyroscope_receive_callback(const librmcs::data::GyroscopeDataView& data) override {
+    void gyroscope_receive_callback(const librmcs::data::ImuGyroscopeDataView& data) override {
         receiver_.on_gyroscope(data);
     }
 

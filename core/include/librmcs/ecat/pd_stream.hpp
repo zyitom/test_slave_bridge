@@ -64,6 +64,9 @@ namespace librmcs::ecat {
 inline constexpr std::size_t kPdChunkHeaderSize = 4;
 inline constexpr std::size_t kPdChunkPayloadSize = 44;
 inline constexpr std::size_t kPdChunkSize = kPdChunkHeaderSize + kPdChunkPayloadSize;
+inline constexpr std::size_t kHybridPdChunkPayloadSize = 12;
+inline constexpr std::size_t kHybridPdChunkSize =
+    kPdChunkHeaderSize + kHybridPdChunkPayloadSize;
 
 // In-flight chunks per direction. 2 is exactly enough for one-chunk-per-frame
 // cadence (the ack for chunk k returns while chunk k+1 is on the wire); a
@@ -78,9 +81,12 @@ inline constexpr unsigned kGoBackStallFrames = 4;
 // One end of the stream. The slave instantiates it on core0 inside the SSC
 // PDO-mapping callbacks; the master side runs the mirror image of the same
 // algorithm (roles are fully symmetric).
-class PdStreamEndpoint {
+template <std::size_t payload_size>
+class BasicPdStreamEndpoint {
 public:
-    constexpr PdStreamEndpoint() = default;
+    static_assert(payload_size > 0 && payload_size <= UINT16_MAX);
+
+    constexpr BasicPdStreamEndpoint() = default;
 
     // Forget all link state. On the slave this runs on every SAFEOP -> OP
     // transition, paired with the master resetting its own endpoint before
@@ -111,7 +117,7 @@ public:
         std::uint16_t len;
         std::memcpy(&len, pd + 2, sizeof(len));
 
-        if (seq == 0 || len == 0 || len > kPdChunkPayloadSize)
+        if (seq == 0 || len == 0 || len > payload_size)
             return;
         if (seq != next_seq(rx_ack_))
             return; // duplicate or gap: withhold the ack, the peer goes back
@@ -158,7 +164,7 @@ public:
         } else if (frame_credit && count_ < kPdWindow) {
             Slot& slot = slots_[(head_ + count_) % kPdWindow];
             slot.len = static_cast<std::uint16_t>(
-                transmit_ring.pop({slot.payload, kPdChunkPayloadSize}));
+                transmit_ring.pop({slot.payload, payload_size}));
             if (slot.len != 0) {
                 tx_seq_ = next_seq(tx_seq_);
                 slot.seq = tx_seq_;
@@ -206,7 +212,7 @@ private:
         std::uint16_t len = 0;
         // Retransmit staging: bytes popped from the ring must stay available
         // until acknowledged.
-        std::byte payload[kPdChunkPayloadSize]{};
+        std::byte payload[payload_size]{};
     };
 
     static constexpr std::uint8_t next_seq(std::uint8_t seq) noexcept {
@@ -231,5 +237,8 @@ private:
     bool may_stage_ = true;     // one-new-chunk-per-frame credit
     Slot slots_[kPdWindow];
 };
+
+using PdStreamEndpoint = BasicPdStreamEndpoint<kPdChunkPayloadSize>;
+using HybridPdStreamEndpoint = BasicPdStreamEndpoint<kHybridPdChunkPayloadSize>;
 
 } // namespace librmcs::ecat

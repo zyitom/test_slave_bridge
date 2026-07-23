@@ -1,4 +1,4 @@
-# RMCS EtherCAT Stream Bridge (HPM6E00EVK, dual-core)
+# RMCS EtherCAT Bridge (HPM6E00EVK, dual-core)
 
 将 librmcs 协议字节流通过 EtherCAT 过程数据转发的从站固件（P1 阶段：回环验证）。
 同步模式/协议选型论证与延迟优化路线见 `DESIGN.md`。
@@ -47,6 +47,53 @@ CPU0 (EtherCAT 域)                     CPU1 (现场总线域)
   该 ISR 与刷新路径经 core0 定制链接脚本落在 ILM,免 XIP 取指抖动。host 侧
   soem transport 对称地在交付回调后留 ~3us 响应窗口,再省一个周期。
 
+## 周期控制推荐模式:Hybrid fixed PDO + reliable stream
+
+28 个电机(4 路 CAN,每路 7 个)以 1kHz 周期更新时,推荐构建 `RMCS_ECAT_HYBRID_PD`
+固件并使用 IgH host 的 `RMCS_ECAT_MODE=hybrid`。每个方向的 PDO 是 352 字节:
+
+- 336 字节固定区:4 x 7 个 12 字节 CAN mailbox,每槽独立 `seq`,语义为
+  latest-wins。一个控制 tick 是完整快照;主站尚未采样时,新快照直接
+  替换旧快照,不产生 ARQ 队列深度抖动。
+- 16 字节可靠区:`[seq:u8][ack:u8][len:u16][payload:12B]`,继续承载 session、配置、
+  UART、扩展帧、RTR 以及非周期 CAN 流量。当前 librmcs/CAN 硬件路径整体只支持
+  0..8 字节 payload,不接受 CAN-FD DLC > 8。
+- SDK 原有 `start_transmit()` 始终走可靠 stream,行为不变。周期控制显式使用
+  `start_cyclic_transmit()`,每个 tick 最多创建一个 builder。该 builder 是严格批次:
+  每路最多 7 个 standard、non-RTR、0..8 字节 CAN 帧;超额、不兼容或非 CAN 字段
+  返回失败并使整个 fixed 快照失效,不会自动混入 stream。配置和事件流量
+  必须使用单独的 `start_transmit()`。
+
+这种分工同时保留固定 PDO 的常数管线延迟和配置通道可靠性。它消除的是
+传输排队抖动,不是 host 调用相位:异步 `start_cyclic_transmit()` 仍可能在任意
+`0..Tpdo` 相位被周期线程采样。硬实时控制应把控制 tick 与 EtherCAT 周期锁相;
+`host/src/transport/igh/reference/ecat_hybrid_cyclic_bench.cpp` 在同一 IgH 周期线程内
+发送并采样全部 28 槽,用于测量真实闭环分布。多从站要求共同执行时刻时
+再启用 DC SYNC0;单桥回环不需要 DC。
+
+```bash
+HYBRID=1 BUILD_ONLY=1 ./flash-ecat.sh
+
+cmake --preset linux-release -S host -DLIBRMCS_ENABLE_IGH=ON -DBUILD_EXAMPLES=ON
+cmake --build host/build
+RMCS_ECAT_BACKEND=igh RMCS_ECAT_MODE=hybrid sudo -E \
+    ./host/build/examples/ecat_board_test ignored
+```
+
+352 字节 PDO 在 100Mbit EtherCAT 上增加固定序列化时间,但换来一个周期覆盖全部
+28 个命令且无消息排队。最终端到端上界仍受 CAN 位速率、仲裁和总线负载
+约束;固定 PDO 不能消除 CAN 段的排队,因此必须用上述 28 槽基准在目标接线
+和总线负载下验证 tick 完成时间与尾部抖动。
+
+固定上行槽不携带 MCAN 的硬件 SOF timestamp,回调中的时间应视为主机收到
+PDO 的时间。扩展帧/RTR/非周期 CAN 经独立 stream 发送时,与 fixed 批次之间
+不承诺跨路径顺序;控制 tick 不应混用两条路径。
+
+`RMCS_ECAT_NATIVE_CAN` 仅用于隔离的延迟实验,不应部署到生产总线。它沿用
+stock 48 字节 SII 身份,但把相同字节解释成 CAN mailbox;stock stream 主站
+可能进入 OP 后发送语义不兼容的数据。生产周期控制只使用独立 352 字节
+映射的 hybrid 模式。
+
 ## USB 协处传输(同固件双接口,数据面互斥)
 
 core0 除了 ESC 还挂着一个 USB 设备(原本只做 DFU 刷机)。因为跨核环
@@ -69,8 +116,10 @@ EtherCAT 或 USB 都能跟 core1 的 CAN/UART 说话,**但两个 host 数据客�
   线或仅枚举不会抢占数据面;host 在 vendor OUT 上
   发数据 → `tud_vendor_rx_cb` 置 USB active,ESC 的 PDO 钩子随即变惰性(忽略输出、
   输入发空闲 chunk);USB 拔出(`tud_umount_cb`)或 EtherCAT 进入 OP
-  (`rmcs_pd_reset`)则交还给 EtherCAT。切换时 reset ARQ 端点并 bump link epoch,
-  core1 据此重启会话。切换前应先退出旧 host 程序:若 USB 和 IgH 数据程序并发,
+  (`rmcs_pd_reset`)则交还给 EtherCAT。Hybrid 固定区在 USB ownership 期间持续
+  消费但丢弃旧命令,切回前排空旧反馈并清锁存图;可靠区 reset ARQ 端点并
+  bump link epoch,core1 据此重启会话。切换前应先退出旧 host 程序:若 USB 和
+  IgH 数据程序并发,
   USB keepalive 会反复发送 vendor OUT 并重新取得 ownership,EtherCAT 会看到空闲 PDO。
   见 `src/rmcs_pd.h` 的 `rmcs_pd_set_usb_active` 等。
 - **复合 USB 描述符**:vendor(接口 0,bulk EP `0x01`/`0x81`,HS 512B)+ DFU-RT
@@ -102,9 +151,10 @@ EtherCAT 或 USB 都能跟 core1 的 CAN/UART 说话,**但两个 host 数据客�
      ```
    - 项目特有内容全部在版本库内(`core0/ssc_overrides/digital_ioObjects.h`、
      `tools/patch_sii.py`),重新生成 SSC 时无需再改 SSC Tool 工程;
-   - SII 中 Revision 由脚本抬升(当前为 3),已烧过旧镜像的板卡上电后会自动
-     刷新仿真 EEPROM。开发期沿用 HPMicro 示例 Vendor ID;产品化需申请 ETG
-     Vendor ID。
+   - SII 中 stream Revision 为 3,hybrid Revision 为 5;从旧 stream 升级到 hybrid
+     时会自动刷新仿真 EEPROM。从 hybrid 回退到 stock/native 时,较低的 revision
+     不会自动覆盖已存的 revision 5,必须先提高 stock revision 并重新生成 SII。
+     开发期沿用 HPMicro 示例 Vendor ID;产品化需申请 ETG Vendor ID。
 
 ## 构建(先 core1 后 core0)
 
@@ -159,6 +209,7 @@ transport 实现:`host/src/transport/soem/soem.cpp`(实现 `transport::Transport
 ./flash-ecat-bootloader.sh   # 一次性:OpenOCD + 板载 FT2232 烧 DFU bootloader
 ./flash-ecat.sh              # 日常:USB DFU 烧应用(协议镜像)
 LOOPBACK=1 ./flash-ecat.sh   # P1 回环镜像(配 ecat_stream_latency)
+HYBRID=1 ./flash-ecat.sh     # 28 槽周期 CAN + 可靠配置流
 ```
 
 ## P2 全协议栈(已实现,待上板)
@@ -173,8 +224,8 @@ sudo ./host/build/examples/ecat_board_test <网口名> [秒数]
 # 会话建立 + 周期发送 CAN0/UART0;PY06<->PY07 短接可见 UART 回显
 ```
 
-## 尚未决定/后续阶段
+## 后续阶段
 
-- **session policy**:OP 重入时环内残留数据的取舍(冲刷需要跨核握手,当前仅
-  bump `link_epoch` 通知 core1)——与协议会话层一起在 P2 上板时定。
-- P3:按实测决定 SM-synchron(PDI ISR)与中断优先级微调;FoE 固件升级。
+- 在目标 4 路 CAN 接线和实际总线利用率下运行 28 槽锁相基准,据实测决定
+  SM-synchron(PDI ISR)、中断优先级和控制 tick 相位。
+- 多从站同步控制验证 DC SYNC0;FoE 固件升级。

@@ -52,6 +52,7 @@ constexpr UartPort kUartPorts[] = {
      .dma_src_tx = HPM_DMA_SRC_UART1_TX,
      .dma_src_rx = HPM_DMA_SRC_UART1_RX,
      .data_id = data::DataId::kUart0,
+     .config_data_id = data::DataId::kUart0Config,
      .baudrate = 921600,
      .parity = parity_none},
 };

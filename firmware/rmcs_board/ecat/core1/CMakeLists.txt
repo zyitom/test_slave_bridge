@@ -18,6 +18,20 @@ set(BOARD_SEARCH_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../boards" CACHE PATH "Boa
 # P1 bring-up image: lossless byte echo instead of the protocol application
 # (pairs with the host tool ecat_stream_latency for byte-exact validation).
 option(RMCS_ECAT_CORE1_LOOPBACK "Build the loopback bring-up image" OFF)
+# Native CAN mailbox variant (see ../CMakeLists.txt). Uses the same driver +
+# core sources as the protocol build; only main.cpp / can.* switch on the flag.
+option(RMCS_ECAT_NATIVE_CAN "Build the native CAN mailbox variant" OFF)
+# Hybrid fixed-PDO variant (see ../CMakeLists.txt). Reuses the protocol build's
+# sources plus src/hybrid_link.cpp; main.cpp / can.* switch on the flag.
+option(RMCS_ECAT_HYBRID_PD "Build the hybrid fixed-PDO variant" OFF)
+
+if(RMCS_ECAT_NATIVE_CAN AND RMCS_ECAT_HYBRID_PD)
+    message(FATAL_ERROR "RMCS_ECAT_NATIVE_CAN and RMCS_ECAT_HYBRID_PD are mutually exclusive.")
+endif()
+if(RMCS_ECAT_CORE1_LOOPBACK AND (RMCS_ECAT_NATIVE_CAN OR RMCS_ECAT_HYBRID_PD))
+    message(FATAL_ERROR
+        "RMCS_ECAT_CORE1_LOOPBACK cannot be combined with native or hybrid process data.")
+endif()
 
 # Component/board selection must precede find_package. The loopback bring-up
 # image carries no peripheral code, so it must not pull in the board
@@ -64,6 +78,19 @@ sdk_app_src(src/main.cpp)
 if(RMCS_ECAT_CORE1_LOOPBACK)
     sdk_compile_definitions(-DRMCS_ECAT_CORE1_LOOPBACK=1)
 else()
+    # Native variant reuses all of the protocol build's sources (drivers + core
+    # + host_link, which stays compiled but inert); only the RMCS_ECAT_NATIVE_CAN
+    # define flips main.cpp / can.* onto the mailbox path.
+    if(RMCS_ECAT_NATIVE_CAN)
+        sdk_compile_definitions(-DRMCS_ECAT_NATIVE_CAN=1)
+    endif()
+    # Hybrid variant reuses the whole protocol build (the stream stays alive) and
+    # adds src/hybrid_link.cpp for the cyclic CAN path. The stream ring is a raw
+    # byte stream on core1; its PDO chunking is owned by core0 and the host.
+    if(RMCS_ECAT_HYBRID_PD)
+        sdk_compile_definitions(-DRMCS_ECAT_HYBRID_PD=1)
+        sdk_app_src(src/hybrid_link.cpp)
+    endif()
     # Protocol application: the shared app-layer drivers plus the EtherCAT
     # host link (transmission over the SHARE_RAM rings; session + dispatch
     # come from the shared link::HostSession).

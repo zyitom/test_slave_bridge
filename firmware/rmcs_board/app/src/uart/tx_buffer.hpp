@@ -100,6 +100,15 @@ public:
         return true;
     }
 
+    // Stop an in-flight TX DMA immediately. Used before a baudrate switch: the
+    // bytes still in the FIFO would otherwise be clocked out at the new rate and
+    // arrive as garbage. The queued data itself is left alone -- try_dequeue()
+    // re-triggers from the current out_ position on the next poll.
+    void abort_transmit() {
+        core::utility::assert_always(dma_mgr_disable_channel(&dma_) == status_success);
+        tx_triggered_ = false;
+    }
+
     bool try_dequeue() {
         if (dma_channel_is_enable(dma_.base, dma_.channel))
             return false;

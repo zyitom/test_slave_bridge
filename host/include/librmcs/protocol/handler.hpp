@@ -24,6 +24,8 @@ public:
 
         bool write_uart(data::DataId field_id, const data::UartDataView& view) noexcept;
 
+        bool write_uart_config(data::DataId field_id, const data::UartConfigView& view) noexcept;
+
         bool write_gpio_digital_data(
             uint8_t channel_index, const data::GpioDigitalDataView& view) noexcept;
 
@@ -36,7 +38,7 @@ public:
     private:
         friend class Handler;
 
-        explicit PacketBuilder(void* transport) noexcept;
+        explicit PacketBuilder(void* transport, bool cyclic) noexcept;
 
         alignas(std::uintptr_t) std::uint8_t storage_[6 * sizeof(std::uintptr_t)];
     };
@@ -79,6 +81,22 @@ public:
     ~Handler() noexcept;
 
     PacketBuilder start_transmit() noexcept;
+
+    /**
+     * @brief Starts one explicit latest-wins cyclic CAN batch.
+     *
+     * With the IgH hybrid PDO mode this is a strict fixed-PDO batch: it accepts
+     * at most seven standard, non-RTR, <=8-byte CAN frames per bus. An excess,
+     * unsupported, or non-CAN field returns false and invalidates the complete
+     * snapshot; it never spills into the reliable stream. Send configuration
+     * and event traffic through a separate start_transmit() builder. Other
+     * transports treat this exactly like start_transmit(). A caller must create
+     * at most one cyclic builder per control tick; a newer unsampled batch is
+     * intentionally allowed to replace an older one. This removes transport
+     * queue jitter, but an asynchronous caller still has 0..Tpdo sampling phase;
+     * use a phase-locked cycle for hard control-loop jitter measurements.
+     */
+    PacketBuilder start_cyclic_transmit() noexcept;
 
 private:
     class Impl;

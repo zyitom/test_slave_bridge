@@ -52,6 +52,11 @@ coroutine::LifoTask<void> Deserializer::process_stream() {
         case FieldId::kUart1:
         case FieldId::kUart2:
         case FieldId::kUart3: success = co_await process_uart_field(id); break;
+        case FieldId::kUartDbusConfig:
+        case FieldId::kUart0Config:
+        case FieldId::kUart1Config:
+        case FieldId::kUart2Config:
+        case FieldId::kUart3Config: success = co_await process_uart_config_field(id); break;
         case FieldId::kGpio: success = co_await process_gpio_field(id); break;
         case FieldId::kImu: success = co_await process_imu_field(id); break;
         case FieldId::kSession: success = co_await process_session_field(id); break;
@@ -159,6 +164,19 @@ coroutine::LifoTask<bool> Deserializer::process_uart_field(FieldId field_id) {
     co_return callback_.uart_deserialized_callback(field_id, data_view);
 }
 
+coroutine::LifoTask<bool> Deserializer::process_uart_config_field(FieldId field_id) {
+    const auto* payload_bytes = co_await peek_bytes(sizeof(UartConfigPayload));
+    if (!payload_bytes) [[unlikely]]
+        co_return false;
+
+    auto payload = UartConfigPayload::CRef{payload_bytes};
+    data::UartConfigView data_view{};
+    data_view.baudrate = payload.get<UartConfigPayload::Baudrate>();
+    consume_peeked();
+
+    co_return callback_.uart_config_deserialized_callback(field_id, data_view);
+}
+
 coroutine::LifoTask<bool> Deserializer::process_gpio_field(FieldId) {
     GpioHeader::PayloadEnum payload_type;
     std::uint8_t channel_index = 0;
@@ -261,7 +279,7 @@ coroutine::LifoTask<bool> Deserializer::process_imu_field(FieldId) {
 
     switch (payload_type) {
     case ImuHeader::PayloadEnum::kAccelerometer: {
-        data::AccelerometerDataView data_view{};
+        data::ImuAccelerometerDataView data_view{};
         const auto* payload_bytes = co_await peek_bytes(sizeof(ImuAccelerometerPayload));
         if (!payload_bytes) [[unlikely]]
             co_return false;
@@ -275,7 +293,7 @@ coroutine::LifoTask<bool> Deserializer::process_imu_field(FieldId) {
         break;
     }
     case ImuHeader::PayloadEnum::kGyroscope: {
-        data::GyroscopeDataView data_view{};
+        data::ImuGyroscopeDataView data_view{};
         const auto* payload_bytes = co_await peek_bytes(sizeof(ImuGyroscopePayload));
         if (!payload_bytes) [[unlikely]]
             co_return false;
@@ -289,7 +307,7 @@ coroutine::LifoTask<bool> Deserializer::process_imu_field(FieldId) {
         break;
     }
     case ImuHeader::PayloadEnum::kTemperature: {
-        data::TemperatureDataView data_view{};
+        data::ImuTemperatureDataView data_view{};
         const auto* payload_bytes = co_await peek_bytes(sizeof(ImuTemperaturePayload));
         if (!payload_bytes) [[unlikely]]
             co_return false;

@@ -30,6 +30,9 @@ public:
     [[nodiscard]] virtual bool
         uart_deserialized_callback(FieldId id, const data::UartDataView& data) = 0;
 
+    [[nodiscard]] virtual bool
+        uart_config_deserialized_callback(FieldId id, const data::UartConfigView& data) = 0;
+
     [[nodiscard]] virtual bool gpio_digital_data_deserialized_callback(
         uint8_t channel_index, const data::GpioDigitalDataView& data) = 0;
 
@@ -42,11 +45,11 @@ public:
     [[nodiscard]] virtual bool gpio_analog_read_config_deserialized_callback(
         uint8_t channel_index, const data::GpioReadConfigView& data) = 0;
 
-    virtual void accelerometer_deserialized_callback(const data::AccelerometerDataView& data) = 0;
+    virtual void accelerometer_deserialized_callback(const data::ImuAccelerometerDataView& data) = 0;
 
-    virtual void gyroscope_deserialized_callback(const data::GyroscopeDataView& data) = 0;
+    virtual void gyroscope_deserialized_callback(const data::ImuGyroscopeDataView& data) = 0;
 
-    virtual void temperature_deserialized_callback(const data::TemperatureDataView& data) = 0;
+    virtual void temperature_deserialized_callback(const data::ImuTemperatureDataView& data) = 0;
 
     virtual void session_control_deserialized_callback(const data::SessionControlView& data) = 0;
 
@@ -119,6 +122,8 @@ private:
     coroutine::LifoTask<bool> process_can_field(FieldId field_id);
 
     coroutine::LifoTask<bool> process_uart_field(FieldId field_id);
+
+    coroutine::LifoTask<bool> process_uart_config_field(FieldId field_id);
 
     coroutine::LifoTask<bool> process_gpio_field(FieldId field_id);
 

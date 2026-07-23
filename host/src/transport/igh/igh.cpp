@@ -41,10 +41,12 @@
 #if defined(LIBRMCS_ENABLE_IGH)
 
 # include <algorithm>
+# include <array>
 # include <atomic>
 # include <chrono>
 # include <cstddef>
 # include <cstdint>
+# include <cstdlib>
 # include <cstring>
 # include <format>
 # include <functional>
@@ -60,6 +62,8 @@
 
 # include <ecrt.h>
 
+# include <librmcs/ecat/hybrid_pd.hpp>
+# include <librmcs/ecat/native_can.hpp>
 # include <librmcs/ecat/pd_stream.hpp>
 
 # include "core/src/protocol/constant.hpp"
@@ -72,7 +76,9 @@ namespace librmcs::host::transport::igh {
 
 namespace {
 
-constexpr std::size_t kChunkSize = librmcs::ecat::kPdChunkSize;
+namespace ecat = librmcs::ecat;
+
+constexpr std::size_t kStreamChunkSize = ecat::kPdChunkSize;
 
 // Fixed identity + PDO layout of the rmcs_board slave, read from the live bus
 // with `ethercat slaves -v` / `ethercat pdos -p 0`. The slave reports
@@ -88,6 +94,16 @@ constexpr uint16_t kTxPdoIndex = 0x1a00;
 constexpr uint16_t kOutputEntryIndex = 0x7010; // master -> slave subindex base
 constexpr uint16_t kInputEntryIndex = 0x6000;  // slave -> master subindex base
 constexpr unsigned kPdoEntryCount = 12;
+
+constexpr uint16_t kHybridOutputFixedIndex = 0x7000;
+constexpr uint16_t kHybridOutputStreamIndex = 0x7010;
+constexpr uint16_t kHybridInputFixedIndex = 0x6000;
+constexpr uint16_t kHybridInputStreamIndex = 0x6010;
+constexpr unsigned kHybridFixedEntryCount = ecat::kHybridMailboxRegionSize / sizeof(uint32_t);
+constexpr unsigned kHybridStreamEntryCount = ecat::kHybridStreamChunkSize / sizeof(uint32_t);
+constexpr unsigned kHybridPdoEntryCount = kHybridFixedEntryCount + kHybridStreamEntryCount;
+static_assert(kHybridFixedEntryCount == 84);
+static_assert(kHybridPdoEntryCount == 88);
 
 // AL state word bit for OPERATIONAL in ec_master_state_t::al_states.
 constexpr uint8_t kAlStateOp = 1u << 3;
@@ -139,6 +155,11 @@ public:
         return in_ == out_;
     }
 
+    void clear() noexcept {
+        const std::scoped_lock guard{mutex_};
+        out_ = in_;
+    }
+
 private:
     std::mutex mutex_;
     std::size_t in_ = 0;
@@ -164,11 +185,112 @@ struct CallbackSink {
 
 class IghBuffer final : public TransportBuffer {
 public:
+    explicit IghBuffer(bool hybrid) noexcept
+        : hybrid_(hybrid) {}
+
     BufferSpanType data() const noexcept override { return BufferSpanType{storage_}; }
 
+    bool try_stage_cyclic_can(
+        data::DataId field_id, const data::CanDataView& view) noexcept override {
+        if (!hybrid_)
+            return false;
+        has_cyclic_data_ = true;
+        if (cyclic_invalid_ || view.is_extended_can_id || view.is_remote_transmission
+            || view.can_id > 0x7FFU || view.can_data.size() > ecat::kNativeMaxDataSize) {
+            invalidate_cyclic_batch();
+            return false;
+        }
+
+        const int bus = can_bus(field_id);
+        if (bus < 0 || cyclic_counts_[static_cast<std::size_t>(bus)] >= ecat::kHybridSlotsPerBus) {
+            invalidate_cyclic_batch();
+            return false;
+        }
+
+        const std::size_t bus_index = static_cast<std::size_t>(bus);
+        const std::size_t slot = cyclic_counts_[bus_index]++;
+        std::byte* mailbox = cyclic_image_.data() + ecat::hybrid_mailbox_offset(bus_index, slot);
+        std::memset(mailbox, 0, ecat::kNativeMailboxSize);
+        mailbox[ecat::kNativeMetaOffset] = static_cast<std::byte>(
+            ecat::native_meta(view.is_fdcan, static_cast<std::uint8_t>(view.can_data.size())));
+        mailbox[ecat::kNativeIdOffset] = static_cast<std::byte>(view.can_id);
+        mailbox[ecat::kNativeIdOffset + 1] = static_cast<std::byte>(view.can_id >> 8);
+        if (!view.can_data.empty()) {
+            std::memcpy(
+                mailbox + ecat::kNativeDataOffset, view.can_data.data(), view.can_data.size());
+        }
+        return true;
+    }
+
+    bool begin_cyclic_can_batch() noexcept override {
+        if (!hybrid_)
+            return false;
+        has_cyclic_data_ = true;
+        return true;
+    }
+
+    void reject_cyclic_can_batch() noexcept override {
+        if (hybrid_) {
+            has_cyclic_data_ = true;
+            invalidate_cyclic_batch();
+        }
+    }
+
+    bool has_cyclic_data() const noexcept override { return has_cyclic_data_; }
+
+    void reset() noexcept {
+        cyclic_counts_.fill(0);
+        has_cyclic_data_ = false;
+        cyclic_invalid_ = false;
+    }
+
+    const std::array<std::uint8_t, ecat::kNativeBusCount>& cyclic_counts() const noexcept {
+        return cyclic_counts_;
+    }
+
+    const std::array<std::byte, ecat::kHybridMailboxRegionSize>& cyclic_image() const noexcept {
+        return cyclic_image_;
+    }
+
 private:
+    void invalidate_cyclic_batch() noexcept {
+        cyclic_counts_.fill(0);
+        cyclic_invalid_ = true;
+    }
+
+    static int can_bus(data::DataId field_id) noexcept {
+        switch (field_id) {
+        case data::DataId::kCan0: return 0;
+        case data::DataId::kCan1: return 1;
+        case data::DataId::kCan2: return 2;
+        case data::DataId::kCan3: return 3;
+        default: return -1;
+        }
+    }
+
+    const bool hybrid_;
+    bool has_cyclic_data_ = false;
+    bool cyclic_invalid_ = false;
+    std::array<std::uint8_t, ecat::kNativeBusCount> cyclic_counts_{};
+    std::array<std::byte, ecat::kHybridMailboxRegionSize> cyclic_image_{};
     mutable std::byte storage_[core::protocol::kProtocolBufferSize];
 };
+
+// Single-consumer triple buffer for complete cyclic snapshots. The producer
+// owns one bank, the cycle thread owns one bank, and the atomic middle bank is
+// the hand-off point. Publishing again before the cycle thread samples the
+// middle bank replaces the older snapshot without ever making a partially
+// copied image visible.
+struct CyclicBatch {
+    std::array<std::byte, ecat::kHybridMailboxRegionSize> image{};
+    std::array<std::uint8_t, ecat::kNativeBusCount> counts{};
+};
+
+constexpr std::uint32_t kCyclicBankIndexMask = 0x3U;
+constexpr std::uint32_t kCyclicBankDirty = 0x4U;
+constexpr std::size_t kCyclicBankCount = 3;
+static_assert(kCyclicBankCount <= kCyclicBankIndexMask + 1U);
+static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
 
 class Igh final : public Transport {
 public:
@@ -179,6 +301,15 @@ public:
         // like SOEM does. interface_name is therefore advisory here: it is
         // logged for parity with the SOEM API but does not select the NIC.
         const std::string ifname{interface_name};
+
+        const char* mode_env = std::getenv("RMCS_ECAT_MODE");
+        const std::string_view mode = mode_env ? mode_env : "stream";
+        if (mode == "hybrid") {
+            hybrid_mode_ = true;
+        } else if (mode != "stream") {
+            throw std::runtime_error{
+                "unknown RMCS_ECAT_MODE (expected stream or hybrid)"};
+        }
 
         master_ = ecrt_request_master(0);
         if (!master_)
@@ -201,22 +332,37 @@ public:
                 "at ring position 0)",
                 kVendorId, kProductCode)};
 
-        // Describe the fixed PDO mapping (12 contiguous 32-bit entries each
-        // direction). The entries are only needed so ecrt can resolve the base
-        // offset of each direction; the payload is then treated as one
-        // 48-byte contiguous chunk, exactly like ec_slave[1].outputs/inputs
-        // in the SOEM backend.
-        ec_pdo_entry_info_t out_entries[kPdoEntryCount];
-        ec_pdo_entry_info_t in_entries[kPdoEntryCount];
-        for (unsigned i = 0; i < kPdoEntryCount; ++i) {
-            out_entries[i] = {kOutputEntryIndex, static_cast<uint8_t>(i + 1), 32};
-            in_entries[i] = {kInputEntryIndex, static_cast<uint8_t>(i + 1), 32};
+        // Describe either the stock 48-byte stream mapping or the explicit
+        // 352-byte hybrid mapping. PDO assignment/configuration stays fixed in
+        // the slave; ecrt uses this description to resolve domain offsets.
+        std::array<ec_pdo_entry_info_t, kHybridPdoEntryCount> out_entries{};
+        std::array<ec_pdo_entry_info_t, kHybridPdoEntryCount> in_entries{};
+        unsigned pdo_entry_count = kPdoEntryCount;
+        if (hybrid_mode_) {
+            pdo_entry_count = kHybridPdoEntryCount;
+            for (unsigned i = 0; i < kHybridFixedEntryCount; ++i) {
+                out_entries[i] = {
+                    kHybridOutputFixedIndex, static_cast<uint8_t>(i + 1), 32};
+                in_entries[i] = {
+                    kHybridInputFixedIndex, static_cast<uint8_t>(i + 1), 32};
+            }
+            for (unsigned i = 0; i < kHybridStreamEntryCount; ++i) {
+                out_entries[kHybridFixedEntryCount + i] = {
+                    kHybridOutputStreamIndex, static_cast<uint8_t>(i + 1), 32};
+                in_entries[kHybridFixedEntryCount + i] = {
+                    kHybridInputStreamIndex, static_cast<uint8_t>(i + 1), 32};
+            }
+        } else {
+            for (unsigned i = 0; i < kPdoEntryCount; ++i) {
+                out_entries[i] = {kOutputEntryIndex, static_cast<uint8_t>(i + 1), 32};
+                in_entries[i] = {kInputEntryIndex, static_cast<uint8_t>(i + 1), 32};
+            }
         }
         ec_pdo_info_t pdo_out[] = {
-            {kRxPdoIndex, kPdoEntryCount, out_entries}
+            {kRxPdoIndex, pdo_entry_count, out_entries.data()}
         };
         ec_pdo_info_t pdo_in[] = {
-            {kTxPdoIndex, kPdoEntryCount, in_entries}
+            {kTxPdoIndex, pdo_entry_count, in_entries.data()}
         };
         ec_sync_info_t syncs[] = {
             {   0,  EC_DIR_OUTPUT, 0, nullptr, EC_WD_DISABLE},
@@ -234,10 +380,14 @@ public:
         if (ecrt_master_select_reference_clock(master_, nullptr))
             throw std::runtime_error{"ecrt_master_select_reference_clock(none) failed"};
 
-        const int off_out =
-            ecrt_slave_config_reg_pdo_entry(slave_config_, kOutputEntryIndex, 1, domain_, nullptr);
-        const int off_in =
-            ecrt_slave_config_reg_pdo_entry(slave_config_, kInputEntryIndex, 1, domain_, nullptr);
+        const uint16_t output_base_index =
+            hybrid_mode_ ? kHybridOutputFixedIndex : kOutputEntryIndex;
+        const uint16_t input_base_index =
+            hybrid_mode_ ? kHybridInputFixedIndex : kInputEntryIndex;
+        const int off_out = ecrt_slave_config_reg_pdo_entry(
+            slave_config_, output_base_index, 1, domain_, nullptr);
+        const int off_in = ecrt_slave_config_reg_pdo_entry(
+            slave_config_, input_base_index, 1, domain_, nullptr);
         if (off_out < 0 || off_in < 0)
             throw std::runtime_error{std::format(
                 "ecrt_slave_config_reg_pdo_entry failed (out={} in={})", off_out, off_in)};
@@ -255,20 +405,23 @@ public:
             throw std::runtime_error{"ecrt_domain_data returned null after activate"};
         outputs_ = reinterpret_cast<std::byte*>(process_data_ + off_out_);
         inputs_ = reinterpret_cast<std::byte*>(process_data_ + off_in_);
+        stream_outputs_ = outputs_ + (hybrid_mode_ ? ecat::kHybridStreamRegionOffset : 0);
+        stream_inputs_ = inputs_ + (hybrid_mode_ ? ecat::kHybridStreamRegionOffset : 0);
 
         // Both sides restart from seq/ack 0 on every OP (re)entry: the slave
         // resets in APPL_StartOutputHandler(), we reset here, before driving
         // the master FSM up to OP.
-        endpoint_.reset();
-        std::memset(outputs_, 0, kChunkSize);
+        reset_endpoint();
+        std::memset(outputs_, 0, process_data_size());
 
         drive_to_operational();
 
         expected_wc_ = EC_WC_COMPLETE;
         logger_.info(
-            R"(EtherCAT (IgH) link up (interface hint "{}"): {}B chunks, vendor 0x{:08X} )"
-            R"(product 0x{:08X})",
-            ifname, kChunkSize, kVendorId, kProductCode);
+            R"(EtherCAT (IgH) {} link up (interface hint "{}"): {}B PDO, {}B stream chunk, )"
+            R"(vendor 0x{:08X} product 0x{:08X})",
+            hybrid_mode_ ? "hybrid" : "stream", ifname, process_data_size(),
+            stream_chunk_size(), kVendorId, kProductCode);
 
         if (options.thread_setup) {
             std::atomic<bool> thread_setup_done{false};
@@ -309,23 +462,30 @@ public:
             if (!buffer_pool_.empty()) {
                 auto buffer = std::move(buffer_pool_.back());
                 buffer_pool_.pop_back();
+                static_cast<IghBuffer&>(*buffer).reset();
                 return buffer;
             }
         }
-        return std::make_unique<IghBuffer>();
+        return std::make_unique<IghBuffer>(hybrid_mode_);
     }
 
     void transmit(std::unique_ptr<TransportBuffer> buffer, size_t payload_size) override {
         core::utility::assert_always(buffer != nullptr);
         core::utility::assert_always(payload_size <= core::protocol::kProtocolBufferSize);
+        auto& igh_buffer = static_cast<IghBuffer&>(*buffer);
+        if (igh_buffer.has_cyclic_data())
+            commit_cyclic_can(igh_buffer);
+
         const std::span<const std::byte> payload{buffer->data().data(), payload_size};
         // Spin until the ring accepts the whole frame: the stream must stay
         // lossless, and sustained fullness means the link (44B per
         // acknowledged chunk) is saturated -- backpressure is correct then.
-        while (!transmit_ring_.try_push(payload)) {
-            if (stop_.load(std::memory_order_relaxed))
-                return;
-            std::this_thread::yield();
+        if (!payload.empty()) {
+            while (!transmit_ring_.try_push(payload)) {
+                if (stop_.load(std::memory_order_relaxed))
+                    return;
+                std::this_thread::yield();
+            }
         }
         recycle_buffer(std::move(buffer));
     }
@@ -344,7 +504,187 @@ public:
         receive_callback_registered_.store(true, std::memory_order_release);
     }
 
+    void receive_cyclic_can(
+        std::function<void(data::DataId, const data::CanDataView&)> callback) override {
+        core::utility::assert_always(static_cast<bool>(callback));
+        core::utility::assert_always(
+            !cyclic_receive_callback_registered_.load(std::memory_order_acquire));
+        cyclic_receive_callback_ = std::move(callback);
+        cyclic_receive_callback_registered_.store(true, std::memory_order_release);
+    }
+
+    void on_link_restart(std::function<void()> callback) override {
+        core::utility::assert_always(static_cast<bool>(callback));
+        core::utility::assert_always(
+            !link_restart_callback_registered_.load(std::memory_order_acquire));
+        link_restart_callback_ = std::move(callback);
+        link_restart_callback_registered_.store(true, std::memory_order_release);
+    }
+
 private:
+    std::size_t process_data_size() const noexcept {
+        return hybrid_mode_ ? ecat::kHybridPdSize : ecat::kPdChunkSize;
+    }
+
+    std::size_t stream_chunk_size() const noexcept {
+        return hybrid_mode_ ? ecat::kHybridPdChunkSize : ecat::kPdChunkSize;
+    }
+
+    void reset_endpoint() noexcept {
+        if (hybrid_mode_)
+            hybrid_endpoint_.reset();
+        else
+            endpoint_.reset();
+    }
+
+    void build_stream_output() noexcept {
+        if (hybrid_mode_)
+            hybrid_endpoint_.build_own_chunk(stream_outputs_, transmit_ring_);
+        else
+            endpoint_.build_own_chunk(stream_outputs_, transmit_ring_);
+    }
+
+    void consume_stream_input(CallbackSink& sink) noexcept {
+        if (hybrid_mode_)
+            hybrid_endpoint_.on_peer_chunk(stream_inputs_, sink);
+        else
+            endpoint_.on_peer_chunk(stream_inputs_, sink);
+    }
+
+    void commit_cyclic_can(const IghBuffer& buffer) noexcept {
+        if (!hybrid_mode_)
+            return;
+
+        // PacketBuilder is normally a single control-loop producer. Keep a
+        // producer-only mutex so accidental concurrent builders remain safe;
+        // the real-time cycle thread never takes this lock.
+        const std::scoped_lock guard{cyclic_producer_mutex_};
+        CyclicBatch& staged = cyclic_banks_[cyclic_producer_bank_];
+        staged.image = buffer.cyclic_image();
+        staged.counts = buffer.cyclic_counts();
+
+        const std::uint32_t released = cyclic_middle_state_.exchange(
+            cyclic_producer_bank_ | kCyclicBankDirty, std::memory_order_acq_rel);
+        cyclic_producer_bank_ = released & kCyclicBankIndexMask;
+    }
+
+    void apply_pending_cyclic_output() noexcept {
+        if ((cyclic_middle_state_.load(std::memory_order_acquire) & kCyclicBankDirty) == 0)
+            return;
+
+        // Swapping is the only cycle-thread operation on the hand-off state.
+        // If the producer publishes between the load and exchange, the
+        // exchange simply takes that newer bank, preserving latest-wins.
+        const std::uint32_t published = cyclic_middle_state_.exchange(
+            cyclic_consumer_bank_, std::memory_order_acq_rel);
+        cyclic_consumer_bank_ = published & kCyclicBankIndexMask;
+        const CyclicBatch& pending = cyclic_banks_[cyclic_consumer_bank_];
+
+        // A batch is a complete latest-wins snapshot. Slots omitted by the
+        // newest batch become invalid (seq 0), so an older partially sampled
+        // batch cannot leak through later. Per-slot counters live separately
+        // from the image so reusing a slot after an idle gap still gets a fresh
+        // nonzero generation.
+        for (std::size_t mailbox_index = 0; mailbox_index < ecat::kHybridMailboxCount;
+             ++mailbox_index) {
+            cyclic_output_image_[mailbox_index * ecat::kNativeMailboxSize] = std::byte{0};
+        }
+
+        for (std::size_t bus = 0; bus < ecat::kNativeBusCount; ++bus) {
+            for (std::size_t slot = 0; slot < pending.counts[bus]; ++slot) {
+                const std::size_t offset = ecat::hybrid_mailbox_offset(bus, slot);
+                const std::size_t mailbox_index = ecat::hybrid_mailbox_index(bus, slot);
+                std::byte* destination = cyclic_output_image_.data() + offset;
+                const std::byte* source = pending.image.data() + offset;
+                std::memcpy(
+                    destination + ecat::kNativeMetaOffset,
+                    source + ecat::kNativeMetaOffset,
+                    ecat::kNativeMailboxSize - ecat::kNativeMetaOffset);
+
+                std::uint8_t seq = cyclic_output_seq_[mailbox_index];
+                seq = seq == 255 ? 1 : static_cast<std::uint8_t>(seq + 1);
+                cyclic_output_seq_[mailbox_index] = seq;
+                destination[ecat::kNativeSeqOffset] = static_cast<std::byte>(seq);
+            }
+        }
+    }
+
+    void publish_cyclic_outputs() noexcept {
+        if (!hybrid_mode_)
+            return;
+        apply_pending_cyclic_output();
+        std::memcpy(outputs_, cyclic_output_image_.data(), cyclic_output_image_.size());
+    }
+
+    void clear_cyclic_outputs(bool reset_sequences) noexcept {
+        if (!hybrid_mode_)
+            return;
+
+        // Recovery is off the healthy hot path. Serialize with producers, take
+        // and discard the currently published bank, then reset the live image.
+        const std::scoped_lock guard{cyclic_producer_mutex_};
+        const std::uint32_t published = cyclic_middle_state_.exchange(
+            cyclic_consumer_bank_, std::memory_order_acq_rel);
+        cyclic_consumer_bank_ = published & kCyclicBankIndexMask;
+        cyclic_output_image_.fill(std::byte{0});
+        if (reset_sequences)
+            cyclic_output_seq_.fill(0);
+    }
+
+    void notify_link_restart() {
+        if (link_restart_callback_registered_.load(std::memory_order_acquire))
+            link_restart_callback_();
+    }
+
+    static data::DataId can_data_id(std::size_t bus) noexcept {
+        constexpr std::array ids = {
+            data::DataId::kCan0,
+            data::DataId::kCan1,
+            data::DataId::kCan2,
+            data::DataId::kCan3,
+        };
+        return ids[bus];
+    }
+
+    void deliver_cyclic_inputs() {
+        if (!hybrid_mode_
+            || !cyclic_receive_callback_registered_.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        for (std::size_t mailbox_index = 0; mailbox_index < ecat::kHybridMailboxCount;
+             ++mailbox_index) {
+            const std::byte* mailbox =
+                inputs_ + mailbox_index * ecat::kNativeMailboxSize;
+            const std::uint8_t seq =
+                static_cast<std::uint8_t>(mailbox[ecat::kNativeSeqOffset]);
+            if (seq == 0 || seq == cyclic_input_seq_[mailbox_index])
+                continue;
+            cyclic_input_seq_[mailbox_index] = seq;
+
+            const std::uint8_t meta =
+                static_cast<std::uint8_t>(mailbox[ecat::kNativeMetaOffset]);
+            const std::uint8_t length = ecat::native_meta_length(meta);
+            if (length > ecat::kNativeMaxDataSize)
+                continue;
+
+            const std::uint32_t can_id =
+                static_cast<std::uint8_t>(mailbox[ecat::kNativeIdOffset])
+                | static_cast<std::uint32_t>(
+                      static_cast<std::uint8_t>(mailbox[ecat::kNativeIdOffset + 1]))
+                      << 8;
+            const data::CanDataView view{
+                .can_id = can_id,
+                .can_data = {mailbox + ecat::kNativeDataOffset, length},
+                .is_fdcan = ecat::native_meta_is_fdcan(meta),
+                .is_extended_can_id = false,
+                .is_remote_transmission = false,
+            };
+            cyclic_receive_callback_(
+                can_data_id(mailbox_index / ecat::kHybridSlotsPerBus), view);
+        }
+    }
+
     void recycle_buffer(std::unique_ptr<TransportBuffer> buffer) {
         if (!buffer)
             return;
@@ -389,7 +729,7 @@ private:
         const std::chrono::steady_clock::time_point deadline =
             std::chrono::steady_clock::now() + kOperationalTimeout;
         for (;;) {
-            std::memset(outputs_, 0, kChunkSize);
+            std::memset(outputs_, 0, process_data_size());
             exchange_once();
 
             ec_master_state_t ms{};
@@ -420,8 +760,8 @@ private:
                     static_cast<unsigned>(slave_state.al_state),
                     al_state_name(slave_state.al_state),
                     static_cast<unsigned>(domain_state.wc_state),
-                    static_cast<unsigned>(domain_state.working_counter), kChunkSize,
-                    kPdoEntryCount)};
+                    static_cast<unsigned>(domain_state.working_counter), process_data_size(),
+                    hybrid_mode_ ? kHybridPdoEntryCount : kPdoEntryCount)};
             }
             std::this_thread::sleep_for(std::chrono::milliseconds{1});
         }
@@ -436,7 +776,18 @@ private:
         uint64_t window_wc_errors = 0;
 
         while (!stop_.load(std::memory_order_relaxed)) {
-            endpoint_.build_own_chunk(outputs_, transmit_ring_);
+            if (process_data_discontinuity_) {
+                // Do not present any old generation to a slave that may have
+                // reset during a short SAFEOP round trip. The first complete
+                // exchange is a zero-image probe; normal publication resumes
+                // only after its peer state has been classified below.
+                if (hybrid_mode_)
+                    std::memset(outputs_, 0, ecat::kHybridMailboxRegionSize);
+                std::memset(stream_outputs_, 0, stream_chunk_size());
+            } else {
+                publish_cyclic_outputs();
+                build_stream_output();
+            }
             const ec_domain_state_t ds = exchange_once();
             total_cycles_++;
             window_cycles++;
@@ -444,22 +795,52 @@ private:
             bool delivered = false;
             if (ds.wc_state == expected_wc_) {
                 wc_error_streak = 0;
-                if (slave_left_op_) {
-                    // Frames flow again == the FSM brought the slave back to
-                    // OP. Mirror the firmware, which resets its ARQ endpoint on
-                    // every SAFEOP -> OP transition: both sides restart from
-                    // seq/ack 0. Bytes in flight across the outage are gone;
-                    // the protocol session layer above resynchronizes. Skip
-                    // delivery this cycle -- the inputs predate the reset.
-                    endpoint_.reset();
-                    std::memset(outputs_, 0, kChunkSize);
-                    slave_left_op_ = false;
-                    logger_.warn("EtherCAT slave back to OP; stream endpoint reset");
-                } else if (receive_callback_registered_.load(std::memory_order_acquire)) {
-                    CallbackSink sink{.callback = receive_callback_, .delivered = delivered};
-                    endpoint_.on_peer_chunk(inputs_, sink);
+                if (process_data_discontinuity_) {
+                    // Sequence zero is reserved by pd_stream. Once a session
+                    // has been established, peer ack=0 after an incomplete WKC
+                    // is therefore a reset signature even if the cached AL
+                    // state changed SAFEOP -> OP too quickly to observe.
+                    const bool peer_reset = slave_left_op_
+                                         || static_cast<std::uint8_t>(stream_inputs_[1]) == 0;
+                    if (peer_reset) {
+                        reset_endpoint();
+                        transmit_ring_.clear();
+                        clear_cyclic_outputs(true);
+                        std::memset(outputs_, 0, process_data_size());
+                        cyclic_input_seq_.fill(0);
+                        slave_left_op_ = false;
+                        notify_link_restart();
+                        logger_.warn(
+                            "EtherCAT slave back to OP; stream endpoint and session reset");
+                    }
+                    // Skip delivery from the zero-image probe. On a mere frame
+                    // drop the existing ARQ state resumes next cycle; after a
+                    // peer reset the Handler's keepalive thread first sends a
+                    // fresh SESSION_START.
+                    process_data_discontinuity_ = false;
+                } else {
+                    deliver_cyclic_inputs();
+                    if (receive_callback_registered_.load(std::memory_order_acquire)) {
+                        CallbackSink sink{.callback = receive_callback_, .delivered = delivered};
+                        consume_stream_input(sink);
+                    }
                 }
             } else {
+                // Treat the first incomplete hybrid cycle as a control-path
+                // discontinuity. A brief SAFEOP round trip can reset the
+                // firmware's sequence history and recover before the slower
+                // AL-state supervisor observes it; retaining the old image in
+                // that window would make the next OP frame look fresh. Losing
+                // one cyclic command on a transient drop is safer than
+                // replaying a pre-drop command.
+                if (!process_data_discontinuity_) {
+                    if (hybrid_mode_) {
+                        clear_cyclic_outputs(false);
+                        std::memset(outputs_, 0, ecat::kHybridMailboxRegionSize);
+                    }
+                }
+                process_data_discontinuity_ = true;
+                observe_slave_state();
                 total_wc_errors_++;
                 window_wc_errors++;
                 ++wc_error_streak;
@@ -470,10 +851,6 @@ private:
                         "EtherCAT working counter incomplete (wc_state {}) for {} consecutive "
                         "cycles",
                         static_cast<unsigned>(ds.wc_state), wc_error_streak);
-                }
-                if (wc_error_streak >= kRecoveryThresholdCycles) {
-                    supervise();
-                    wc_error_streak = 0;
                 }
             }
 
@@ -509,23 +886,35 @@ private:
         }
     }
 
-    // AL-state supervision, called only after the working counter has been bad
-    // for a while (never on the healthy path). Unlike SOEM, the ecrt master FSM
-    // re-configures and re-drives a dropped slave back to OP on its own, so
-    // there is nothing to write here: we only latch that the slave left OP so
-    // the cycle loop resets the ARQ endpoint when frames resume (see above).
-    void supervise() {
-        ec_master_state_t ms{};
-        ecrt_master_state(master_, &ms);
-        if (!(ms.al_states & kAlStateOp) || !ms.slaves_responding) {
-            if (!slave_left_op_) {
-                slave_left_op_ = true;
-                logger_.warn(
-                    "EtherCAT slave left OP (link_up={} slaves_responding={} al_states=0x{:02X}); "
-                    "waiting for the master FSM to recover it",
-                    static_cast<unsigned>(ms.link_up), static_cast<unsigned>(ms.slaves_responding),
-                    static_cast<unsigned>(ms.al_states));
-            }
+    // ecrt_slave_config_state() is RT-safe and reads state cached by the master
+    // FSM. Call it only on incomplete-WKC cycles, but on every one of them: a
+    // short SAFEOP round trip must not wait for a long error streak. The peer
+    // ack=0 probe in cycle_loop covers a transition faster than this cache.
+    void observe_slave_state() {
+        ec_slave_config_state_t slave_state{};
+        if (ecrt_slave_config_state(slave_config_, &slave_state) != 0)
+            return;
+        if (!slave_state.online || !slave_state.operational
+            || slave_state.al_state != kAlStateOp) {
+            if (slave_left_op_)
+                return;
+
+            ec_master_state_t ms{};
+            ecrt_master_state(master_, &ms);
+            // The firmware restarts all fixed seq gates on SAFEOP -> OP. Drop
+            // both the pending image and local generations now; the cycle loop
+            // suppresses process data until a complete probe returns.
+            clear_cyclic_outputs(true);
+            slave_left_op_ = true;
+            logger_.warn(
+                "EtherCAT slave left OP (online={} operational={} al_state=0x{:X}/{} "
+                "link_up={} slaves_responding={} master_al_states=0x{:02X}); waiting for the "
+                "master FSM to recover it",
+                static_cast<unsigned>(slave_state.online),
+                static_cast<unsigned>(slave_state.operational),
+                static_cast<unsigned>(slave_state.al_state), al_state_name(slave_state.al_state),
+                static_cast<unsigned>(ms.link_up), static_cast<unsigned>(ms.slaves_responding),
+                static_cast<unsigned>(ms.al_states));
         }
     }
 
@@ -543,9 +932,6 @@ private:
     static constexpr std::chrono::seconds kOperationalTimeout{20};
 
     static constexpr int kWcErrorReportThreshold = 16;
-    // ~a few ms of consecutive bad cycles before running the (slower) state
-    // supervision -- transient frame drops never trigger it.
-    static constexpr int kRecoveryThresholdCycles = 256;
     static constexpr std::chrono::milliseconds kStatsInterval{5000};
     static constexpr std::size_t kBufferPoolLimit = 64;
 
@@ -559,15 +945,32 @@ private:
     std::size_t off_in_ = 0;
     std::byte* outputs_ = nullptr;
     std::byte* inputs_ = nullptr;
+    std::byte* stream_outputs_ = nullptr;
+    std::byte* stream_inputs_ = nullptr;
     uint8_t expected_wc_ = EC_WC_COMPLETE;
+    bool hybrid_mode_ = false;
 
-    librmcs::ecat::PdStreamEndpoint endpoint_;
+    ecat::PdStreamEndpoint endpoint_;
+    ecat::HybridPdStreamEndpoint hybrid_endpoint_;
     LockedByteRing transmit_ring_;
+
+    // Initial ownership: consumer=0, atomic middle=1, producer=2. The low two
+    // atomic bits hold the middle-bank index; kCyclicBankDirty marks a complete
+    // unpublished snapshot. Only producers take cyclic_producer_mutex_.
+    std::mutex cyclic_producer_mutex_;
+    std::array<CyclicBatch, kCyclicBankCount> cyclic_banks_{};
+    std::uint32_t cyclic_producer_bank_ = 2;
+    std::uint32_t cyclic_consumer_bank_ = 0;
+    std::atomic<std::uint32_t> cyclic_middle_state_{1};
+    std::array<std::byte, ecat::kHybridMailboxRegionSize> cyclic_output_image_{};
+    std::array<std::uint8_t, ecat::kHybridMailboxCount> cyclic_output_seq_{};
+    std::array<std::uint8_t, ecat::kHybridMailboxCount> cyclic_input_seq_{};
 
     // Cycle-thread-only state (no synchronization needed).
     uint64_t total_cycles_ = 0;
     uint64_t total_wc_errors_ = 0;
     bool slave_left_op_ = false;
+    bool process_data_discontinuity_ = false;
 
     std::mutex buffer_pool_mutex_;
     std::vector<std::unique_ptr<TransportBuffer>> buffer_pool_;
@@ -575,6 +978,12 @@ private:
     std::mutex receive_callback_mutex_;
     std::function<void(std::span<const std::byte>)> receive_callback_;
     std::atomic<bool> receive_callback_registered_{false};
+
+    std::function<void(data::DataId, const data::CanDataView&)> cyclic_receive_callback_;
+    std::atomic<bool> cyclic_receive_callback_registered_{false};
+
+    std::function<void()> link_restart_callback_;
+    std::atomic<bool> link_restart_callback_registered_{false};
 
     std::atomic<bool> stop_{false};
     std::thread cycle_thread_;
