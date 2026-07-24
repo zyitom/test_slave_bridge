@@ -27,6 +27,8 @@
 
 namespace librmcs::firmware::usb {
 
+void poll_dfu_runtime_reboot();
+
 class Vendor
     : private core::protocol::DeserializeCallback
     , private core::utility::Immovable {
@@ -42,6 +44,11 @@ public:
     }
 
     core::protocol::Serializer& serializer() { return serializer_; }
+
+    // True once the host has completed the nonce handshake and is holding the
+    // keepalive lease, i.e. data is actually being forwarded. Distinct from mere
+    // USB enumeration, which says nothing about whether a host is talking.
+    bool session_established() const { return session_established_; }
 
     void deactivate_session() { session_established_ = false; }
 
@@ -264,8 +271,5 @@ private:
 // Placed in zero-wait DTCM (.dtcm, copied at boot) so the forwarding ISR writes
 // the serializer/USB batch buffers without ever touching the AXI bus.
 [[gnu::section(".dtcm")]] inline constinit Vendor::Lazy vendor;
-
-bool dfu_reboot_pending();
-[[noreturn]] void perform_dfu_reboot();
 
 } // namespace librmcs::firmware::usb

@@ -74,13 +74,22 @@ public:
                 set_value(0, 0, 0);
             else
                 set_value(0, 255, 255);
+        } else if (host_connected_.load(std::memory_order::relaxed)) {
+            // Host session established (nonce handshake done, keepalive lease
+            // live): steady green means data is actually being forwarded.
+            set_value(0, 255, 0);
         } else {
-            // Working well: green breathing light
+            // Alive but no host session yet: green breathing light. Enumerated
+            // without a live session still shows as "waiting", not "working".
             auto brightness = (tick >> 2) & 511;
             if (brightness > 255)
                 brightness = 511 - brightness;
             set_value(0, static_cast<uint8_t>(brightness), 0);
         }
+    }
+
+    void set_host_connected(bool connected) {
+        host_connected_.store(connected, std::memory_order::relaxed);
     }
 
     // Non-static to ensure instantiation
@@ -93,6 +102,7 @@ public:
 
 private:
     std::atomic<bool> user_controlling_;
+    std::atomic<bool> host_connected_{false};
 
     std::atomic<uint16_t> uplink_full_reset_counter_, downlink_full_reset_counter_;
 };

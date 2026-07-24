@@ -47,6 +47,11 @@ public:
 
     core::protocol::Serializer& serializer() { return serializer_; }
 
+    // True once the host has completed the nonce handshake and is holding the
+    // keepalive lease, i.e. data is actually being forwarded. Distinct from mere
+    // USB enumeration, which says nothing about whether a host is talking.
+    bool session_established() const { return session_established_; }
+
     void deactivate_session() { session_established_ = false; }
 
     void handle_downlink(std::span<const std::byte> buffer, bool finished) {

@@ -118,12 +118,7 @@ App::App() {
 [[noreturn]] void App::run() {
     while (true) {
         tud_task();
-
-        if (usb::dfu_reboot_pending()) {
-            for (int i = 0; i < 1000; ++i)
-                tud_task();
-            usb::perform_dfu_reboot();
-        }
+        usb::poll_dfu_runtime_reboot();
 
         gpio::gpio->poll_periodic_input_samples();
 
@@ -134,7 +129,10 @@ App::App() {
 
         // LED animation; non-blocking unless colour changes (one SPI frame per
         // change, ~330 us at the WS2812 bit rate). Polled here so no ISR context
-        // ever touches SPI.
+        // ever touches SPI. The state reported is the host session (nonce
+        // handshake plus keepalive lease), not mere USB enumeration, so steady
+        // green means data is actually being forwarded.
+        led::led->set_host_connected(usb::vendor->session_established());
         led::led->poll();
 
         usb::vendor->try_transmit();

@@ -1,3 +1,5 @@
+#include <cstdint>
+
 #include <device/usbd.h>
 #include <gpio.h>
 #include <main.h>
@@ -33,9 +35,18 @@ int main() {
 
     using namespace librmcs::firmware; // NOLINT(google-build-using-namespace)
 
-    const bool key_pressed = HAL_GPIO_ReadPin(KEY_GPIO_Port, KEY_Pin) == GPIO_PIN_RESET;
-    const bool force_dfu   = utility::boot_mailbox.consume_enter_dfu_request() || key_pressed;
-    if (!force_dfu) {
+    // Holding the user key at reset pins the board in DFU regardless of what the
+    // mailbox says, so a bad image can always be recovered from.
+    const bool force_stay = HAL_GPIO_ReadPin(KEY_GPIO_Port, KEY_Pin) == GPIO_PIN_RESET;
+
+    // A single mailbox read covers both directions: the application asks for DFU
+    // with "DFU0", and the DFU download path asks for the freshly flashed image
+    // with "APP1". The latter wins over a stale DFU request so the reset that
+    // follows manifestation lands in the application instead of back in DFU.
+    const uint32_t boot_request = utility::boot_mailbox.consume_request();
+    const bool force_dfu = boot_request == utility::BootMailbox::kMailboxRequestEnterDfu;
+    const bool boot_app_once = boot_request == utility::BootMailbox::kMailboxRequestBootAppOnce;
+    if (!force_stay && (boot_app_once || !force_dfu)) {
         if (flash::validate_app_image())
             utility::jump_to_app(flash::kAppStartAddress);
     }

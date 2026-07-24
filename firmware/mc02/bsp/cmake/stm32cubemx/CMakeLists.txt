@@ -71,5 +71,27 @@ set(STM32_Drivers_Src
 add_library(stm32cubemx OBJECT)
 target_sources(stm32cubemx PRIVATE ${STM32_Drivers_Src})
 target_sources(stm32cubemx PRIVATE ${MX_Application_Src})
-target_include_directories(stm32cubemx PUBLIC ${MX_Include_Dirs})
+
+# The CubeMX-generated main.c defines int main(), which collides at link time
+# with the real entry point in app/src/app.cpp and bootloader/src/main.cpp --
+# both replace the CubeMX main() and call SystemClock_Config()/MPU_Config()/
+# MX_*_Init() directly. Rename the generated main to a dead symbol at compile
+# time so the startup's "bl main" binds to the real (app/bootloader) main. This
+# is the regeneration-proof equivalent of c_board hand-deleting its main():
+# CubeMX Generate only rewrites bsp/cubemx/, never this hand-maintained file, so
+# the fix survives (a hand-delete gets clobbered on every Generate, as it was
+# here by commit 0582395). SystemClock_Config/PeriphCommonClock_Config/
+# MPU_Config/Error_Handler in the same file are separate functions, untouched.
+set_source_files_properties(${MX_CUBEMX}/Core/Src/main.c
+    PROPERTIES COMPILE_DEFINITIONS "main=cubemx_unused_main")
+
+# Vendor/generated headers (HAL, CMSIS, CubeMX Core/Inc) are included as SYSTEM
+# so clang (and thus the --warnings-as-errors=* clang-tidy gate) suppresses
+# diagnostics originating inside them. This lets the vendored H7 CMSIS stay
+# byte-for-byte upstream instead of carrying a local patch: ST's H7
+# system_stm32h7xx.h declares ExitRun0Mode with __attribute__((optimize("Os"))),
+# a GCC-only attribute clang flags as -Wignored-attributes. Handling it here,
+# rather than editing the vendor source, keeps HAL/CMSIS clean enough to track
+# as upstream git submodules (like c_board's F4 HAL, which has no such code).
+target_include_directories(stm32cubemx SYSTEM PUBLIC ${MX_Include_Dirs})
 target_compile_definitions(stm32cubemx PUBLIC ${MX_Defines_Syms})

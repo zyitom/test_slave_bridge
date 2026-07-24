@@ -89,6 +89,13 @@ App::App() {
         tud_task();
         usb::poll_dfu_runtime_reboot();
 
+        // Publish the session state for the LED. The animation itself is driven
+        // from HAL_IncTick() at 1 kHz; only this flag crosses from the main
+        // loop, so the ISR never touches the USB stack. Reporting the session
+        // rather than mere enumeration means steady green tells the operator
+        // that data is actually being forwarded, not just that a cable is in.
+        led::led->set_host_connected(usb::vendor->session_established());
+
         gpio::gpio->poll_periodic_input_samples();
         usb::vendor->try_transmit();
         can::can1->try_transmit();
