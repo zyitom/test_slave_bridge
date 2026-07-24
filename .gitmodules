@@ -2,7 +2,7 @@
 	path = firmware/rmcs_board/bsp/hpm_sdk
 	url = https://github.com/zyitom/hpm_sdk.git
 [submodule "firmware/c_board/bsp/tinyusb"]
-	path = firmware/c_board/bsp/tinyusb
+	path = firmware/common/bsp/tinyusb
 	url = https://github.com/qzhhhi/tinyusb.git
 [submodule "firmware/c_board/bsp/cmsis-device-f4"]
 	path = firmware/c_board/bsp/cmsis-device-f4
@@ -11,7 +11,7 @@
 	path = firmware/c_board/bsp/stm32f4xx-hal-driver
 	url = https://github.com/STMicroelectronics/stm32f4xx-hal-driver.git
 [submodule "firmware/c_board/bsp/cmsis-core"]
-	path = firmware/c_board/bsp/cmsis-core
+	path = firmware/common/bsp/cmsis-core
 	url = https://github.com/STMicroelectronics/cmsis-core.git
 [submodule "firmware/mc02/bsp/stm32h7xx-hal-driver"]
 	path = firmware/mc02/bsp/stm32h7xx-hal-driver
