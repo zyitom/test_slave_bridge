@@ -59,6 +59,57 @@ CH372 demo's EP1<->EP2 hardware DMA loopback (in the `USBSS_UIF_TRANSFER` handle
 re-vendoring, re-apply these two case-body replacements plus the two `extern`
 declarations near the top.
 
+`bsp/usb/usb_desc.h` / `bsp/usb/usb_desc.c` - librmcs device identity. Three
+edits, all marked `LIBRMCS LOCAL PATCH`:
+
+1. `usb_desc.h`: `DEF_USB_VID` / `DEF_USB_PID` / `DEF_USB30_PID` changed from the
+   CH372 demo's `0x1A86:0x5537` to `0xA11C:0xD403` (librmcs VID, ch32_board type
+   PID; c_board is `0xD401`, mc02 `0xD402`).
+2. `usb_desc.h`: `MyManuInfo` / `MyProdInfo` / `MySerNumInfo` lose their `const`
+   and gain a `librmcs_usb_init_descriptors()` declaration.
+3. `usb_desc.c`: the definitions of those three string descriptors are deleted.
+   They now live in `app/src/usb/descriptors.cpp`, which builds them at runtime -
+   the product string has to carry `LIBRMCS_PROJECT_VERSION_STRING` (the host SDK
+   checks it) and the serial is derived from the chip signature words.
+
+4. `usb_desc.c`: `SS_ConfigDescriptor` rebuilt. The demo advertised one interface
+   with six endpoints (three bulk pairs); librmcs uses a single pair, so EP2/EP3
+   and their companion descriptors are deleted (`bNumEndpoints` 6 -> 2) and a DFU
+   run-time interface is appended (`bNumInterfaces` 1 -> 2, `wTotalLength` 0x60 ->
+   0x3E). The DFU interface is what `app/src/usb/dfu_runtime.cpp` answers class
+   requests for; its `iInterface` is 0 because this stack only serves string
+   indices 0..3 plus the OS string. Layout mirrors mc02's `TUD_DFU_RT_DESCRIPTOR`.
+
+Everything else in `usb_desc.c` (device / BOS / HS / FS descriptors) is
+unmodified WCH.
+
+`bsp/usb/ch32h417_usbss_it.c` + `ch32h417_usbss_device.c` + `ch32h417_usbss_device.h`
+- EP2 and EP3 removed entirely. The demo kept two extra bulk pairs enabled in
+`UEP_TX_EN`/`UEP_RX_EN`, armed in `USBSS_Device_Endp_Init()`, and serviced by
+loopback code in the ISR - including an EP2-OUT case that armed `EP1_TX` from
+EP2's receive registers, i.e. stray host traffic on EP2 could inject into the
+librmcs uplink. Deleted: the two `USBSS_EP{2,3}_Rx_Buf` definitions and externs
+(64 KB of SRAM), `EP2_Chain_Sel` / `EP3_T_Chain_Sel` / `EP3_R_Chain_Sel`, the
+EP2/EP3 arming in `USBSS_Device_Endp_Init()`, and the four EP2/EP3 ISR cases
+(which now stall through `default`). Paired with the `SS_ConfigDescriptor` edit
+above - the descriptor and the hardware enable must agree.
+
+`bsp/usb/ch32h417_usbss_device.c` + `bsp/usb/ch32h417_usbhs_device.c` - no USB 2.0
+fallback. Two guards on `LIBRMCS_USBSS_HS_FALLBACK` (defined in `CMakeLists.txt`,
+0 by default), both marked `LIBRMCS LOCAL PATCH`:
+
+1. `USB_Timer_Start()` returns early on `ENABLE`, so TIM12 - which exists only to
+   time out SuperSpeed link training and switch to USB 2.0 - is never armed.
+2. `USBHS_Device_Init()` returns early on `ENABLE`, catching the paths where the
+   USBSS link handler reaches for USB 2.0 directly (`LINK_STATE_INACTIVE`,
+   `U2U3_SUCC`) without going through TIM12. Disable paths stay live.
+
+Reason: USB 2.0's D+/D- are PB8/PB9, which on this package are also SWCLK/SWDIO.
+A fallback hands those pins to the USB2 PHY and the debug interface drops until
+the next power cycle - which happens on every USB disconnect, including the one
+caused by halting the core in a debugger. Set the macro to 1 to restore stock
+behaviour and USB 2.0 host support.
+
 ## Re-vendoring procedure (when a newer EVT is released)
 
 1. Download the new `CH32H417EVT` zip from wch-ic.com; unzip to a scratch dir.

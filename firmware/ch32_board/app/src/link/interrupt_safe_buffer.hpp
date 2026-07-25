@@ -12,7 +12,12 @@
 #include "core/src/utility/immovable.hpp"
 #include "firmware/ch32_board/app/src/led/led.hpp"
 
-namespace librmcs::firmware::usb {
+namespace librmcs::firmware::link {
+
+// Transport-neutral serializer sink: ISR producers (CAN/UART uplink) allocate
+// through the protocol Serializer while the transport's main-loop consumer pops
+// whole batches. Lives under link/ rather than usb/ because the drivers that
+// feed it must not depend on which transport drains it.
 
 class InterruptSafeBuffer final
     : public core::protocol::SerializeBuffer
@@ -76,9 +81,9 @@ public:
 
     private:
         std::atomic<size_t> written_size_ = 0;
-        // Align to the Cortex-M7 D-cache line (32 B) so a batch never shares a cache
-        // line with adjacent state -- keeps cache clean/invalidate on the USB path
-        // free of false sharing.
+        // 32-byte aligned so a batch base address is always a legal USBSS DMA
+        // source and never straddles state the ISR touches. The Qingke V5F has
+        // no data cache to maintain here; this is purely a DMA/aliasing margin.
         alignas(32) std::byte data_[core::protocol::kProtocolBufferSize]{};
     };
 
@@ -135,4 +140,4 @@ private:
     Batch batches_[kBatchCount];
 };
 
-} // namespace librmcs::firmware::usb
+} // namespace librmcs::firmware::link

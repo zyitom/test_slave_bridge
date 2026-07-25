@@ -6,6 +6,8 @@ namespace librmcs::firmware::can {
 // Plain __attribute__((interrupt)) so GCC emits mret (WCH's "WCH-Interrupt-fast"
 // argument is dropped by mainline GCC).
 
+static_assert(kCanCount == 2, "ISR shims below must cover every board::kCanPorts entry");
+
 extern "C" void CAN1_RX0_IRQHandler(void) __attribute__((interrupt()));
 extern "C" void CAN1_RX0_IRQHandler(void) { can_array[0]->irq_handler(); }
 

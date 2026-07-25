@@ -15,9 +15,8 @@
 
 USBSS_Dev_Info_t USBSS_Dev_Info;
 volatile uint8_t  EP1_Chain_Sel = 0;
-volatile uint8_t  EP2_Chain_Sel = 0;
-volatile uint8_t  EP3_T_Chain_Sel = 0;
-volatile uint8_t  EP3_R_Chain_Sel = 0;
+/* LIBRMCS LOCAL PATCH: EP2_Chain_Sel / EP3_T_Chain_Sel / EP3_R_Chain_Sel removed
+ * along with EP2 and EP3 (see ch32h417_usbss_it.c). */
 volatile uint8_t  USB_Enum_Status = UNINIT;
 volatile uint32_t Chip = 0;
 
@@ -129,8 +128,11 @@ void USBSS_Device_Endp_Init( )
 {
     USBSS_Device_Endp_Deinit( );
 
-    USBSSD->UEP_TX_EN = USBSS_EP1_TX_EN | USBSS_EP2_TX_EN | USBSS_EP3_TX_EN;
-    USBSSD->UEP_RX_EN = USBSS_EP1_RX_EN | USBSS_EP2_RX_EN | USBSS_EP3_RX_EN;
+    /* LIBRMCS LOCAL PATCH: EP1 only -- the librmcs uplink/downlink pair. Leaving
+     * EP2/EP3 enabled let stray host traffic reach demo loopback code that armed
+     * EP1_TX. */
+    USBSSD->UEP_TX_EN = USBSS_EP1_TX_EN;
+    USBSSD->UEP_RX_EN = USBSS_EP1_RX_EN;
 
     USBSSD->UEP0_TX_CTRL = 0;
     USBSSD->UEP0_RX_CTRL = 0;
@@ -145,28 +147,10 @@ void USBSS_Device_Endp_Init( )
     USBSSD->EP1_RX.UEP_RX_DMA = (uint32_t)&USBSS_EP1_Rx_Buf[ DEF_USB_EP1_SS_SIZE * DEF_ENDP1_OUT_BURST_LEVEL * EP1_Chain_Sel ];
     USBSSD->EP1_RX.UEP_RX_CHAIN_MAX_NUMP = DEF_ENDP1_OUT_BURST_LEVEL;  
 
-    EP2_Chain_Sel = 0;
-    USBSSD->EP2_RX.UEP_RX_DMA = (uint32_t)&USBSS_EP2_Rx_Buf[ DEF_USB_EP2_SS_SIZE * DEF_ENDP2_OUT_BURST_LEVEL * EP2_Chain_Sel ];
-    USBSSD->EP2_RX.UEP_RX_CHAIN_MAX_NUMP = DEF_ENDP2_OUT_BURST_LEVEL; 
-    EP2_Chain_Sel++;
-    USBSSD->EP2_RX.UEP_RX_DMA = (uint32_t)&USBSS_EP2_Rx_Buf[ DEF_USB_EP2_SS_SIZE * DEF_ENDP2_OUT_BURST_LEVEL * EP2_Chain_Sel ];
-    USBSSD->EP2_RX.UEP_RX_CHAIN_MAX_NUMP = DEF_ENDP2_OUT_BURST_LEVEL;  
-
-    EP3_R_Chain_Sel = 0;
-    USBSSD->EP3_RX.UEP_RX_DMA = (uint32_t)&USBSS_EP3_Rx_Buf;
-    USBSSD->EP3_RX.UEP_RX_CHAIN_MAX_NUMP = DEF_ENDP3_OUT_BURST_LEVEL;
-    EP3_R_Chain_Sel++;
-    USBSSD->EP3_RX.UEP_RX_DMA = (uint32_t)&USBSS_EP3_Rx_Buf[ DEF_USB_EP3_SS_SIZE * DEF_ENDP3_OUT_BURST_LEVEL * EP3_R_Chain_Sel ];
-    USBSSD->EP3_RX.UEP_RX_CHAIN_MAX_NUMP = DEF_ENDP3_OUT_BURST_LEVEL;
-
-    EP3_T_Chain_Sel = 0;
-    USBSSD->EP3_TX.UEP_TX_DMA = (uint32_t)&USBSS_EP3_Rx_Buf;
-    USBSSD->EP3_TX.UEP_TX_CHAIN_LEN = DEF_USB_EP3_SS_SIZE;
-    USBSSD->EP3_TX.UEP_TX_CHAIN_EXP_NUMP = DEF_ENDP3_IN_BURST_LEVEL;
-    EP3_T_Chain_Sel++;
-    USBSSD->EP3_TX.UEP_TX_DMA = (uint32_t)&USBSS_EP3_Rx_Buf[ DEF_USB_EP3_SS_SIZE * DEF_ENDP3_IN_BURST_LEVEL * EP3_T_Chain_Sel  ];
-    USBSSD->EP3_TX.UEP_TX_CHAIN_LEN = DEF_USB_EP3_SS_SIZE;
-    USBSSD->EP3_TX.UEP_TX_CHAIN_EXP_NUMP = DEF_ENDP3_IN_BURST_LEVEL;
+    /* LIBRMCS LOCAL PATCH: EP2 / EP3 arming removed with the endpoints.
+     * EP1_TX is deliberately left unarmed -- the uplink arms it per batch from
+     * usb::ss::tx_write(). EP1_Chain_Sel is left pointing at the second half,
+     * which is the buffer usb_ss_ep1_out_complete() alternates away from. */
 }
 /*********************************************************************
  * @fn      USBSS_Reset_Init
@@ -234,6 +218,17 @@ void USB_Timer_Init( void )
  */
 void USB_Timer_Start( FunctionalState sta )
 {
+    /* LIBRMCS LOCAL PATCH: TIM12 exists only to time out SuperSpeed link
+     * training and fall back to USB 2.0. With LIBRMCS_USBSS_HS_FALLBACK == 0 we
+     * never arm it, so the SS link keeps retrying RxDetect/Polling forever and
+     * USBSS is never torn down. This keeps PB8/PB9 (USB2 D+/D-, which are also
+     * SWCLK/SWDIO on this package) free, so the debug interface survives having
+     * no USB host attached. See the note in USBHS_Device_Init(). */
+    if( sta && !LIBRMCS_USBSS_HS_FALLBACK )
+    {
+        return;
+    }
+
     if( sta )
     {
         TIM12->CNT = 0;

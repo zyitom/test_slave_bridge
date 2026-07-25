@@ -36,14 +36,21 @@ volatile uint8_t  USBSS_DevEnumStatus;
 /* Endpoint Buffer */
 __attribute__ ((aligned(4))) uint8_t USBSS_EP0_Buf[ DEF_USBSSD_UEP0_SIZE ];
 __attribute__ ((aligned(4))) uint8_t USBSS_EP1_Rx_Buf[ DEF_USB_EP1_SS_SIZE * DEF_ENDP1_OUT_BURST_LEVEL * DEF_ENDP1_OUT_BUFF_SIZE ];
-__attribute__ ((aligned(4))) uint8_t USBSS_EP2_Rx_Buf[ DEF_USB_EP2_SS_SIZE * DEF_ENDP2_OUT_BURST_LEVEL * DEF_ENDP2_OUT_BUFF_SIZE ];
-__attribute__ ((aligned(4))) uint8_t USBSS_EP3_Rx_Buf[ DEF_USB_EP3_SS_SIZE * DEF_ENDP3_OUT_BURST_LEVEL * DEF_ENDP3_OUT_BUFF_SIZE ];
+/* LIBRMCS LOCAL PATCH: EP2 and EP3 are gone. librmcs uses exactly one bulk pair
+ * (EP1 IN/OUT); the CH372 demo's other two pairs were still enumerated, still
+ * enabled in USBSS_Device_Endp_Init() and still serviced by loopback code below
+ * -- so any host traffic on EP2 OUT would have armed EP1_TX behind the uplink's
+ * back. Dropping them also returns 64 KB of SRAM (2 x 1024 x 16 x 2). */
 
 /* LIBRMCS LOCAL PATCH: EP1 is repurposed as the librmcs bulk pipe. The CH372
  * demo's EP1<->EP2 hardware DMA loopback is replaced by calls into the C++ USB
  * layer (see app/src/usb/vendor.cpp). Documented in bsp/PROVENANCE.md. */
 extern void usb_ss_ep1_in_complete(void);
 extern void usb_ss_ep1_out_complete(void);
+/* LIBRMCS LOCAL PATCH: class-specific (DFU) control requests on EP0. Defined per
+ * image -- boot/src/usb/dfu_transport.cpp, app/src/usb/dfu_runtime.cpp. */
+extern uint8_t usb_ss_class_setup(void);
+extern void usb_ss_class_ep0_out(void);
 
 void USBSS_IRQHandler (void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void USBSS_LINK_IRQHandler (void) __attribute__((interrupt("WCH-Interrupt-fast")));
@@ -180,8 +187,11 @@ void USBSS_IRQHandler( void )
         errflag = 0;
         if(( USBSS_SetupReqType & USB_REQ_TYP_MASK ) != USB_REQ_TYP_STANDARD )
         {
-            /* usb non-standard request processing */
-            errflag = 0xFF;
+            /* LIBRMCS LOCAL PATCH: dispatch class requests (DFU) instead of an
+             * unconditional stall. The hook stages any IN response into
+             * USBSS_EP0_Buf and may shorten USBSS_SetupReqLen; returning 0xFF
+             * falls through to the stall below. */
+            errflag = usb_ss_class_setup();
         }
         else 
         {
@@ -568,24 +578,8 @@ void USBSS_IRQHandler( void )
                     usb_ss_ep1_in_complete();
                     break;
 
-                /* end-point 2 data in interrupt */
-                case DEF_UEP2:
-                    USBSSD->EP2_TX.UEP_TX_CHAIN_ST |= USBSS_EP_TX_CHAIN_IF; 
-                    EP1_Chain_Sel ^= 0x01; 
-                    USBSSD->EP1_RX.UEP_RX_DMA = (uint32_t)&USBSS_EP1_Rx_Buf[ DEF_USB_EP1_SS_SIZE * DEF_ENDP1_OUT_BURST_LEVEL * EP1_Chain_Sel ]; 
-                    USBSSD->EP1_RX.UEP_RX_CHAIN_MAX_NUMP = DEF_ENDP1_OUT_BURST_LEVEL; 
-                    break;  
-
-                /* end-point 3 data in interrupt */
-                case DEF_UEP3:
-                    USBSSD->EP3_TX.UEP_TX_CHAIN_ST |= USBSS_EP_TX_CHAIN_IF;
-                    EP3_T_Chain_Sel ^= 0x01; 
-                    USBSSD->EP3_TX.UEP_TX_DMA = (uint32_t)&USBSS_EP3_Rx_Buf[ DEF_USB_EP3_SS_SIZE * DEF_ENDP3_IN_BURST_LEVEL * EP3_T_Chain_Sel ]; 
-                    USBSSD->EP3_TX.UEP_TX_CHAIN_LEN = DEF_USB_EP3_SS_SIZE;
-                    USBSSD->EP3_TX.UEP_TX_CHAIN_EXP_NUMP = DEF_ENDP3_IN_BURST_LEVEL;
-                    break;  
-
- 
+                /* LIBRMCS LOCAL PATCH: EP2 / EP3 IN cases removed with the
+                 * endpoints themselves; they now stall through the default. */
                 default:
                    errflag = 0xFF;
                 break;                                     
@@ -597,6 +591,12 @@ void USBSS_IRQHandler( void )
             {
                 /* end-point 0 data out interrupt */
                 case DEF_UEP0:
+                    /* LIBRMCS LOCAL PATCH: hand the control-OUT payload (a
+                     * DFU_DNLOAD firmware block) to the class handler before
+                     * acking. The payload sits in USBSS_EP0_Buf and its length is
+                     * the SETUP packet's wLength, so no RX length register is
+                     * involved. */
+                    usb_ss_class_ep0_out();
                     USBSSD->UEP0_RX_CTRL = USBSS_EP0_RX_ERDY | USBSS_EP0_RX_ACK;       // ready status step
                     break;
                 /* end-point 1 data out interrupt */
@@ -605,23 +605,8 @@ void USBSS_IRQHandler( void )
                     usb_ss_ep1_out_complete();
                     break;
 
-                /* end-point 2 data out interrupt */
-                case DEF_UEP2:
-                    USBSSD->EP1_TX.UEP_TX_DMA = USBSSD->EP2_RX.UEP_RX_DMA - ( USBSSD->EP2_RX.UEP_RX_CHAIN_NUMP * USBSSD->EP2_RX.UEP_RX_DMA_OFS );
-                    USBSSD->EP1_TX.UEP_TX_DMA_OFS = USBSSD->EP2_RX.UEP_RX_DMA_OFS;
-                    USBSSD->EP1_TX.UEP_TX_CHAIN_LEN = USBSSD->EP2_RX.UEP_RX_CHAIN_LEN;
-                    USBSSD->EP1_TX.UEP_TX_CHAIN_EXP_NUMP = USBSSD->EP2_RX.UEP_RX_CHAIN_NUMP;
-                    USBSSD->EP2_RX.UEP_RX_CHAIN_ST |= USBSS_EP_RX_CHAIN_IF; 
-                    break;  
-
-                /* end-point 3 data out interrupt */
-                case DEF_UEP3:
-                    EP3_R_Chain_Sel ^= 0x01; 
-                    USBSSD->EP3_RX.UEP_RX_DMA = (uint32_t)&USBSS_EP3_Rx_Buf[ DEF_USB_EP3_SS_SIZE * DEF_ENDP3_OUT_BURST_LEVEL * EP3_R_Chain_Sel ];
-                    USBSSD->EP3_RX.UEP_RX_CHAIN_MAX_NUMP = DEF_ENDP3_OUT_BURST_LEVEL;
-                    USBSSD->EP3_RX.UEP_RX_CHAIN_ST |= USBSS_EP_RX_CHAIN_IF;
-                    break;  
-
+                /* LIBRMCS LOCAL PATCH: EP2 / EP3 OUT cases removed with the
+                 * endpoints themselves; they now stall through the default. */
                 default:
                    errflag = 0xFF;
                 break;                  

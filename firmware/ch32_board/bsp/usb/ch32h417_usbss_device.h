@@ -149,15 +149,12 @@ typedef struct  __attribute__((packed)) USBSS_Dev_Info
 
 extern __attribute__ ((aligned(4))) uint8_t USBSS_EP0_Buf[ DEF_USBSSD_UEP0_SIZE ];
 extern __attribute__ ((aligned(4))) uint8_t USBSS_EP1_Rx_Buf[ DEF_USB_EP1_SS_SIZE * DEF_ENDP1_OUT_BURST_LEVEL * DEF_ENDP1_OUT_BUFF_SIZE ];
-extern __attribute__ ((aligned(4))) uint8_t USBSS_EP2_Rx_Buf[ DEF_USB_EP2_SS_SIZE * DEF_ENDP2_OUT_BURST_LEVEL * DEF_ENDP2_OUT_BUFF_SIZE ];
-extern __attribute__ ((aligned(4))) uint8_t USBSS_EP3_Rx_Buf[ DEF_USB_EP3_SS_SIZE * DEF_ENDP3_OUT_BURST_LEVEL * DEF_ENDP3_OUT_BUFF_SIZE ];
+/* LIBRMCS LOCAL PATCH: USBSS_EP2_Rx_Buf / USBSS_EP3_Rx_Buf removed with EP2/EP3
+ * (see ch32h417_usbss_it.c). */
 
 
 extern USBSS_Dev_Info_t USBSS_Dev_Info;
 extern volatile uint8_t  EP1_Chain_Sel;
-extern volatile uint8_t  EP2_Chain_Sel;
-extern volatile uint8_t  EP3_T_Chain_Sel;
-extern volatile uint8_t  EP3_R_Chain_Sel;
 extern volatile uint8_t  USB_Enum_Status;
 extern volatile uint32_t Chip;
 

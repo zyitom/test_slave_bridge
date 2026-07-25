@@ -12,6 +12,7 @@ extern "C" {
 }
 
 #include "core/src/utility/assert.hpp"
+#include "firmware/ch32_board/app/src/board_app.hpp"
 #include "firmware/ch32_board/app/src/utility/lazy.hpp"
 
 namespace librmcs::firmware::timer {
@@ -100,13 +101,16 @@ public:
     }
 
 private:
-    static constexpr uint32_t kTimerKernelClock = 0; // 0 -> derive from SystemCoreClock
-
     void init_timer() {
         RCC_HB2PeriphClockCmd(RCC_HB2Periph_TIM10, ENABLE);
 
-        const uint32_t kernel = kTimerKernelClock ? kTimerKernelClock : SystemCoreClock;
+        // Timers are clocked from the peripheral bus, NOT the core clock: on the
+        // V5F core SystemCoreClock is 400 MHz while HCLK is 100 MHz, so deriving
+        // the prescaler from SystemCoreClock made every timestamp run 4x fast.
+        // The vendor's own USB_Timer_Init() uses HCLK_Frequency the same way.
+        const uint32_t kernel = board::peripheral_clock();
         const uint32_t prescaler = (kernel / kCounterFrequency) - 1u;
+        core::utility::assert_always(kernel == (prescaler + 1u) * kCounterFrequency);
 
         TIM_TimeBaseInitTypeDef base = {};
         base.TIM_Period = 0xFFFFu; // 16-bit struct field; widened to 32-bit below

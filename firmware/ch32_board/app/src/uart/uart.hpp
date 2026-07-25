@@ -4,7 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <iterator>
+#include <utility>
+#include <array>
 
 extern "C" {
 #include "ch32h417.h"
@@ -16,34 +17,30 @@ extern "C" {
 #include "core/src/utility/immovable.hpp"
 #include "firmware/ch32_board/app/src/board_app.hpp"
 #include "firmware/ch32_board/app/src/led/led.hpp"
-#include "firmware/ch32_board/app/src/usb/helper.hpp"
+#include "firmware/ch32_board/app/src/link/uplink.hpp"
 #include "firmware/ch32_board/app/src/utility/lazy.hpp"
 
 namespace librmcs::firmware::uart {
 
-struct HardwareConfig {
-    uint32_t base;
-    IRQn_Type irq_num;
-};
-
 // WCH USART forwarding driver, structured like upstream rmcs_board's Uart:
-// board-agnostic (HardwareConfig + board::init_uart), a double-buffered downlink,
-// try_transmit() draining it, and a single irq_handler(). This board's first
-// bring-up uses interrupt-mode RX (RXNE bytes + IDLE frame delimiter) and TX
-// (WCH has no ReceiveToIdle-DMA helper); DMA is a later optimization.
+// board-agnostic (takes a board::UartPort, defers pins/AF/clock to
+// board::init_uart), a double-buffered downlink, try_transmit() draining it, and
+// a single irq_handler(). This board's first bring-up uses interrupt-mode RX
+// (RXNE bytes + IDLE frame delimiter) and TX -- WCH ships no ReceiveToIdle-DMA
+// helper; DMA + idle-line is a later optimization needing the DMAMUX mapping.
 class Uart : private core::utility::Immovable {
 public:
-    using Lazy = utility::Lazy<Uart, data::DataId, HardwareConfig, uint32_t>;
+    using Lazy = utility::Lazy<Uart, board::UartPort>;
 
-    explicit Uart(data::DataId data_id, HardwareConfig board_config, uint16_t max_receive_size)
-        : data_id_(data_id)
-        , uart_base_(reinterpret_cast<USART_TypeDef*>(board_config.base))
-        , max_receive_size_(max_receive_size) {
+    explicit Uart(board::UartPort port)
+        : data_id_(port.data_id)
+        , uart_base_(reinterpret_cast<USART_TypeDef*>(port.base))
+        , max_receive_size_(port.max_receive_size) {
         core::utility::assert_always(max_receive_size_ <= sizeof(receive_buffer_));
-        board::init_uart(uart_base_);
+        board::init_uart(port);
 
         USART_InitTypeDef config = {};
-        config.USART_BaudRate = 115200;
+        config.USART_BaudRate = port.baudrate;
         config.USART_WordLength = USART_WordLength_8b;
         config.USART_StopBits = USART_StopBits_1;
         config.USART_Parity = USART_Parity_No;
@@ -53,9 +50,11 @@ public:
 
         USART_ITConfig(uart_base_, USART_IT_RXNE, ENABLE);
         USART_ITConfig(uart_base_, USART_IT_IDLE, ENABLE);
-        NVIC_EnableIRQ(board_config.irq_num);
+        NVIC_EnableIRQ(port.irq_num);
         USART_Cmd(uart_base_, ENABLE);
     }
+
+    [[nodiscard]] data::DataId data_id() const { return data_id_; }
 
     void handle_downlink(const data::UartDataView& data) {
         const auto size = data.uart_data.size();
@@ -100,14 +99,36 @@ public:
     }
 
     void irq_handler() {
+        // An overrun leaves ORE latched and RXNE never asserts again, wedging RX
+        // for good. The clear sequence is the classic read-STATR-then-read-DATAR;
+        // the byte that caused it is already lost, so the partial frame is
+        // flushed as non-idle-delimited and the host resynchronizes.
+        if (USART_GetFlagStatus(uart_base_, USART_FLAG_ORE) != RESET) {
+            (void)uart_base_->STATR;
+            (void)USART_ReceiveData(uart_base_);
+            handle_uplink(rx_count_, false);
+            rx_count_ = 0;
+        }
+
         if (USART_GetITStatus(uart_base_, USART_IT_RXNE) != RESET) {
             const auto byte = static_cast<std::byte>(USART_ReceiveData(uart_base_) & 0xFFu);
-            if (rx_count_ < max_receive_size_)
-                receive_buffer_[rx_count_++] = byte;
+            receive_buffer_[rx_count_++] = byte;
+            // Full buffer: flush now rather than dropping bytes on the floor.
+            // Not idle-delimited -- the frame did not end, it just does not fit,
+            // and the host must not treat the split as a frame boundary.
+            if (rx_count_ >= max_receive_size_) {
+                handle_uplink(rx_count_, false);
+                rx_count_ = 0;
+            }
         }
+
         if (USART_GetITStatus(uart_base_, USART_IT_IDLE) != RESET) {
+            // Reading STATR then DATAR is the only way to clear IDLE. It also
+            // clears RXNE, so any byte that landed since the branch above would
+            // be consumed here -- harmless, because IDLE means the line has been
+            // quiet for a full frame and no such byte exists.
             (void)uart_base_->STATR;
-            (void)USART_ReceiveData(uart_base_); // clear IDLE
+            (void)USART_ReceiveData(uart_base_);
             handle_uplink(rx_count_, true);
             rx_count_ = 0;
         }
@@ -127,8 +148,11 @@ private:
     void handle_uplink(uint16_t size, bool is_idle) {
         if (!size)
             return;
+        // Same gate as the CAN RX path: no telemetry before the session is up.
+        if (!link::uplink_enabled())
+            return;
 
-        auto& serializer = usb::get_serializer();
+        auto& serializer = link::uplink_serializer();
         core::utility::assert_always(
             serializer.write_uart(
                 data_id_,
@@ -155,15 +179,19 @@ private:
     uint8_t tx_source_ = 0;
 };
 
-constexpr HardwareConfig kBoardConfigs[] = {
-    {.base = USART1_BASE, .irq_num = USART1_IRQn},
-    {.base = USART2_BASE, .irq_num = USART2_IRQn},
-};
+namespace internal {
 
-inline constinit Uart::Lazy uart_array[]{
-    Uart::Lazy{data::DataId::kUart1, kBoardConfigs[0], 64},
-    Uart::Lazy{data::DataId::kUart2, kBoardConfigs[1], 64},
-};
-constexpr size_t kUartCount = std::size(uart_array);
+template <size_t... I>
+constexpr auto make_uart_array(std::index_sequence<I...> /*unused*/) {
+    return std::array<Uart::Lazy, sizeof...(I)>{Uart::Lazy{board::kUartPorts[I]}...};
+}
+
+} // namespace internal
+
+// Built straight from the board port table, as on rmcs_board: adding a port is a
+// board_app.hpp table entry, nothing here changes.
+inline constinit auto uart_array =
+    internal::make_uart_array(std::make_index_sequence<board::kUartPortCount>{});
+constexpr size_t kUartCount = board::kUartPortCount;
 
 } // namespace librmcs::firmware::uart

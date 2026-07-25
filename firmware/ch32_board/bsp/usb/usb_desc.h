@@ -21,9 +21,13 @@ extern "C" {
 #define DEF_FILE_VERSION             0x01
 
 /* usb device info define  */
-#define DEF_USB_VID                  0x1A86
-#define DEF_USB_PID                  0x5537
-#define DEF_USB30_PID                0x5537     
+/* LIBRMCS LOCAL PATCH: librmcs device identity instead of the WCH CH372 demo's
+ * (0x1A86:0x5537). VID 0xA11C is the librmcs vendor id shared by every board;
+ * 0xD403 is the ch32_board type PID (c_board 0xD401, mc02 0xD402). The host SDK
+ * matches on this pair plus the iProduct string. */
+#define DEF_USB_VID                  0xA11C
+#define DEF_USB_PID                  0xD403
+#define DEF_USB30_PID                0xD403
 
 /* file version */
 #define DEF_FILE_VERSION             0x01
@@ -91,9 +95,16 @@ extern const uint8_t MyDevDescr[ ];
 extern const uint8_t MyCfgDescr_FS[ ];
 extern const uint8_t MyCfgDescr_HS[ ];
 extern const uint8_t MyLangDescr[ ];
-extern const uint8_t MyManuInfo[ ];
-extern const uint8_t MyProdInfo[ ];
-extern const uint8_t MySerNumInfo[ ];
+/* LIBRMCS LOCAL PATCH: the manufacturer / product / serial-number string
+ * descriptors are built at runtime by librmcs_usb_init_descriptors()
+ * (app/src/usb/descriptors.cpp), so they cannot be const. Their consumers only
+ * ever read them through const uint8_t*. */
+extern uint8_t MyManuInfo[ ];
+extern uint8_t MyProdInfo[ ];
+extern uint8_t MySerNumInfo[ ];
+/* Must be called before USBSS_Device_Init(): until it runs the three string
+ * descriptors above are empty and enumeration would report no strings. */
+extern void librmcs_usb_init_descriptors( void );
 extern const uint8_t MyQuaDesc[ ];
 extern const uint8_t MyBOSDesc[ ];
 extern uint8_t TAB_USB_FS_OSC_DESC[ ];

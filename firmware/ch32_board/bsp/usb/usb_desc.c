@@ -220,25 +220,34 @@ const uint8_t SS_DeviceDescriptor[ ] =
 
 const uint8_t SS_ConfigDescriptor[ ] =
 {
+    /* LIBRMCS LOCAL PATCH: one vendor interface with a single bulk pair (EP1
+     * IN/OUT), plus a DFU run-time interface. The CH372 demo advertised three
+     * bulk pairs; EP2/EP3 are gone from the endpoint enable, the endpoint init
+     * and the ISR (see ch32h417_usbss_it.c). Interface 1 is what
+     * app/src/usb/dfu_runtime.cpp answers class requests for -- without this
+     * descriptor the host could never address it. Layout mirrors mc02's
+     * TUD_DFU_RT_DESCRIPTOR so both boards look the same to the host tooling.
+     * wTotalLength = 9 + 9 + 2*(7+6) + 9 + 9 = 62. */
+
     /* Configuration Descriptor */
     0x09,                                                   // bLength
     0x02,                                                   // bDescriptorType
-    0x60, 0x00,                                             // wTotalLength
-    0x01,                                                   // bNumInterfaces
+    0x3E, 0x00,                                             // wTotalLength
+    0x02,                                                   // bNumInterfaces
     0x01,                                                   // bConfigurationValue
     0x00,                                                   // iConfiguration
     0x80,                                                   // bmAttributes: Bus Powered; Remote Wakeup
     0x64,                                                   // MaxPower: 100mA
 
-    /* Interface Descriptor (Keyboard) */
+    /* Interface Descriptor (librmcs vendor) */
     0x09,                                                   // bLength
     0x04,                                                   // bDescriptorType
     0x00,                                                   // bInterfaceNumber
     0x00,                                                   // bAlternateSetting
-    0x06,                                                   // bNumEndpoints
+    0x02,                                                   // bNumEndpoints
     0xff,                                                   // bInterfaceClass
     0xff,                                                   // bInterfaceSubClass
-    0xff,                                                   // bInterfaceProtocol: Keyboard
+    0xff,                                                   // bInterfaceProtocol
     0x00,                                                   // iInterface
 
     /* Endpoint Descriptor */
@@ -269,67 +278,27 @@ const uint8_t SS_ConfigDescriptor[ ] =
     0x30,                                                   // bDescriptorType
     DEF_ENDP1_OUT_BURST_LEVEL - 1,                          // bMaxBurst
     0x00,                                                   // bmAttributes
-    0x00, 0x00,                                             // wBytesPerInterval 
+    0x00, 0x00,                                             // wBytesPerInterval
 
-    /* Endpoint Descriptor */
-    0x07,                                                   // bLength
-    0x05,                                                   // bDescriptorType
-    0x82,                                                   // bEndpointAddress: IN Endpoint 2
-    0x02,                                                   // bmAttributes
-    0x00, 0x04,                                             // wMaxPacketSize
-    0x00,                                                   // bInterval
-    
-    /* Endpoint Compansion Descriptor */
-    0x06,                                                   // bLength
-    0x30,                                                   // bDescriptorType
-    DEF_ENDP2_IN_BURST_LEVEL - 1,                           // bMaxBurst
-    0x00,                                                   // bmAttributes
-    0x00, 0x00,                                             // wBytesPerInterval 
+    /* Interface Descriptor (DFU run-time) */
+    0x09,                                                   // bLength
+    0x04,                                                   // bDescriptorType
+    0x01,                                                   // bInterfaceNumber
+    0x00,                                                   // bAlternateSetting
+    0x00,                                                   // bNumEndpoints
+    0xfe,                                                   // bInterfaceClass: Application Specific
+    0x01,                                                   // bInterfaceSubClass: DFU
+    0x01,                                                   // bInterfaceProtocol: run-time
+    0x00,                                                   // iInterface: none -- this stack only
+                                                            //   serves string indices 0..3
 
-    /* Endpoint Descriptor */
-    0x07,                                                   // bLength
-    0x05,                                                   // bDescriptorType
-    0x02,                                                   // bEndpointAddress: OUT Endpoint 2
-    0x02,                                                   // bmAttributes
-    0x00, 0x04,                                             // wMaxPacketSize
-    0x00,                                                   // bInterval
-
-    /* Endpoint Compansion Descriptor */
-    0x06,                                                   // bLength
-    0x30,                                                   // bDescriptorType
-    DEF_ENDP2_OUT_BURST_LEVEL - 1,                          // bMaxBurst
-    0x00,                                                   // bmAttributes
-    0x00, 0x00,                                             // wBytesPerInterval 
-
-    /* Endpoint Descriptor */
-    0x07,                                                   // bLength
-    0x05,                                                   // bDescriptorType
-    0x83,                                                   // bEndpointAddress: IN Endpoint 3
-    0x02,                                                   // bmAttributes
-    0x00, 0x04,                                             // wMaxPacketSize
-    0x00,                                                   // bInterval
-
-    /* Endpoint Compansion Descriptor */
-    0x06,                                                   // bLength
-    0x30,                                                   // bDescriptorType
-    DEF_ENDP3_IN_BURST_LEVEL - 1,                           // bMaxBurst
-    0x00,                                                   // bmAttributes
-    0x00, 0x00,                                             // wBytesPerInterval 
-
-    /* Endpoint Descriptor */
-    0x07,                                                   // bLength
-    0x05,                                                   // bDescriptorType
-    0x03,                                                   // bEndpointAddress: OUT Endpoint 3
-    0x02,                                                   // bmAttributes
-    0x00, 0x04,                                             // wMaxPacketSize
-    0x00,                                                   // bInterval
-
-    /* Endpoint Compansion Descriptor */
-    0x06,                                                   // bLength
-    0x30,                                                   // bDescriptorType
-    DEF_ENDP3_OUT_BURST_LEVEL - 1,                          // bMaxBurst
-    0x00,                                                   // bmAttributes
-    0x00, 0x00,                                             // wBytesPerInterval 
+    /* DFU Functional Descriptor */
+    0x09,                                                   // bLength
+    0x21,                                                   // bDescriptorType: DFU FUNCTIONAL
+    0x09,                                                   // bmAttributes: CAN_DOWNLOAD | WILL_DETACH
+    0xe8, 0x03,                                             // wDetachTimeOut: 1000ms
+    0x00, 0x04,                                             // wTransferSize: 1024
+    0x01, 0x01,                                             // bcdDFUVersion: 1.01
 };
 
 /*String Descriptor Lang ID*/
@@ -341,76 +310,11 @@ const uint8_t MyLangDescr[ ] =
     0x04
 };
 
-/*String Descriptor Vendor*/
-const uint8_t MyManuInfo[ ] =
-{
-    0x0E,
-    0x03,
-    'w',
-    0,
-    'c',
-    0,
-    'h',
-    0,
-    '.',
-    0,
-    'c',
-    0,
-    'n',
-    0
-};
-
-/*String Descriptor Product*/
-const uint8_t MyProdInfo[ ] =
-{
-    38,         
-    0x03,      
-    0x57, 0x00, 
-    0x43, 0x00, 
-    0x48, 0x00,
-    0x20, 0x00, 
-    0x55, 0x00, 
-    0x53, 0x00, 
-    0x42, 0x00, 
-    0x33, 0x00, 
-    0x2e, 0x00, 
-    0x30, 0x00, 
-    0x20, 0x00, 
-    0x44, 0x00, 
-    0x45, 0x00, 
-    0x56, 0x00, 
-    0x49, 0x00, 
-    0x43, 0x00, 
-    0x45, 0x00,
-    0x20, 0x00
-};
-
-/*String Descriptor Serial*/
-const uint8_t MySerNumInfo[ ] =
-{
-    0x16,
-    0x03,
-    '0',
-    0,
-    '1',
-    0,
-    '2',
-    0,
-    '3',
-    0,
-    '4',
-    0,
-    '5',
-    0,
-    '6',
-    0,
-    '7',
-    0,
-    '8',
-    0,
-    '9',
-    0
-};
+/* LIBRMCS LOCAL PATCH: the manufacturer / product / serial-number string
+ * descriptors are the librmcs device identity, not WCH demo data, so they are
+ * defined in app/src/usb/descriptors.cpp instead of here. The product string in
+ * particular has to carry LIBRMCS_PROJECT_VERSION_STRING, which the host SDK
+ * checks. The declarations stay in usb_desc.h. */
 
 const uint8_t OSStringDescriptor[ ] =
 {

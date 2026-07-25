@@ -200,6 +200,19 @@ void USBHS_RCC_Init(FunctionalState sta)
  */
 void USBHS_Device_Init(FunctionalState sta)
 {
+    /* LIBRMCS LOCAL PATCH: second half of the "no USB 2.0 fallback" guard (the
+     * first is in USB_Timer_Start). The USBSS link handler also reaches straight
+     * for USBHS on LINK_STATE_INACTIVE / U2U3_SUCC without going through TIM12,
+     * so refuse to bring USB 2.0 up here too. Enabling it would hand PB8/PB9 to
+     * the USB2 PHY, and those pins are SWCLK/SWDIO: the debugger drops and only
+     * a power cycle brings it back. Disable paths stay live so teardown still
+     * works. Set LIBRMCS_USBSS_HS_FALLBACK=1 to restore stock behaviour (at the
+     * cost of the debug interface whenever the board falls back). */
+    if(sta && !LIBRMCS_USBSS_HS_FALLBACK)
+    {
+        return;
+    }
+
     if(sta)
     {
         USBHS_RCC_Init(ENABLE);
