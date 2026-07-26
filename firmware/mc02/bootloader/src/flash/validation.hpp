@@ -13,7 +13,6 @@ inline constexpr uint32_t kDtcmramStart = 0x20000000U;
 inline constexpr uint32_t kDtcmramEnd   = 0x20020000U; // Exclusive
 inline constexpr uint32_t kAxiSramStart  = 0x24000000U;
 inline constexpr uint32_t kAxiSramEnd    = 0x24020000U; // Exclusive
-inline constexpr uint32_t kCrc32Polynomial = 0xEDB88320U;
 inline constexpr uint32_t kImageHashMagic = 0x48415348U;                 // "HASH"
 inline constexpr uint32_t kImageHashSuffixSize =
     sizeof(uint32_t) + static_cast<uint32_t>(crypto::kSha256DigestSize); // 36
@@ -41,23 +40,6 @@ inline bool is_vector_table_valid() {
     return reset_handler_addr >= kAppStartAddress && reset_handler_addr < kAppEndAddress;
 }
 
-inline uint32_t compute_image_crc32(uint32_t address, uint32_t size) {
-    const auto* data = reinterpret_cast<const uint8_t*>(address);
-    uint32_t crc = 0xFFFFFFFFU;
-
-    for (uint32_t i = 0; i < size; ++i) {
-        crc ^= data[i];
-        for (uint8_t bit = 0; bit < 8U; ++bit) {
-            const bool lsb_set = (crc & 0x1U) != 0U;
-            crc >>= 1U;
-            if (lsb_set)
-                crc ^= kCrc32Polynomial;
-        }
-    }
-
-    return ~crc;
-}
-
 inline void compute_image_sha256(uint32_t address, uint32_t size, uint8_t* hash) {
     const auto* data = reinterpret_cast<const uint8_t*>(address);
     crypto::Sha256Ctx ctx;
@@ -66,6 +48,11 @@ inline void compute_image_sha256(uint32_t address, uint32_t size, uint8_t* hash)
     crypto::sha256_final(&ctx, hash);
 }
 
+// The SHA-256 suffix is the whole integrity story for the image. A CRC32 pass
+// used to run alongside it, which cost a second full-image scan on every boot
+// while adding nothing: a cryptographic digest already covers everything a CRC
+// detects. Note this proves the image is intact, not that it is authentic --
+// the digest is unsigned and travels with the image.
 inline bool validate_image_hash(uint32_t address, uint32_t size) {
     if (size <= kImageHashSuffixSize)
         return false;
@@ -104,12 +91,7 @@ inline bool validate_app_image() {
     if (!meta.is_ready())
         return false;
 
-    const uint32_t size = meta.image_size();
-    if (!validate_candidate_image(size))
-        return false;
-
-    const uint32_t crc32 = compute_image_crc32(kAppStartAddress, size);
-    return crc32 == meta.image_crc32();
+    return validate_candidate_image(meta.image_size());
 }
 
 } // namespace librmcs::firmware::flash

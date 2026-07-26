@@ -21,7 +21,7 @@
 |---|---|---|---|---|
 | `c_board` | STM32F4xx | ARM `cmake/gcc-arm-none-eabi.cmake` | `c_board_app` `c_board_bootloader` | CubeMX BSP + TinyUSB |
 | `mc02` | STM32H723VGT6（M7） | ARM `cmake/gcc-arm-none-eabi.cmake` | `mc02_app` `mc02_bootloader` | CAN-FD，USB Full-Speed |
-| `ch32_board` | WCH CH32H417（Qingke V5F） | RISC-V `cmake/toolchain-wch-riscv.cmake` | `ch32_board_app`（暂无 bootloader） | USB 3.0 SuperSpeed，片上 bring-up 中 |
+| `ch32_board` | WCH CH32H417（Qingke V3F + V5F 双核） | RISC-V `cmake/toolchain-wch-riscv.cmake` | `ch32_board_app` `ch32_board_boot` `ch32_board_merged` | USB 3.0 SuperSpeed；`boot` 是 V3F 启动核兼 DFU bootloader |
 | `rmcs_board` | HPM6E8Y / HPM5321（Andes） | RISC-V 超级构建 + HPMicro GNU 工具链 | `rmcs_board_app` `rmcs_board_bootloader`；EtherCAT 桥在 `ecat/` | HPM SDK v1.11.0，双核 ECAT 桥 |
 
 > RISC-V 芯片（`ch32_board`、`rmcs_board`）用 `riscv32-unknown-elf-gcc`，**不要**用
@@ -46,7 +46,7 @@ cmake --build host/build
 cmake --preset debug -S firmware/rmcs_board  && cmake --build firmware/rmcs_board/build
 cmake --preset debug -S firmware/c_board     && cmake --build firmware/c_board/build     --target c_board_app c_board_bootloader
 cmake --preset debug -S firmware/mc02        && cmake --build firmware/mc02/build        --target mc02_app mc02_bootloader
-cmake --preset debug -S firmware/ch32_board  && cmake --build firmware/ch32_board/build  --target ch32_board_app
+cmake --preset debug -S firmware/ch32_board  && cmake --build firmware/ch32_board/build  # app + boot + merged.hex
 ```
 
 Lint（与 CI 对齐）：

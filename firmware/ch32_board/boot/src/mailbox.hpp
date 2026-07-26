@@ -32,9 +32,22 @@ struct TelemetryRecord {
 struct SharedBlock {
     // Startup handshake: the V5F core writes 1 once its forwarding bring-up is
     // complete; the V3F boot core spins on this before entering its own loop.
+    // Keep this first: it is the documented debugger read-back at kSharedBlockAddr
+    // (see PITFALLS.md 4.4).
     volatile uint32_t v5f_ready;
+
+    // Reboot request from the application core, written with kResetRequestMagic.
+    // V5F must not reset itself: its reset vector is flash 0x0, i.e. the V3F
+    // image, so a self-reset would run the boot core's code on the app core (the
+    // mtvec = 0x2010_0003 symptom in PITFALLS.md). The boot core owns the reset,
+    // so V5F parks itself and asks V3F to pull it. Used by the DFU detach path
+    // (app/src/usb/dfu_runtime.cpp), which pairs it with the boot mailbox.
+    volatile uint32_t reset_request;
+
     utility::RingBuffer<TelemetryRecord, 64> telemetry;
 };
+
+inline constexpr uint32_t kResetRequestMagic = 0x52535451; // "RSTQ"
 
 // Fixed placement inside the shared region. Reserve a 8 KB window here.
 inline constexpr uintptr_t kSharedBlockAddr = 0x20178000u;

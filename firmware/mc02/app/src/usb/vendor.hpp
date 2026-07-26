@@ -9,6 +9,7 @@
 
 #include <class/vendor/vendor_device.h>
 #include <device/usbd.h>
+#include <main.h>
 #include <tusb.h>
 
 #include "core/include/librmcs/data/datas.hpp"
@@ -41,6 +42,18 @@ public:
     Vendor() {
         usb::usb_descriptors.init();
         core::utility::assert_always(tusb_rhport_init(0, nullptr));
+
+        // Pin the USB interrupt priority here, because nothing else does.
+        // tusb_rhport_init -> dcd_init -> dcd_int_enable only calls
+        // NVIC_EnableIRQ; the CubeMX HAL_PCD_MspInit that would have set a
+        // priority belongs to the ST device stack, which this firmware does not
+        // link. NVIC priority registers reset to 0, so without this line OTG_HS
+        // would run at preempt priority 0 -- above FDCAN (1) -- and every CAN RX
+        // ISR could be delayed by a full dwc2 interrupt (FIFO drain plus the
+        // endpoint state machine). Setting it to 2 makes the documented
+        // FDCAN(1) > USB(2) > UART/DMA(3) hierarchy true in the image, and keeps
+        // ownership of it here where it cannot silently regress.
+        HAL_NVIC_SetPriority(OTG_HS_IRQn, 2, 0);
     }
 
     core::protocol::Serializer& serializer() { return serializer_; }

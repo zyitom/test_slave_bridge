@@ -7,11 +7,31 @@
 
 ## 芯片与工具链
 - MCU：**WCH CH32H417**，RISC-V **双核**（V3F boot/offload + V5F 转发快路径）；卖点是片上 **USB 3.0 SuperSpeed（5 Gbps）** 设备控制器。
-- ISA/工具链：RISC-V bare-metal，`cmake/toolchain-wch-riscv.cmake`（`riscv32-unknown-elf`，RV32IMAFC/ilp32f，**不启用** WCH 私有 `xw` 扩展）。需 `riscv32-unknown-elf-gcc`（**不是** ARM）。
-- 复用 rmcs_board 的 RISC-V 工具链，构建前设：
+- ISA/工具链：RISC-V bare-metal，`cmake/toolchain-wch-riscv.cmake`（RV32IMAFC/ilp32f，**不启用** WCH 私有 `xw` 扩展）。需 RISC-V GCC（**不是** ARM）。
+- **默认（推荐）**：复用 rmcs_board 的 HPM 工具链，构建前设：
   ```bash
-  export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm
+  export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm     # -> riscv32-unknown-elf-gcc 13.2
   ```
+- **也支持 MounRiver `MRS_Toolchain_*`**。工具前缀由 `toolchain-wch-riscv.cmake`
+  自动探测（依次试 `riscv32-wch-elf-` / `riscv-wch-elf-` / `riscv32-unknown-elf-`），
+  `-DWCH_TOOLCHAIN_PREFIX=` 可强制指定。注意 MRS 的 `Toolchain/` 下并排放着三套 GCC，
+  前缀各不相同，`WCH_TOOLCHAIN_PATH` 要指到**具体某一套**（含 `bin/` 的那层），不是
+  `Toolchain/` 本身：
+
+  | 目录 | 前缀 | 版本 | 可用性 |
+  |---|---|---|---|
+  | `RISC-V Embedded GCC` | `riscv-none-embed-` | 8.2.0 | **不可用**，编不了 C++23 |
+  | `RISC-V Embedded GCC12` | `riscv-wch-elf-` | 12.2.0 | 可用 |
+  | `RISC-V Embedded GCC15` | `riscv32-wch-elf-` | 15.2.0 | 可用 |
+
+  ```bash
+  cmake --preset debug -S firmware/ch32_board \
+      -DWCH_TOOLCHAIN_PATH="$HOME/3rd_party/MRS_Toolchain_Linux_X64_V240/Toolchain/RISC-V Embedded GCC15"
+  ```
+- **为什么默认仍是 HPM 那套**：同一份代码用 MRS GCC15 编出来 app 的 text+data 从
+  113364 B 涨到 124472 B（FLASH 占用 86.5% -> **95.0%**，区域只有 128 KB）。两边都开了
+  `--specs=nano.specs`，差异来自 GCC 13.2/15.2 与各自 newlib 的构建。要用 MRS 编就先
+  确认这个余量能接受。
 
 ## 构建
 ```bash
@@ -23,17 +43,26 @@ cmake --build firmware/ch32_board/build
 # -> build/ch32_board_merged.hex  <- 烧这个
 ```
 - preset：`debug` / `release`。target：`ch32_board_app` / `ch32_board_boot` /
-  `ch32_board_merged`（默认全建）。**`boot` 是 V3F 启动核镜像，不是 bootloader；
-  本板暂无 bootloader/DFU。**
+  `ch32_board_merged`（默认全建）。**`boot` 既是 V3F 启动核镜像，也是 DFU
+  bootloader**——本芯片 V3F 先复位、拥有时钟树、决定要不要唤醒 V5F，这本来就是
+  bootloader 的活，所以两者合一，"启动 App" = `NVIC_WakeUp_V5F()` 而非跳转。
+- App 还会产出 `ch32_board_app.dfu`（裸 `.bin` + DFU suffix，**不带** mc02/c_board
+  那个 `ImageHash` 后缀：本 bootloader 自己哈希烧进去的内容）。烧法见 `README.md`
+  的 "Bootloader / DFU" 一节，或仓库根 `./flash-ch32.sh`。
 
 ## 烧录（WCH-Link）
+OpenOCD 现在取自 MounRiver 工具链包（旧的 `~/3rd_party/wch-openocd` 已不存在）。
+注意是 **`OpenOCD/OpenOCD/bin`** 两层同名目录，`wch-riscv.cfg` 等 cfg 就和
+`openocd` 放在同一个 `bin/` 里：
 ```bash
-OCD=~/3rd_party/wch-openocd
+OCD=~/3rd_party/MRS_Toolchain_Linux_X64_V240/OpenOCD/OpenOCD
 $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg \
     -c "init" -c "wch_riscv unfreeze" -c "halt" \
     -c "program firmware/ch32_board/build/ch32_board_merged.hex verify" \
     -c "reset run" -c "exit"
 ```
+- 这份是 OpenOCD `0.11.0+dev-snapshot (2026-02-28)`，三个 cfg（`wch-riscv` /
+  `wch-dual-core` / `wch-arm`）与旧版同名同用法，下面所有注意事项照旧适用。
 - **`wch_riscv unfreeze` 必须在 `init` 之后、`halt` 之前**。夹到 `halt` 后面它会静默失效，
   症状是 `program` 报 `Read-Protect Status Currently Enabled` 或
   `error writing to flash at address 0x00000000`，而 `flash erase_sector` 却"成功"、
@@ -48,8 +77,26 @@ $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg \
   拷贝代码的循环里（`0x00004020`）。判断固件是否正常运行看 **USB 枚举**，不要看 PC，
   也不要看 `v5f_ready`（每次启动 V3F 都会重新清零）。
 - halt 会让主机判 USB 掉线，且 **`resume` 不会让它回来，必须 `reset run`**。
-- MounRiver Studio 自带的 openocd 与 `~/3rd_party/wch-openocd` **二进制和 cfg 完全相同**，
+- MounRiver Studio 自带的 openocd 与命令行这份 **二进制和 cfg 完全相同**，
   差别只在调用序列——它能烧而命令行烧不进时，先怀疑序列，不要怀疑工具。
+
+## GDB 调试
+先让 openocd 挂着当 gdb server（把上面 `program`/`exit` 换成常驻）：
+```bash
+OCD=~/3rd_party/MRS_Toolchain_Linux_X64_V240/OpenOCD/OpenOCD
+$OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg -c "init" -c "wch_riscv unfreeze" -c "halt"
+# 另开一个终端
+~/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux/bin/riscv32-unknown-elf-gdb \
+    firmware/ch32_board/build/ch32_board_app.elf -ex "target extended-remote :3333"
+```
+- **不要用 `RISC-V Embedded GCC15` 里的 `riscv32-wch-elf-gdb`**：它链的是
+  `libpython3.8.so.1.0`，在只装了 python 3.12 的系统上直接 `error while loading
+  shared libraries` 起不来。
+- 可用的 gdb 有两个，任选：HPM 那套的 `riscv32-unknown-elf-gdb` **13.2**（推荐，版本最新，
+  能读 GCC 15 默认输出的 DWARF 5），或 MRS `RISC-V Embedded GCC12` 里的
+  `riscv-wch-elf-gdb` **12.1**。gdb 不需要和编译器同源，能解析 RISC-V ELF/DWARF 即可。
+- 调试同样受"调试口与 USB 抢线"的限制，见 `PITFALLS.md`：halt 会让主机判 USB 掉线，
+  且 `resume` 拉不回来，必须 `reset run`。
 
 ## 目录结构
 - `app/src/`：V5F 上的 C++ librmcs 转发层（`app.cpp` 提供 `main()`，替换被排除的 WCH demo `app/User/main.c`）；`can/ uart/ usb/ timer/ led/ utility/`。
@@ -62,9 +109,22 @@ $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg \
 - **已上板：USB 3.0 SuperSpeed 枚举成功**（2026-07-25，WCH-LinkE 实测）。
   `A11C:D403`、`bcdUSB 3.00`、bulk EP `0x01`/`0x81` 1024B/`bMaxBurst 15`，5 Gbps，
   多次复位稳定。
-- **bulk 数据通路还没端到端验证**：枚举只走 EP0。第一个要在板上确认的是 EP1-OUT
-  的收长语义（`usb_ss_ep1_out_complete()` 读 `UEP_RX_CHAIN_LEN` + 单缓冲基址，
-  多包 burst 未验证）。
+- **bulk 数据通路已端到端验证**（2026-07-26）：11/11 下行包解析并回 ack，0 丢包。
+  EP1-OUT 的链式 DMA 收长语义按 RM 27.2.4 修正过（`UEP_RX_DMA` 自增，实测确认）。
+- **主机侧接口已就位**：`librmcs::board::Ch32Board`（`host/include/librmcs/board/ch32_board.hpp`，
+  PID `0xD403`，CAN1/CAN2 + UART1/UART2），通道表在
+  `core/include/librmcs/spec/ch32_board/`，`host/examples/common/multi_board.hpp`
+  里有 `Ch32BoardSession`，所以 `rx_monitor` 等 example 都能直接连这块板。
+  固件不处理 UART config 下行（`uart_config_deserialized_callback` 是空的），
+  所以 host 类里**故意没有** `uartN_config`。
+- **启动链已上板复验**（2026-07-26，无 USB 线，只接 WCH-Link）：flash 内容 == `app.bin`、
+  metadata 里的 sha256 == sha256(flash) → `app_image_is_valid()` 为真、不进 DFU、唤醒 V5F；
+  V5F 走完整个 `App()`（`diag[30] == 12`）、无断言、主循环 **release 219 ns/圈（4.6 MHz）、
+  debug 3.25 µs/圈**。没插线时 LTSSM 只在 DISABLE/RXDET 之间循环（`diag[11] == 0x30`）、
+  `USBSS_DevEnumStatus == 0`，这是预期行为不是故障（见 `PITFALLS.md` 4.5）。
+- **看 V5F 死活要按 `PITFALLS.md` 4.7 的姿势**：调试器 attach 期间 V5F 不跑，同一个
+  openocd 会话里 `reset run; sleep; halt` 读到的全是残留；必须先 `exit` 断开、自由跑、
+  再 attach 读。判据用 `diag[30]`，**不要用 `v5f_ready`**（attach 触发的复位会把它清零）。
 - **不要碰 `-Dinterrupt\(x\)=interrupt`**（`CMakeLists.txt`）：WCH 的
   `interrupt("WCH-Interrupt-fast")` 会被主线 GCC 整条丢掉，ISR 收尾变成 `ret` 而
   不是 `mret`，第一个 USB/TIM12 中断进去就永久关中断——USB 死掉的真凶。改工具链后
@@ -80,3 +140,15 @@ $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg \
   已实测：halt 核 5 秒（主机判 USB 掉线）后调试器仍能连上，旧固件此处必断。
   设成 1 可恢复原厂行为并支持 USB 2.0 主机，代价是回退时丢调试口。
 - CAN/USART 的 GPIO 引脚在 `app/src/board_app.cpp` 里仍是占位值，待按原理图确定。
+- **DFU 相关的两条硬约束**：
+  1. 描述符按 `LIBRMCS_DFU_DEVICE` 在 `bsp/usb/usb_desc.c` 里二选一（app=0、
+     boot=1），boot 那份是 DFU-mode（单接口、无端点、`bInterfaceProtocol=0x02`、
+     `wTransferSize=512`=EP0 包长）。改端点或接口号要同步改
+     `boot/src/usb/dfu_transport.cpp` 的 `kDfuInterfaceNumber`。
+  2. **V5F 不能自己复位**：它的复位向量是 flash `0x0`（V3F 镜像），自复位会让 app
+     核跑 boot 核的代码（`mtvec=0x2010_0003` 那个症状）。所以 DFU detach 时 V5F 只
+     写 `boot_mailbox` + `SharedBlock::reset_request` 然后 park，由 V3F 执行
+     `NVIC_SystemReset()`。
+- **boot 侧轮询 `usb::dfu` 必须带 memory barrier**：`Dfu` 没有 volatile 成员，全靠
+  USBSS 中断改，-O2 下会把读提到循环外变成死转（`boot/src/main.cpp` 的
+  `run_dfu_mode()` 里有一条 `__asm volatile("" ::: "memory")`，别删）。

@@ -19,9 +19,11 @@
               order per the SHA-256 specification.
 *********************************************************************/
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 namespace librmcs::firmware::crypto {
 
@@ -142,16 +144,40 @@ inline void sha256_init(Sha256Ctx* ctx) {
     ctx->state[7] = 0x5be0cd19U;
 }
 
+// Feeds whole 64-byte chunks straight out of the caller's buffer.
+//
+// The original upstream loop copied one byte at a time into ctx->data, which
+// costs a load, a store, an increment and a branch for every input byte before
+// any hashing happens -- on a full application image that dominates the scan.
+// sha256_transform only ever does byte loads, so it can read the source
+// directly with no alignment requirement.
 inline void sha256_update(Sha256Ctx* ctx, const uint8_t* data, size_t len) {
-    for (size_t index = 0U; index < len; ++index) {
-        ctx->data[ctx->datalen] = data[index];
-        ++ctx->datalen;
+    size_t offset = 0U;
+
+    // Top up a partially filled buffer left by a previous call.
+    if (ctx->datalen != 0U) {
+        const size_t fill = std::min(static_cast<size_t>(detail::kChunkBytes - ctx->datalen), len);
+        std::memcpy(ctx->data.data() + ctx->datalen, data, fill);
+        ctx->datalen += static_cast<uint32_t>(fill);
+        offset += fill;
 
         if (ctx->datalen == detail::kChunkBytes) {
             detail::sha256_transform(ctx, ctx->data.data());
             ctx->bitlen += detail::kBitLengthIncrement;
             ctx->datalen = 0U;
         }
+    }
+
+    while ((len - offset) >= detail::kChunkBytes) {
+        detail::sha256_transform(ctx, data + offset);
+        ctx->bitlen += detail::kBitLengthIncrement;
+        offset += detail::kChunkBytes;
+    }
+
+    const size_t remaining = len - offset;
+    if (remaining != 0U) {
+        std::memcpy(ctx->data.data(), data + offset, remaining);
+        ctx->datalen = static_cast<uint32_t>(remaining);
     }
 }
 

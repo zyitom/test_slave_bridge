@@ -3,8 +3,8 @@
 // Board-agnostic runtime adapter for the example programs.
 //
 // Every example used to hard-code one concrete board type. This header lets an
-// example talk to whichever of the four project boards is actually plugged in,
-// chosen at runtime: c_board, mc02, hpm5321 and hpm5321_dual_can.
+// example talk to whichever of the five project boards is actually plugged in,
+// chosen at runtime: c_board, mc02, ch32_board, hpm5321 and hpm5321_dual_can.
 //
 // Usage:
 //   1. Derive a receiver from `examples::BoardReceiver` and override the
@@ -28,6 +28,7 @@
 #include <utility>
 
 #include <librmcs/board/c_board.hpp>
+#include <librmcs/board/ch32_board.hpp>
 #include <librmcs/board/mc02.hpp>
 #include <librmcs/board/rmcs_board_hpm5321.hpp>
 #include <librmcs/board/rmcs_board_hpm5321_dual_can.hpp>
@@ -300,6 +301,69 @@ private:
     librmcs::board::Mc02 board_;
 };
 
+// ch32_board: CAN1/CAN2 and UART1/UART2 over a USB 3.0 SuperSpeed bulk pipe, no
+// IMU / DBUS / GPIO. The logical channels are numbered from 1 on this board (it
+// follows the STM32 boards' peripheral numbering), so bus 0 here is CAN1.
+class Ch32BoardSession final : public BoardSession, public librmcs::board::Ch32Board::Callback {
+public:
+    explicit Ch32BoardSession(BoardReceiver& receiver, std::string_view filter)
+        : receiver_(receiver)
+        , board_(
+              *this, filter,
+              librmcs::board::AdvancedOptions{}.set_dangerously_skip_version_checks(true)) {}
+
+    std::string_view name() const override { return "Ch32Board"; }
+    int can_bus_count() const override { return 2; }
+    int uart_port_count() const override { return 2; }
+    bool has_dbus() const override { return false; }
+    bool has_imu() const override { return false; }
+    int gpio_channel_count() const override { return 0; }
+
+    void transmit(FunctionRef<void(BoardTransmitter&)> build) override {
+        auto builder = board_.start_transmit();
+        Transmitter transmitter{builder};
+        build(transmitter);
+    }
+
+private:
+    struct Transmitter final : BoardTransmitter {
+        librmcs::board::Ch32Board::PacketBuilder& builder;
+        explicit Transmitter(librmcs::board::Ch32Board::PacketBuilder& b) : builder(b) {}
+        BoardTransmitter& can(int bus, const librmcs::data::CanDataView& data) override {
+            switch (bus) {
+            case 0: builder.can1_transmit(data); break;
+            case 1: builder.can2_transmit(data); break;
+            default: throw std::out_of_range{"Ch32Board: CAN bus index out of range (0-1)"};
+            }
+            return *this;
+        }
+        BoardTransmitter& uart(int port, const librmcs::data::UartDataView& data) override {
+            switch (port) {
+            case 0: builder.uart1_transmit(data); break;
+            case 1: builder.uart2_transmit(data); break;
+            default: throw std::out_of_range{"Ch32Board: UART port index out of range (0-1)"};
+            }
+            return *this;
+        }
+    };
+
+    void can1_receive_callback(const librmcs::data::CanDataView& data) override {
+        receiver_.on_can(0, data);
+    }
+    void can2_receive_callback(const librmcs::data::CanDataView& data) override {
+        receiver_.on_can(1, data);
+    }
+    void uart1_receive_callback(const librmcs::data::UartDataView& data) override {
+        receiver_.on_uart(0, data);
+    }
+    void uart2_receive_callback(const librmcs::data::UartDataView& data) override {
+        receiver_.on_uart(1, data);
+    }
+
+    BoardReceiver& receiver_;
+    librmcs::board::Ch32Board board_;
+};
+
 // hpm5321: a single CAN0 and UART0, no IMU / DBUS / GPIO.
 class Hpm5321Session final : public BoardSession,
                              public librmcs::board::RmcsBoardHpm5321::Callback {
@@ -424,6 +488,10 @@ inline std::unique_ptr<BoardSession> connect_any(
     }
     try {
         return std::make_unique<detail::Mc02Session>(receiver, serial_filter);
+    } catch (const std::runtime_error&) {
+    }
+    try {
+        return std::make_unique<detail::Ch32BoardSession>(receiver, serial_filter);
     } catch (const std::runtime_error&) {
     }
     try {

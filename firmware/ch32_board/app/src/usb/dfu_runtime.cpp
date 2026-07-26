@@ -21,6 +21,7 @@ extern "C" {
 
 #include "firmware/ch32_board/app/src/usb/dfu_runtime.hpp"
 #include "firmware/ch32_board/app/src/utility/interrupt_lock.hpp"
+#include "firmware/ch32_board/boot/src/mailbox.hpp"
 #include "firmware/ch32_board/boot/src/utility/boot_mailbox.hpp"
 
 namespace librmcs::firmware::usb {
@@ -51,16 +52,30 @@ volatile bool detach_requested = false;
 
 } // namespace
 
-// Called from the forwarding loop, off the ISR, once per iteration.
+// Called from the forwarding loop, off the ISR, once per iteration. Does not
+// return once the host has asked for a detach: this core parks and the boot core
+// resets the chip out from under it.
 void poll_dfu_runtime_reboot() {
     if (!detach_requested)
         return;
 
     // No further USB traffic matters from here on; the host is already waiting
-    // for the device to disappear.
+    // for the device to disappear. Drop the SuperSpeed link explicitly so it
+    // sees a disconnect now rather than a stalled device until the reset lands.
+    USBSS_Device_Init(DISABLE);
+
     const utility::InterruptLockGuard guard;
     firmware::utility::boot_mailbox().request_enter_dfu();
-    NVIC_SystemReset();
+
+    // The reset itself belongs to the boot core: this core's reset vector is
+    // flash 0x0, which holds the V3F image, so resetting here would run the boot
+    // core's code on this one. Ask V3F instead (see SharedBlock::reset_request)
+    // and park -- either V3F's reset covers the whole chip, in which case this
+    // loop is short-lived, or it does not and this core stays quiescent while
+    // the bootloader re-initialises the USB device.
+    boot::shared().reset_request = boot::kResetRequestMagic;
+    while (true)
+        __WFI();
 }
 
 } // namespace librmcs::firmware::usb

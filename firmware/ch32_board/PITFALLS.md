@@ -293,7 +293,7 @@ halt 会让主机判 USB 掉线，`resume` 无法恢复枚举，**必须 `reset 
 **补充**：它的 `init` 也会污染观测——只 `init` 不 `reset run`，照样看到两个 hart 的 PC
 都落在 V3F 的 `0x201xxxxx` 代码区、hart1 `mtvec = 0x20100003`。所以**用 dual-core cfg
 读出来的"V5F 在跑 V3F 镜像"未必是真的固件状态**，可能只是这个 cfg 自己造成的。
-判断 V5F 死活请用 4.4 的方法。
+判断 V5F 死活请用 4.7 的方法（不是 4.4 的——那条对 V5F 无效）。
 
 ### 4.4 halt 会复位，但核冻结在 `handle_reset`——RAM 因此保留，这是唯一可靠的观测法 **[实测]**
 
@@ -322,6 +322,45 @@ hart0 的 PC 反解出来是 `bsp/wch/Startup/startup_ch32h417_v3f.S:534` 的 `h
 
   4.1 说 `v5f_ready` 不可信——那只针对**读到 0** 的情形（可能只是还没写）。
   **读到 1 是强证据**。
+
+> ⚠️ 2026-07-26 更正：上面那条"标准动作"在 V5F 上**会骗人**，`v5f_ready` 这个观测点
+> 也已作废。见 4.7。
+
+### 4.7 调试器 attach 期间 V5F 根本不跑——同会话的 `reset run` 读到的全是残留 **[实测]**
+
+4.4 那条命令（同一个 openocd 会话里 `reset run` → `sleep` → `halt` → `mdw`）用来看
+V3F 没问题，**用来看 V5F 是错的**：openocd 挂着的时候 V5F 不会被真正放出来，那段
+`sleep` 里 app 一行都没跑，`mdw` 读到的是**上一次断开状态下自由运行**留下的残留。
+
+判据（2026-07-26 实测，加了一个每圈自增的 `diag[31]` 才看出来）：
+
+| 观测方式 | 自由跑 1 s | 自由跑 3 s / 6 s / 10 s |
+|---|---|---|
+| 同会话 `reset run; sleep; halt` | 计数器纹丝不动（还是上电垃圾值） | 同左 |
+| 先 `exit` 断开、再 attach 读 | 5.6e5 | 1.8e6 / 3.1e6，**与时间成正比** |
+
+**正确姿势**：让 openocd 先退出，在**无调试器**状态下自由跑，再重新 attach 读残留：
+
+```bash
+$OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg -c "init" -c "wch_riscv unfreeze" \
+    -c "reset run" -c "exit"          # 断开，让它真的跑
+sleep 10                               # 这段时间没有调试器
+$OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg -c "init" -c "wch_riscv unfreeze" \
+    -c "halt" -c "mdw 0x20170000 32" -c "exit"
+```
+
+连带的两个后果：
+
+- **`v5f_ready` 在这个协议下永远读到 0**，不能再当判据：attach 会触发复位 → V3F 重跑 →
+  `init_shared()` 把它清零，而 V5F 被摁住不会重跑去写 1。4.4 里"读到 1 是强证据"这句
+  在实践中已经用不上了。
+- **换用 `diag[30]`（V5F 自己写、V3F 从不碰、也不在任何 image 的 section 里）**：
+  `app.cpp` 的 `trace_init_step()` 在 `App()` 每一步后写进度号，**读到 12 = 整个 `App()`
+  跑完（含 `v5f_ready = 1`）**。卡在哪一步就读到几。配套的还有 `diag[26..29]`：
+  `utility/assert.cpp` 把断言的行号/文件/函数指针镜像到那里（`diag[26] == 0xA55EA55E`
+  才算有效），因为 `assert_file/line` 那几个全局变量在 `.bss` 里，复位就被清了。
+
+被这条坑了半小时：先后误判成"V5F 没被唤醒"和"V5F 卡在 init 里"，实际固件一直是好的。
 
 ### 4.5 SS 的 RX_DETECT 会永远重试（别信"8 次就放弃"） **[RM + 实测]**
 

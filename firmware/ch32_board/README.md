@@ -17,8 +17,10 @@ to take the debug interface with it until the next power cycle. Verified on
 target: after halting the core for 5 s (which drops the USB device from the
 host) the debugger still reconnects.
 
-Still open: the bulk **data** path has not been exercised end to end (no host
-peer yet), and the CAN/UART pin map is still placeholder. See "Not done yet".
+The bulk data path is verified end to end (2026-07-26): 11/11 downlink packets
+parsed and acked over EP1 with no drops. The host SDK reaches the board through
+`librmcs::board::Ch32Board` (PID `0xD403`), so the examples see it like any other
+board. Still open: the CAN/UART pin map is placeholder. See "Not done yet".
 
 ## App layout (librmcs C++ layer)
 
@@ -82,8 +84,8 @@ cmake --build firmware/ch32_board/build
 ```
 
 Targets: `ch32_board_app`, `ch32_board_boot`, `ch32_board_merged` (all built by
-default). There is no bootloader yet - `ch32_board_boot` is the V3F *boot core*
-image, not a DFU bootloader.
+default). `ch32_board_boot` is the V3F boot core image **and** the DFU
+bootloader - the two are the same program, see "Bootloader / DFU" below.
 
 ## Key porting decisions
 
@@ -175,16 +177,69 @@ $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg \
 - Halting drops the USB device from the host, and **`resume` does not bring it
   back - only `reset run` does.**
 
+## Bootloader / DFU
+
+On this part the bootloader is not a separate partition: V3F comes out of reset
+first, owns the clock tree and decides whether to wake V5F at all, which is
+exactly a bootloader's job. So `ch32_board_boot` is both. "Launching the app"
+means `NVIC_WakeUp_V5F()`, not a jump, and V3F stays resident afterwards running
+the offload loop.
+
+Flash map (`boot/src/flash/layout.hpp`):
+
+```
+0x00000 .. 0x10000  bootloader   V3F image, DFU never writes here
+0x10000 .. 0x70000  application  V5F image, the only DFU-writable region
+0x70000 .. 0x72000  metadata     one erase block: magic + image_size + sha256
+```
+
+Boot decision, in `decide_boot_mode()`:
+
+1. boot mailbox holds `DFU0` (the app was asked to detach) -> DFU mode;
+2. boot mailbox holds `APP1` (a download just manifested and was hash-checked)
+   -> launch, no re-verification;
+3. otherwise hash the app slot and compare against the metadata record. A torn
+   or absent image means DFU mode, never a launch.
+
+Debugger flashing bypasses DFU, so the build supplies the metadata record
+itself: `cmake/gen_metadata_hex.py` hashes `ch32_board_app.bin` and emits the
+record at `0x70000` into `ch32_board_merged.hex`. Without it a
+debugger-flashed board would cold-boot into DFU every time.
+
+Flashing the app over DFU (no debugger, so the SWD/USB pin conflict below does
+not apply):
+
+```bash
+./flash-ch32.sh            # from the repo root; PRESET=debug for a -O0 image
+# equivalently:
+dfu-util -d 0xa11c:0xd403 -a 0 -D firmware/ch32_board/build/ch32_board_app.dfu
+```
+
+`ch32_board_app.dfu` is the raw `.bin` plus a DFU suffix - deliberately *not*
+the `ImageHash`-suffixed form mc02/c_board use, because this bootloader hashes
+what it programmed rather than trusting a suffix. Both images enumerate as
+`A11C:D403`; DFU mode is the one whose interface reports `bInterfaceProtocol`
+0x02 and whose product string is `RMCS Bootloader v<version>`.
+
+Getting into DFU mode: power up with no valid image, or let `dfu-util` detach a
+running app (the application carries a DFU run-time interface on interface 1,
+`app/src/usb/dfu_runtime.cpp`). On detach the app drops the SS link, writes the
+boot mailbox and parks; the **boot core** performs the reset, because V5F's reset
+vector is flash `0x0` - the V3F image - so a self-reset there would run the wrong
+core's code (`SharedBlock::reset_request`).
+
+There is no recovery button on this board, so an app that enumerates but ignores
+DFU_DETACH still needs the WCH-Link.
+
 ## Not done yet
 
-- **Bulk data path end to end.** Enumeration is proven; no host peer has moved
-  protocol frames over EP1 yet. Confirm the EP1-OUT length semantics first.
-- **Host SDK board interface.** There is no `host/include/librmcs/board/ch32_board.hpp`
-  (and no `librmcs/spec/ch32_board/*`) yet. It should wait until the CAN/UART/GPIO
-  channel map below is real, otherwise the spec tables get written twice.
+- **On-target DFU run.** The download path is built and the descriptors verified
+  in the ELF, but no image has been pushed over DFU on hardware yet. First things
+  to watch: the erase/program work happens inside the USBSS interrupt, and the
+  V3F image runs from RAM (`Link_v3f.ld` copies it to `0x20100000`), which is
+  what makes self-flashing safe - confirm both on target.
 - **GPIO pin map** for CAN and USART in `app/src/board_app.cpp` is placeholder;
   set it from the EVT schematic (`EVT/PUB/CH32H417SCH.pdf`).
 - **CAN bit timing + timer prescaler** are keyed off `SystemCoreClock`; confirm
   the CAN/TIM kernel-clock dividers on target.
 - SS speed test (WCH ships a host speed-test tool with the CH372 demo).
-- Bootloader / DFU story (other boards ship app + bootloader).

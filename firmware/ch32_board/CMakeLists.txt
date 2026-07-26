@@ -145,6 +145,11 @@ target_compile_definitions(ch32_board_app PRIVATE
     # e.g. whenever no cable is attached) silently kills SDI until a power
     # cycle. Set to 1 to restore stock behaviour and USB 2.0 host support.
     LIBRMCS_USBSS_HS_FALLBACK=0
+    # 0 = the application configuration descriptor: the librmcs bulk pair on
+    # interface 0 plus a DFU run-time interface (answered by usb/dfu_runtime.cpp).
+    # The bootloader target sets this to 1 and gets the DFU-mode descriptor
+    # instead; both live in bsp/usb/usb_desc.c.
+    LIBRMCS_DFU_DEVICE=0
     LIBRMCS_PROJECT_VERSION_STRING="${LIBRMCS_PROJECT_VERSION}"
     $<$<CONFIG:Release>:NDEBUG>
 )
@@ -166,6 +171,30 @@ add_custom_command(TARGET ch32_board_app POST_BUILD
     COMMAND ${CMAKE_SIZE} "$<TARGET_FILE:ch32_board_app>"
     VERBATIM
 )
+
+# DFU payload for dfu-util. Unlike mc02/c_board this is NOT built with
+# librmcs_add_dfu_image: that helper appends the ImageHash suffix those
+# bootloaders parse, whereas this bootloader hashes the image it actually
+# programmed and stores the digest in its own metadata record (see
+# boot/src/flash/metadata.hpp). The DFU payload must therefore be byte-identical
+# to the .bin the debugger path flashes, or the two would disagree about the
+# image the metadata describes. The only thing added is the DFU suffix, which
+# keeps dfu-util from pushing another board's image onto this one.
+find_program(CH32_DFU_SUFFIX_EXECUTABLE dfu-suffix)
+if(CH32_DFU_SUFFIX_EXECUTABLE)
+    add_custom_command(TARGET ch32_board_app POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+            "$<TARGET_FILE_DIR:ch32_board_app>/ch32_board_app.bin"
+            "$<TARGET_FILE_DIR:ch32_board_app>/ch32_board_app.dfu"
+        COMMAND "${CH32_DFU_SUFFIX_EXECUTABLE}"
+            -v 0xA11C -p 0xD403
+            -a "$<TARGET_FILE_DIR:ch32_board_app>/ch32_board_app.dfu"
+        COMMENT "Generating ch32_board_app.dfu"
+        VERBATIM
+    )
+else()
+    message(STATUS "dfu-suffix not found: skipping ch32_board_app.dfu (install dfu-util)")
+endif()
 
 # ==============================================================================
 # V3F boot / offload core: boots at 0x0, wakes V5F, then runs non-forwarding
@@ -195,6 +224,9 @@ target_compile_definitions(ch32_board_boot PRIVATE
     Core_V3F
     Run_Core=Run_Core_V3FandV5F
     LIBRMCS_USBSS_HS_FALLBACK=0
+    # 1 = enumerate as a DFU-mode device (single interface, no endpoints, DFU
+    # functional descriptor), which is what boot/src/usb/dfu_transport.cpp serves.
+    LIBRMCS_DFU_DEVICE=1
     LIBRMCS_PROJECT_VERSION_STRING="${LIBRMCS_PROJECT_VERSION}"
     $<$<CONFIG:Release>:NDEBUG>
 )
@@ -218,7 +250,7 @@ add_custom_command(TARGET ch32_board_boot POST_BUILD
 )
 
 # ==============================================================================
-# Merged single-flash image: V3F @ 0x0 + V5F @ 0x10000 (see cmake/merge_hex.cmake).
+# Merged single-flash image: V3F @ 0x0 + V5F @ 0x10000 (see cmake/merge_hex.py).
 # This is the "flash both cores at once" artifact, emitted in both forms:
 #   .hex - absolute addresses, what openocd's `program` takes
 #   .bin - flat image based at 0x00000000, gaps filled with 0xFF; what MounRiver
@@ -250,29 +282,28 @@ add_custom_command(
     VERBATIM
 )
 
+# Both outputs come from one command: merge_hex.py parses the fragments into
+# absolute addresses and emits the .hex and the flat .bin from the same map.
+# Do NOT go back to concatenating the fragments as text and flattening the
+# result with objcopy -- objcopy writes Extended Segment Address records (0x02)
+# for these images while the metadata fragment uses Extended Linear Address
+# records (0x04), and mixing the two addressing modes in one file put the V5F
+# image on top of the V3F bootloader at 0x0 and the metadata record at 0x90000.
 add_custom_command(
-    OUTPUT "${CH32_MERGED_HEX}"
+    OUTPUT "${CH32_MERGED_HEX}" "${CH32_MERGED_BIN}"
     COMMAND ${CMAKE_OBJCOPY} -O ihex
         "$<TARGET_FILE:ch32_board_boot>" "${CMAKE_CURRENT_BINARY_DIR}/ch32_board_boot.hex"
     COMMAND ${CMAKE_OBJCOPY} -O ihex
         "$<TARGET_FILE:ch32_board_app>" "${CMAKE_CURRENT_BINARY_DIR}/ch32_board_app_img.hex"
-    COMMAND ${CMAKE_COMMAND}
-        "-DBOOT=${CMAKE_CURRENT_BINARY_DIR}/ch32_board_boot.hex"
-        "-DAPP=${CMAKE_CURRENT_BINARY_DIR}/ch32_board_app_img.hex"
-        "-DMETA=${CH32_METADATA_HEX}"
-        "-DOUT=${CH32_MERGED_HEX}"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/merge_hex.cmake"
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/cmake/merge_hex.py"
+        "${CMAKE_CURRENT_BINARY_DIR}/ch32_board_boot.hex"
+        "${CMAKE_CURRENT_BINARY_DIR}/ch32_board_app_img.hex"
+        "${CH32_METADATA_HEX}"
+        --output-hex "${CH32_MERGED_HEX}"
+        --output-bin "${CH32_MERGED_BIN}"
     DEPENDS ch32_board_boot ch32_board_app "${CH32_METADATA_HEX}"
-    COMMENT "Merging V3F@0x0 + V5F@0x10000 + metadata into ch32_board_merged.hex"
-    VERBATIM
-)
-
-add_custom_command(
-    OUTPUT "${CH32_MERGED_BIN}"
-    COMMAND ${CMAKE_OBJCOPY} -I ihex -O binary --gap-fill 0xFF
-        "${CH32_MERGED_HEX}" "${CH32_MERGED_BIN}"
-    DEPENDS "${CH32_MERGED_HEX}"
-    COMMENT "Flattening ch32_board_merged.hex into ch32_board_merged.bin (base 0x0)"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/merge_hex.py"
+    COMMENT "Merging V3F@0x0 + V5F@0x10000 + metadata into ch32_board_merged.hex/.bin"
     VERBATIM
 )
 

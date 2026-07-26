@@ -65,7 +65,12 @@ public:
                 return DFU_STATUS_ERR_ADDRESS;
 
             flash_writer_.begin_session();
-            flash::Metadata::get_instance().begin_flashing();
+
+            // Reported rather than fatal: a metadata sector that will not erase
+            // used to trap here, which took the device off the bus with no way
+            // for the host to tell what happened.
+            if (!flash::Metadata::get_instance().begin_flashing())
+                return fail(DFU_STATUS_ERR_ERASE);
 
             session_started_ = true;
             expected_block_ = 0U;
@@ -89,9 +94,13 @@ public:
         if (downloaded_size_64 > static_cast<uint64_t>(flash::kAppMaxImageSize))
             return fail(DFU_STATUS_ERR_ADDRESS);
 
+        if (data == nullptr)
+            return fail(DFU_STATUS_ERR_UNKNOWN);
+
         const auto payload = std::span<const std::byte>(
             reinterpret_cast<const std::byte*>(data), static_cast<size_t>(length));
-        flash_writer_.write(static_cast<uintptr_t>(write_address_64), payload);
+        if (!flash_writer_.write(static_cast<uintptr_t>(write_address_64), payload))
+            return fail(DFU_STATUS_ERR_PROG);
 
         downloaded_size_ = static_cast<uint32_t>(downloaded_size_64);
         expected_block_ = static_cast<uint16_t>(expected_block_ + 1U);
@@ -105,20 +114,18 @@ public:
         if (!session_started_ || downloaded_size_ == 0U)
             return DFU_STATUS_ERR_NOTDONE;
 
-        flash_writer_.finish_session();
+        if (!flash_writer_.finish_session())
+            return fail(DFU_STATUS_ERR_PROG);
 
         if (!flash::validate_candidate_image(downloaded_size_))
             return fail(DFU_STATUS_ERR_FIRMWARE);
 
-        const uint32_t image_crc32 =
-            flash::compute_image_crc32(flash::kAppStartAddress, downloaded_size_);
         auto& metadata = flash::Metadata::get_instance();
-        metadata.finish_flashing(downloaded_size_, image_crc32);
+        if (!metadata.finish_flashing(downloaded_size_))
+            return fail(DFU_STATUS_ERR_WRITE);
 
-        if (!metadata.is_ready() || metadata.image_size() != downloaded_size_
-            || metadata.image_crc32() != image_crc32) {
-            return fail(DFU_STATUS_ERR_FIRMWARE);
-        }
+        if (!metadata.is_ready() || metadata.image_size() != downloaded_size_)
+            return fail(DFU_STATUS_ERR_VERIFY);
 
         reset_transfer_state();
         reset_requested_ = true;
@@ -133,9 +140,7 @@ public:
         reset_transfer_state();
     }
 
-    [[noreturn]] static void detach() {
-        boot::BootMailbox::reboot_to_app_once();
-    }
+    [[noreturn]] static void detach() { boot::BootMailbox::reboot_to_app_once(); }
 
     void poll() const {
         if (!reset_requested_)

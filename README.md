@@ -108,9 +108,28 @@ App 镜像 `*.dfu` 已带好镜像哈希与 DFU 后缀，`dfu-util` 会按 VID/P
 
 ### 各板 USB 标识
 
-| 板型     | 芯片         | App PID  | Bootloader 产品名     |
-| -------- | ------------ | -------- | --------------------- |
-| c_board  | STM32F407VG  | `0xD401` | `RMCS DFU Bootloader` |
-| mc02     | STM32H723VG  | `0xD402` | `RMCS DFU Bootloader` |
+| 板型       | 芯片         | App PID  | Bootloader 产品名          |
+| ---------- | ------------ | -------- | -------------------------- |
+| c_board    | STM32F407VG  | `0xD401` | `RMCS DFU Bootloader`      |
+| mc02       | STM32H723VG  | `0xD402` | `RMCS DFU Bootloader`      |
+| ch32_board | WCH CH32H417 | `0xD403` | `RMCS Bootloader v<版本号>` |
 
 VID 均为 `0xA11C`。
+
+### ch32_board 的差异
+
+RISC-V 双核，工具链是 `riscv32-unknown-elf-gcc`（不是 `arm-none-eabi-gcc`），
+编译前需 `export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm`：
+
+```bash
+cmake --preset debug -S firmware/ch32_board && cmake --build firmware/ch32_board/build
+```
+
+- **首次烧录**（含 bootloader）用 WCH-Link 烧 `build/ch32_board_merged.hex`，
+  之后 App 可走 DFU：`./flash-ch32.sh`。
+- Bootloader 就是 V3F 启动核镜像本身（`ch32_board_boot`），"启动 App" 是唤醒 V5F
+  而非跳转。
+- App 的 `.dfu` 只带 DFU 后缀、**不带** `ImageHash` 后缀：这块板的 bootloader 会
+  自己哈希烧进去的内容并写进独立的 metadata 记录。
+
+细节见 `firmware/ch32_board/README.md`。

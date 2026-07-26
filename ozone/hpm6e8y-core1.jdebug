@@ -1,0 +1,29 @@
+/*********************************************************************
+* Ozone project: hpm6e8y core1 -- fieldbus application (CAN/UART), JTAG.
+*
+*   /opt/SEGGER/Ozone_V340j/Ozone ozone/hpm6e8y-core1.jdebug
+*   ../ozone-debug.sh hpm6e8y-core1
+*
+* This is the one target here that debugs an application rather than a
+* bootloader, because core1 has none: it is not a boot core and never runs from
+* flash. Hence attach rather than download-and-reset.
+*
+* BOOT ORDER MATTERS. Core1 has no image of its own in flash: core0 copies it
+* out of sec_core_img and then releases the hart. Attaching before the bridge
+* has booted finds a hart still held in reset, which reads as a dead target.
+* Let the board run first, then connect.
+*
+* Same package-suffix caveat as ozone/hpm6e8y.jdebug; this is the _CPU1 variant
+* of the same device, which is how SEGGER exposes the second core.
+**********************************************************************/
+
+void OnProjectLoad (void) {
+  Project.SetDevice ("HPM6E8YxGNx_CPU1");
+  Project.SetHostIF ("USB", "0");
+  Project.SetTargetIF ("JTAG");
+  Project.SetTIFSpeed ("4 MHz");
+
+  Debug.SetConnectMode (CM_ATTACH_HALT);
+
+  File.Open ("../firmware/rmcs_board/ecat/build/rmcs_ecat_core1/output/demo.elf");
+}

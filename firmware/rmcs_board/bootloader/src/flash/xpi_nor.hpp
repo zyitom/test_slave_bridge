@@ -15,10 +15,19 @@
 #include <hpm_soc_feature.h>
 
 #include "firmware/rmcs_board/bootloader/src/flash/layout.hpp"
-#include "firmware/rmcs_board/bootloader/src/utility/assert.hpp"
 
 namespace librmcs::firmware::flash {
 
+// Thin wrapper over the ROM XPI NOR API.
+//
+// Erase/program failures are returned to the caller rather than trapping: the
+// bootloader is the last line of recovery, so a NOR that stops accepting writes
+// has to surface as a DFU error status the host can act on, not as a fault that
+// takes the device off the bus with nothing to report.
+//
+// Availability of the flash itself is a separate matter: if auto-config fails
+// at construction there is no usable NOR at all, which is reported through
+// available() so callers can turn it into an error status too.
 class XpiNor {
 public:
     static XpiNor& instance() {
@@ -26,32 +35,45 @@ public:
         return flash;
     }
 
+    bool available() const { return available_; }
+
     uint32_t sector_size() const { return sector_size_; }
 
-    void erase_sector(uintptr_t address) {
-        utility::assert_debug((address % sector_size_) == 0U);
+    bool erase_sector(uintptr_t address) {
+        if (!available_ || sector_size_ == 0U)
+            return false;
+        if ((address % sector_size_) != 0U)
+            return false;
+        if (address < kFlashBaseAddress)
+            return false;
 
         const uint32_t irq_flags = disable_global_irq(CSR_MSTATUS_MIE_MASK);
         const hpm_stat_t status = rom_xpi_nor_erase_sector(
             BOARD_APP_XPI_NOR_XPI_BASE, xpi_xfer_channel_auto, &nor_config_,
             to_flash_offset(address));
         restore_global_irq(irq_flags & CSR_MSTATUS_MIE_MASK);
-        utility::assert_always(status == status_success);
+        if (status != status_success)
+            return false;
 
         invalidate_range(address, sector_size_);
+        return true;
     }
 
-    void program_word(uintptr_t address, uint32_t data) {
-        program_words(address, std::span<const uint32_t>(&data, 1U));
+    bool program_word(uintptr_t address, uint32_t data) {
+        return program_words(address, std::span<const uint32_t>(&data, 1U));
     }
 
-    void program_words(uintptr_t address, std::span<const uint32_t> data) {
+    bool program_words(uintptr_t address, std::span<const uint32_t> data) {
         if (data.empty())
-            return;
-
-        utility::assert_debug((address & 0x3U) == 0U);
-        utility::assert_debug(
-            (reinterpret_cast<uintptr_t>(data.data()) & (alignof(uint32_t) - 1U)) == 0U);
+            return true;
+        if (!available_)
+            return false;
+        if ((address & 0x3U) != 0U)
+            return false;
+        if (address < kFlashBaseAddress)
+            return false;
+        if ((reinterpret_cast<uintptr_t>(data.data()) & (alignof(uint32_t) - 1U)) != 0U)
+            return false;
 
         writeback_range(reinterpret_cast<uintptr_t>(data.data()), data.size_bytes());
 
@@ -60,14 +82,15 @@ public:
             BOARD_APP_XPI_NOR_XPI_BASE, xpi_xfer_channel_auto, &nor_config_, data.data(),
             to_flash_offset(address), static_cast<uint32_t>(data.size_bytes()));
         restore_global_irq(irq_flags & CSR_MSTATUS_MIE_MASK);
-        utility::assert_always(status == status_success);
+        if (status != status_success)
+            return false;
 
         invalidate_range(address, data.size_bytes());
+        return true;
     }
 
 private:
     static uint32_t to_flash_offset(uintptr_t address) {
-        utility::assert_debug(address >= kFlashBaseAddress);
         return static_cast<uint32_t>(address - BOARD_FLASH_BASE_ADDRESS);
     }
 
@@ -93,19 +116,23 @@ private:
         option.option0.U = BOARD_APP_XPI_NOR_CFG_OPT_OPT0;
         option.option1.U = BOARD_APP_XPI_NOR_CFG_OPT_OPT1;
 
-        utility::assert_always(
-            rom_xpi_nor_auto_config(BOARD_APP_XPI_NOR_XPI_BASE, &nor_config_, &option)
-            == status_success);
-        utility::assert_always(
-            rom_xpi_nor_get_property(
+        if (rom_xpi_nor_auto_config(BOARD_APP_XPI_NOR_XPI_BASE, &nor_config_, &option)
+            != status_success)
+            return;
+        if (rom_xpi_nor_get_property(
                 BOARD_APP_XPI_NOR_XPI_BASE, &nor_config_, xpi_nor_property_sector_size,
                 &sector_size_)
-            == status_success);
-        utility::assert_always(sector_size_ == kFlashSectorSize);
+            != status_success)
+            return;
+        if (sector_size_ != kFlashSectorSize)
+            return;
+
+        available_ = true;
     }
 
     xpi_nor_config_t nor_config_{};
     uint32_t sector_size_ = 0U;
+    bool available_ = false;
 };
 
 } // namespace librmcs::firmware::flash

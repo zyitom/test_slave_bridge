@@ -218,6 +218,62 @@ const uint8_t SS_DeviceDescriptor[ ] =
     0x01,                                                   // bNumConfigurations
 };
 
+#if LIBRMCS_DFU_DEVICE
+
+/* LIBRMCS LOCAL PATCH: DFU-mode configuration, used by the V3F bootloader image
+ * (LIBRMCS_DFU_DEVICE=1 in CMakeLists.txt). The bootloader speaks DFU on EP0
+ * only, so the configuration is a single interface with no endpoints -- there is
+ * no bulk pair to describe and the librmcs protocol stack is not linked in.
+ *
+ * The device keeps the application's VID/PID (0xA11C:0xD403); "which image is
+ * running" is told apart by the product string and by bInterfaceProtocol below
+ * (0x02 = DFU mode, against 0x01 = run-time in the application configuration).
+ * That mirrors mc02's bootloader, so the same host tooling drives both.
+ *
+ * wTotalLength = 9 + 9 + 9 = 27. */
+const uint8_t SS_ConfigDescriptor[ ] =
+{
+    /* Configuration Descriptor */
+    0x09,                                                   // bLength
+    0x02,                                                   // bDescriptorType
+    0x1B, 0x00,                                             // wTotalLength
+    0x01,                                                   // bNumInterfaces
+    0x01,                                                   // bConfigurationValue
+    0x00,                                                   // iConfiguration
+    0x80,                                                   // bmAttributes: Bus Powered
+    0x64,                                                   // MaxPower
+
+    /* Interface Descriptor (DFU mode) */
+    0x09,                                                   // bLength
+    0x04,                                                   // bDescriptorType
+    0x00,                                                   // bInterfaceNumber: must match
+                                                            //   kDfuInterfaceNumber in
+                                                            //   boot/src/usb/dfu_transport.cpp
+    0x00,                                                   // bAlternateSetting
+    0x00,                                                   // bNumEndpoints: EP0 only
+    0xfe,                                                   // bInterfaceClass: Application Specific
+    0x01,                                                   // bInterfaceSubClass: DFU
+    0x02,                                                   // bInterfaceProtocol: DFU mode
+    0x00,                                                   // iInterface: none -- this stack only
+                                                            //   serves string indices 0..3
+
+    /* DFU Functional Descriptor */
+    0x09,                                                   // bLength
+    0x21,                                                   // bDescriptorType: DFU FUNCTIONAL
+    0x09,                                                   // bmAttributes: CAN_DOWNLOAD | WILL_DETACH
+                                                            //   (bitCanUpload = 0: the application
+                                                            //   slot is never read back;
+                                                            //   bitManifestationTolerant = 0: the
+                                                            //   host must reset after download)
+    0xe8, 0x03,                                             // wDetachTimeOut: 1000ms
+    0x00, 0x02,                                             // wTransferSize: 512 == DEF_USBSSD_UEP0_SIZE,
+                                                            //   so one DNLOAD block is exactly one
+                                                            //   control-OUT packet
+    0x01, 0x01,                                             // bcdDFUVersion: 1.01
+};
+
+#else
+
 const uint8_t SS_ConfigDescriptor[ ] =
 {
     /* LIBRMCS LOCAL PATCH: one vendor interface with a single bulk pair (EP1
@@ -300,6 +356,8 @@ const uint8_t SS_ConfigDescriptor[ ] =
     0x00, 0x04,                                             // wTransferSize: 1024
     0x01, 0x01,                                             // bcdDFUVersion: 1.01
 };
+
+#endif /* LIBRMCS_DFU_DEVICE */
 
 /*String Descriptor Lang ID*/
 const uint8_t MyLangDescr[ ] =

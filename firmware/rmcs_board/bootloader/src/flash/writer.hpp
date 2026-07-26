@@ -10,56 +10,78 @@
 #include "firmware/rmcs_board/bootloader/include/tusb_config.h"
 #include "firmware/rmcs_board/bootloader/src/flash/layout.hpp"
 #include "firmware/rmcs_board/bootloader/src/flash/xpi_nor.hpp"
-#include "firmware/rmcs_board/bootloader/src/utility/assert.hpp"
 
 namespace librmcs::firmware::flash {
 
+// Sector-buffered writer for the application slot, fed by the DFU download path.
+//
+// Every erase/program failure is returned to the caller, which turns it into a
+// DFU status the host can see (errERASE / errPROG). Nothing on this path traps:
+// a worn or locked sector must not be able to make the bootloader unreachable.
+//
+// The bounds checks below are real checks rather than assertions. They are the
+// last thing standing between a malformed download and an overwritten
+// bootloader or metadata sector, so they must never be compiled out.
 class Writer {
 public:
     static constexpr uint32_t kTransferBlockSize = CFG_TUD_DFU_XFER_BUFSIZE;
 
     void begin_session() { clear_active_sector(); }
 
-    void finish_session() {
-        if (!has_active_sector_)
-            return;
-
-        commit_active_sector_if_needed();
-        clear_active_sector();
-    }
-
     void abort_session() { clear_active_sector(); }
 
-    void write(uintptr_t address, std::span<const std::byte> data) {
-        utility::assert_debug(!data.empty());
-        utility::assert_debug(address >= kAppStartAddress && address < kAppEndAddress);
-        utility::assert_debug(
-            static_cast<uint64_t>(address) + data.size() <= static_cast<uint64_t>(kAppEndAddress));
+    bool finish_session() {
+        if (!has_active_sector_)
+            return true;
+
+        const bool committed = commit_active_sector_if_needed();
+        clear_active_sector();
+        return committed;
+    }
+
+    bool write(uintptr_t address, std::span<const std::byte> data) {
+        if (data.empty())
+            return false;
+        if (address < kAppStartAddress || address >= kAppEndAddress)
+            return false;
+        if (static_cast<uint64_t>(address) + data.size() > static_cast<uint64_t>(kAppEndAddress))
+            return false;
+
+        const uint32_t sector_size = XpiNor::instance().sector_size();
+        if (sector_size == 0U || sector_size > kSectorBufferCapacity)
+            return false;
 
         size_t input_offset = 0U;
         while (input_offset < data.size()) {
             const uintptr_t write_address = address + input_offset;
-            const uintptr_t sector_address =
-                write_address - (write_address % XpiNor::instance().sector_size());
-            activate_sector(sector_address);
+            const uintptr_t sector_address = write_address - (write_address % sector_size);
+            if (!activate_sector(sector_address))
+                return false;
 
             const uintptr_t sector_offset = write_address - active_sector_address_;
-            const size_t writable =
-                static_cast<size_t>(XpiNor::instance().sector_size() - sector_offset);
+            const size_t writable = static_cast<size_t>(sector_size - sector_offset);
             const size_t chunk_size = std::min(writable, data.size() - input_offset);
 
-            utility::assert_debug(sector_offset == buffered_size_);
+            // DFU never rewinds, so the incoming offset must line up with what
+            // the buffer already holds. A mismatch means the transfer went out
+            // of step and the image would be silently corrupted.
+            if (sector_offset != buffered_size_)
+                return false;
+
             std::memcpy(
                 writable_sector_buffer_bytes().data() + sector_offset, data.data() + input_offset,
                 chunk_size);
             advance_buffer(sector_offset, chunk_size);
 
             input_offset += chunk_size;
-            if ((sector_offset + chunk_size) == XpiNor::instance().sector_size()) {
-                commit_active_sector_if_needed();
+            if ((sector_offset + chunk_size) == sector_size) {
+                if (!commit_active_sector_if_needed())
+                    return false;
                 clear_active_sector();
             }
         }
+
+        return true;
     }
 
 private:
@@ -75,26 +97,26 @@ private:
         return std::as_bytes(std::span<const uint32_t>(sector_buffer_));
     }
 
-    void activate_sector(uintptr_t sector_address) {
+    bool activate_sector(uintptr_t sector_address) {
         if (has_active_sector_ && active_sector_address_ == sector_address)
-            return;
+            return true;
 
         if (has_active_sector_) {
-            commit_active_sector_if_needed();
+            if (!commit_active_sector_if_needed())
+                return false;
             clear_active_sector();
         }
 
-        utility::assert_debug((sector_address % kSectorBufferCapacity) == 0U);
+        if ((sector_address % kSectorBufferCapacity) != 0U)
+            return false;
+
         has_active_sector_ = true;
         active_sector_address_ = sector_address;
         buffered_size_ = 0U;
+        return true;
     }
 
     void advance_buffer(uintptr_t offset, size_t size) {
-        utility::assert_debug(has_active_sector_);
-        utility::assert_debug(size > 0U);
-        utility::assert_debug(offset <= static_cast<uintptr_t>(SIZE_MAX) - size);
-
         buffered_size_ = std::max(buffered_size_, static_cast<size_t>(offset) + size);
     }
 
@@ -106,40 +128,43 @@ private:
         buffered_size_ = 0U;
     }
 
-    void commit_active_sector_if_needed() {
-        utility::assert_debug(has_active_sector_);
+    bool commit_active_sector_if_needed() {
         if (!has_buffered_data())
-            return;
+            return true;
 
         const auto* flash_ptr = reinterpret_cast<const void*>(active_sector_address_);
         const bool is_same =
             std::memcmp(flash_ptr, sector_buffer_bytes().data(), buffered_size_) == 0;
         if (!is_same) {
-            auto& xpi_nor = XpiNor::instance();
-            xpi_nor.erase_sector(active_sector_address_);
-            program_buffer(active_sector_address_, buffered_size_);
+            if (!XpiNor::instance().erase_sector(active_sector_address_))
+                return false;
+            if (!program_buffer(active_sector_address_, buffered_size_))
+                return false;
         }
 
         buffered_size_ = 0U;
+        return true;
     }
 
-    static void program_buffer(uintptr_t address, size_t size) {
-        utility::assert_debug((address & 0x3U) == 0U);
+    static bool program_buffer(uintptr_t address, size_t size) {
+        if ((address & 0x3U) != 0U)
+            return false;
 
         const size_t full_word_count = size / sizeof(uint32_t);
         if (full_word_count > 0U) {
-            XpiNor::instance().program_words(
-                address, std::span<const uint32_t>(sector_buffer_.data(), full_word_count));
+            if (!XpiNor::instance().program_words(
+                    address, std::span<const uint32_t>(sector_buffer_.data(), full_word_count)))
+                return false;
         }
 
         const size_t full_word_bytes = full_word_count * sizeof(uint32_t);
         const size_t tail_size = size - full_word_bytes;
         if (tail_size == 0U)
-            return;
+            return true;
 
         uint32_t tail_word = 0xFFFFFFFFU;
         std::memcpy(&tail_word, sector_buffer_bytes().data() + full_word_bytes, tail_size);
-        XpiNor::instance().program_word(address + full_word_bytes, tail_word);
+        return XpiNor::instance().program_word(address + full_word_bytes, tail_word);
     }
 
     static_assert((kSectorBufferCapacity % sizeof(uint32_t)) == 0U);

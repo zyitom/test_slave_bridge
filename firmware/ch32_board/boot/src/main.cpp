@@ -15,7 +15,9 @@
 
 extern "C" {
 #include "ch32h417.h"
+#include "ch32h417_usbss_device.h"
 #include "debug.h"
+#include "usb_desc.h"
 // Provided by boot/User/system_ch32h417.c (the V3F variant). Enables HSE and
 // configures the system + USB SS PLLs -- the V5F app's system variant does NOT
 // do this, so the boot core must, or the USB SS PLL never locks (HSE stays off).
@@ -60,6 +62,47 @@ BootDecision decide_boot_mode() {
     // check that makes an interrupted download safe -- the metadata record is
     // committed only after the whole image is programmed and read back.
     return flash::app_image_is_valid() ? BootDecision::kLaunchApp : BootDecision::kEnterDfu;
+}
+
+// DFU mode: enumerate as a DFU-mode device and serve downloads from the EP0
+// class-request handler in usb/dfu_transport.cpp until the host is done. V5F is
+// never woken here -- an image that failed validation must not run, and one
+// being replaced must not be executing while its slot is erased.
+[[noreturn]] void run_dfu_mode() {
+    usb::dfu.reset();
+
+    // Same USB bring-up order the application core uses (app/src/app.cpp), and
+    // for the same reason: USBSS_Device_Init() calls NVIC_EnableIRQ, so every
+    // consumer the interrupt path touches has to exist first. Here that is just
+    // usb::dfu, reset above. Chip is the silicon revision the vendor stack gates
+    // a LINK_INT_CTRL bit on; leaving it 0 mis-configures the link on rev >= 3.
+    Chip = ((DBGMCU_GetCHIPID() >> 4) & 0x0F);
+    librmcs_usb_init_descriptors();
+    USB_Timer_Init();
+    USBSS_Device_Init(ENABLE);
+
+    while (true) {
+        // usb::dfu is driven entirely from the USBSS interrupt and holds no
+        // volatile members, so without a barrier the compiler may hoist these
+        // loads out of the loop -- at -O2 that turns the poll into a permanent
+        // spin. The barrier costs nothing here; the flash work happens in the ISR.
+        __asm volatile("" ::: "memory");
+
+        // Manifestation committed the metadata record and left a boot-app-once
+        // request in the boot mailbox; DETACH is the host asking for the same
+        // reset without a download. Either way the device is expected to drop
+        // off the bus and come back, so tear the link down explicitly first --
+        // resetting with the PHY live leaves the host waiting out its own
+        // timeout instead of seeing a disconnect.
+        if (!usb::dfu.manifestation_complete() && !usb::dfu.detach_requested())
+            continue;
+
+        // Let the in-flight control transfer finish its status stage before the
+        // link goes away, otherwise the host reports the request as failed.
+        Delay_Ms(10);
+        USBSS_Device_Init(DISABLE);
+        NVIC_SystemReset();
+    }
 }
 
 void allocate_v5f_irqs() {
@@ -111,15 +154,7 @@ void allocate_v5f_irqs() {
     const BootDecision decision = decide_boot_mode();
     if (decision == BootDecision::kEnterDfu) {
         printf("V3F: entering DFU (app image invalid or detach requested)\r\n");
-        // TODO(dfu-transport): bring up the USBSS device here in DFU mode and
-        // pump usb::dfu from the EP0 class-request handler. Until that is wired,
-        // park instead of waking V5F -- launching an unverified image is exactly
-        // what the validation above exists to prevent.
-        usb::dfu.reset();
-        while (true) {
-            if (usb::dfu.manifestation_complete() || usb::dfu.detach_requested())
-                NVIC_SystemReset();
-        }
+        run_dfu_mode();
     }
 
     // Construct the cross-core mailbox BEFORE releasing V5F, so the V5F consumer
@@ -156,6 +191,15 @@ void allocate_v5f_irqs() {
     // exercises the cross-core data path end to end so it can be validated on
     // hardware. emplace_back drops on a full ring (non-hot-path, best effort).
     for (uint32_t sequence = 0;; ++sequence) {
+        // The application core cannot reset the chip itself (see the comment on
+        // SharedBlock::reset_request), so a host-requested DFU detach arrives
+        // here: V5F has already parked itself and written the boot mailbox, and
+        // the reset below lands in decide_boot_mode() one boot later.
+        if (shared().reset_request == kResetRequestMagic) {
+            printf("V3F: reset requested by V5F (DFU detach)\r\n");
+            NVIC_SystemReset();
+        }
+
         shared().telemetry.emplace_back(TelemetryRecord{
             .timestamp = 0,
             .sequence = sequence,

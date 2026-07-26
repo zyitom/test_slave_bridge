@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include <main.h>
 #include <spi.h>
 
 #include "firmware/mc02/app/src/utility/lazy.hpp"
@@ -28,14 +29,26 @@ public:
         downlink_full_reset_counter_.store(5000, std::memory_order::relaxed);
     }
 
-    // Polled from the main loop at (roughly) the iteration rate. The animation
-    // uses a local millisecond tick counter to keep the patterns independent of
-    // the exact loop cadence. No SPI transmit happens in any ISR context.
+    // Polled from the main loop, but paced off SysTick so the patterns are
+    // independent of the loop cadence. No SPI transmit happens in any ISR
+    // context.
+    //
+    // The tick MUST be a millisecond count, not a loop-iteration count: run()
+    // spins at roughly 380 kHz, so counting iterations ran every pattern ~380x
+    // too fast -- the buffer-full blink landed near 1.5 kHz and the breathing
+    // cycle near 190 Hz, both far above flicker fusion, so each one read as a
+    // steady half-brightness colour rather than an animation. Gating here also
+    // makes the 5000-count reset windows below span the 5 seconds their
+    // magnitude implies instead of 13 ms, and stops the WS2812 frame from being
+    // re-sent thousands of times a second.
     void poll() {
         if (user_controlling_.load(std::memory_order::relaxed))
             return;
 
-        const auto tick = tick_++;
+        const auto tick = HAL_GetTick();
+        if (tick == last_tick_)
+            return;
+        last_tick_ = tick;
 
         uint16_t uplink_full;
         do {
@@ -125,7 +138,7 @@ private:
     std::atomic<bool> user_controlling_;
     std::atomic<bool> host_connected_{false};
     std::atomic<uint16_t> uplink_full_reset_counter_, downlink_full_reset_counter_;
-    uint32_t tick_ = 0;
+    uint32_t last_tick_ = 0;
 };
 
 inline constinit utility::Lazy<Led> led;

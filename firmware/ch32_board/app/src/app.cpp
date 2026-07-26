@@ -53,6 +53,16 @@ void poll_usb_link_diagnostics() {
     diag[14] = USBSS_DevEnumStatus;
 }
 
+// Bring-up tracer for the V5F init sequence. Every debugger halt resets this
+// core (PITFALLS.md 4.4), so "where did it stop" cannot be read from the PC --
+// but diag[30] lives in the shared-SRAM window no image links a section over, so
+// it survives the reset and reads back as the last step that completed.
+// TODO(usb-bringup): drop with the rest of the diag instrumentation.
+void trace_init_step(uint32_t step) {
+    auto* diag = reinterpret_cast<volatile uint32_t*>(0x20170000u);
+    diag[30] = step;
+}
+
 uint32_t delay_hclk_clock() {
     if (HCLKClock != 0)
         return HCLKClock;
@@ -66,16 +76,21 @@ uint32_t delay_hclk_clock() {
 } // namespace
 
 App::App() {
+    trace_init_step(1);
     SystemAndCoreClockUpdate();
     HCLKClock = delay_hclk_clock();
     Delay_Init();
+    trace_init_step(2);
     USART_Printf_Init(921600);
     Chip = ((DBGMCU_GetCHIPID() >> 4) & 0x0F);
+    trace_init_step(3);
 
     // Free-running timestamp source first: everything below may stamp events.
     timer::timer.init();
+    trace_init_step(4);
 
     led::led.init();
+    trace_init_step(5);
 
     // Every consumer the USB interrupt path touches must exist BEFORE the USBSS
     // interrupts are enabled: USBSS_Device_Init() arms the link state machine and
@@ -83,11 +98,16 @@ App::App() {
     // usb::vendor (and through handle_downlink into can/uart). Constructing them
     // afterwards races an already-live ISR against an uninitialised Lazy.
     usb::vendor.init();
+    trace_init_step(6);
 
-    for (auto& can : can::can_array)
+    for (auto& can : can::can_array) {
         can.init();
-    for (auto& board_uart : uart::uart_array)
+        trace_init_step(7);
+    }
+    for (auto& board_uart : uart::uart_array) {
         board_uart.init();
+        trace_init_step(8);
+    }
 
     // USB 3.0 SuperSpeed device bring-up (WCH USBSS controller), last. Once
     // USB_Timer_Init has armed the link-training helper timer and
@@ -96,7 +116,9 @@ App::App() {
     // string descriptors are built first: the host reads them during the
     // enumeration that USBSS_Device_Init kicks off.
     librmcs_usb_init_descriptors();
+    trace_init_step(9);
     USB_Timer_Init();
+    trace_init_step(10);
 
     // The link-diagnostic accumulators live outside every linked section, so
     // nothing zeroes them on reset -- do it before the first USB interrupt can
@@ -108,17 +130,28 @@ App::App() {
     }
 
     USBSS_Device_Init(ENABLE);
+    trace_init_step(11);
 
     // Dual-core handshake: this V5F core is the forwarding fast path. Signal the
     // V3F boot/offload core that bring-up is complete; V3F spins on this before
     // entering its offload loop. The mailbox itself is constructed by V3F before
     // it wakes us, so it is already valid here. See boot/src/main.cpp.
     boot::shared().v5f_ready = 1;
+    trace_init_step(12);
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 [[noreturn]] void App::run() {
+    // Liveness / loop-rate counter, diag[31]. Independent of USB: diag[13] only
+    // moves while the LTSSM does, so it cannot distinguish "app died" from "link
+    // settled". Free-run for a known time and divide.
+    // TODO(usb-bringup): drop with the rest of the diag instrumentation.
+    auto* diag = reinterpret_cast<volatile uint32_t*>(0x20170000u);
+    uint32_t iterations = 0;
+
     while (true) {
+        diag[31] = ++iterations;
+
         // Same shape as upstream rmcs_board's run loop. CAN has no try_transmit:
         // downlink writes straight to the hardware TX mailboxes in
         // handle_downlink. The WCH USBSS and CAN/USART receive paths are all

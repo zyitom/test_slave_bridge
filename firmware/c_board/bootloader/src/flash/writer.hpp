@@ -12,10 +12,18 @@
 #include "firmware/c_board/bootloader/include/tusb_config.h"
 #include "firmware/c_board/bootloader/src/flash/layout.hpp"
 #include "firmware/c_board/bootloader/src/flash/unlock_guard.hpp"
-#include "firmware/c_board/bootloader/src/utility/assert.hpp"
 
 namespace librmcs::firmware::flash {
 
+// Sector-buffered writer for the application slot, fed by the DFU download path.
+//
+// Every erase/program failure is returned to the caller, which turns it into a
+// DFU status the host can see (errERASE / errPROG). Nothing on this path traps:
+// a worn or locked sector must not be able to make the bootloader unreachable.
+//
+// The bounds checks below are real checks rather than assertions. They are the
+// last thing standing between a malformed download and an overwritten
+// bootloader or metadata sector, so they must never be compiled out.
 class Writer {
 public:
     static constexpr uint32_t kTransferBlockSize = CFG_TUD_DFU_XFER_BUFSIZE;
@@ -24,27 +32,33 @@ public:
 
     void abort_session() { clear_active_sector(); }
 
-    void finish_session() {
+    bool finish_session() {
         if (!has_active_sector_)
-            return;
+            return true;
 
-        commit_active_sector_if_needed();
+        const bool committed = commit_active_sector_if_needed();
         clear_active_sector();
+        return committed;
     }
 
-    void write(uint32_t address, std::span<const std::byte> data) {
-        utility::assert_debug(!data.empty());
-        utility::assert_debug(address >= kAppStartAddress && address < kAppEndAddress);
+    bool write(uint32_t address, std::span<const std::byte> data) {
+        if (data.empty())
+            return false;
+        if (address < kAppStartAddress || address >= kAppEndAddress)
+            return false;
 
         const uint64_t end64 = static_cast<uint64_t>(address) + data.size();
-        utility::assert_debug(end64 <= static_cast<uint64_t>(kAppEndAddress));
-        utility::assert_debug(address <= static_cast<uint64_t>(UINT32_MAX) - data.size());
+        if (end64 > static_cast<uint64_t>(kAppEndAddress))
+            return false;
 
         size_t input_offset = 0U;
         while (input_offset < data.size()) {
             const uint32_t write_address = address + static_cast<uint32_t>(input_offset);
-            const size_t sector_index = get_sector_index(write_address);
-            activate_sector(sector_index);
+            size_t sector_index = 0U;
+            if (!find_sector_index(write_address, sector_index))
+                return false;
+            if (!activate_sector(sector_index))
+                return false;
 
             const auto& sector = kAppSectors[sector_index];
             const uint32_t sector_size = get_sector_size(sector);
@@ -53,17 +67,25 @@ public:
             const size_t chunk_size =
                 (data.size() - input_offset < writable) ? (data.size() - input_offset) : writable;
 
-            utility::assert_debug(offset_in_sector == buffered_size_);
+            // DFU never rewinds, so the incoming offset must line up with what
+            // the buffer already holds. A mismatch means the transfer went out
+            // of step and the image would be silently corrupted.
+            if (offset_in_sector != buffered_size_)
+                return false;
+
             std::memcpy(
                 sector_buffer_.data() + offset_in_sector, data.data() + input_offset, chunk_size);
             advance_buffer(offset_in_sector, chunk_size);
 
             input_offset += chunk_size;
             if ((offset_in_sector + static_cast<uint32_t>(chunk_size)) == sector_size) {
-                commit_active_sector_if_needed();
+                if (!commit_active_sector_if_needed())
+                    return false;
                 clear_active_sector();
             }
         }
+
+        return true;
     }
 
 private:
@@ -73,38 +95,38 @@ private:
         return sector.end - sector.start;
     }
 
-    static size_t get_sector_index(uint32_t address) {
+    static bool find_sector_index(uint32_t address, size_t& sector_index) {
         for (size_t i = 0; i < kAppSectorCount; ++i) {
             const auto& sector = kAppSectors[i];
-            if (address >= sector.start && address < sector.end)
-                return i;
+            if (address >= sector.start && address < sector.end) {
+                sector_index = i;
+                return true;
+            }
         }
 
-        utility::assert_failed_always();
+        return false;
     }
 
-    void activate_sector(size_t sector_index) {
+    bool activate_sector(size_t sector_index) {
         if (has_active_sector_ && active_sector_index_ == sector_index)
-            return;
+            return true;
 
         if (has_active_sector_) {
-            commit_active_sector_if_needed();
+            if (!commit_active_sector_if_needed())
+                return false;
             clear_active_sector();
         }
 
-        const auto& sector = kAppSectors[sector_index];
-        utility::assert_debug(get_sector_size(sector) <= kSectorBufferCapacity);
+        if (get_sector_size(kAppSectors[sector_index]) > kSectorBufferCapacity)
+            return false;
 
         has_active_sector_ = true;
         active_sector_index_ = sector_index;
         buffered_size_ = 0U;
+        return true;
     }
 
     void advance_buffer(uint32_t offset, size_t size) {
-        utility::assert_debug(has_active_sector_);
-        utility::assert_debug(size > 0U);
-        utility::assert_debug(offset <= static_cast<uint32_t>(UINT32_MAX) - size);
-
         const uint32_t dirty_end = offset + static_cast<uint32_t>(size);
         buffered_size_ = std::max(dirty_end, buffered_size_);
     }
@@ -117,10 +139,9 @@ private:
         buffered_size_ = 0U;
     }
 
-    void commit_active_sector_if_needed() {
-        utility::assert_debug(has_active_sector_);
+    bool commit_active_sector_if_needed() {
         if (!has_buffered_data())
-            return;
+            return true;
 
         const auto& sector = kAppSectors[active_sector_index_];
         const size_t dirty_size = static_cast<size_t>(buffered_size_);
@@ -129,15 +150,20 @@ private:
 
         if (!is_same) {
             const auto guard = UnlockGuard();
-            erase_sector(active_sector_index_);
-            program_bytes(
-                sector.start, std::span<const std::byte>(sector_buffer_.data(), dirty_size));
+            if (!guard.ok())
+                return false;
+            if (!erase_sector(active_sector_index_))
+                return false;
+            if (!program_bytes(
+                    sector.start, std::span<const std::byte>(sector_buffer_.data(), dirty_size)))
+                return false;
         }
 
         buffered_size_ = 0U;
+        return true;
     }
 
-    static void erase_sector(size_t index) {
+    static bool erase_sector(size_t index) {
         FLASH_EraseInitTypeDef erase{};
         erase.TypeErase = FLASH_TYPEERASE_SECTORS;
         erase.VoltageRange = FLASH_VOLTAGE_RANGE_3;
@@ -145,31 +171,35 @@ private:
         erase.NbSectors = 1;
 
         uint32_t sector_error = 0U;
-        utility::assert_always(HAL_FLASHEx_Erase(&erase, &sector_error) == HAL_OK);
+        return HAL_FLASHEx_Erase(&erase, &sector_error) == HAL_OK;
     }
 
-    static void program_bytes(uint32_t address, std::span<const std::byte> data) {
-        utility::assert_debug((address & 0x3U) == 0U);
+    static bool program_bytes(uint32_t address, std::span<const std::byte> data) {
+        if ((address & 0x3U) != 0U)
+            return false;
+
         size_t offset = 0U;
 
         while (offset + sizeof(uint32_t) <= data.size()) {
             uint32_t word = 0U;
             std::memcpy(&word, data.data() + offset, sizeof(word));
-            utility::assert_always(
-                HAL_FLASH_Program(
+            if (HAL_FLASH_Program(
                     FLASH_TYPEPROGRAM_WORD, address + static_cast<uint32_t>(offset), word)
-                == HAL_OK);
+                != HAL_OK)
+                return false;
             offset += sizeof(uint32_t);
         }
 
         if (offset < data.size()) {
             uint32_t tail_word = 0xFFFFFFFFU;
             std::memcpy(&tail_word, data.data() + offset, data.size() - offset);
-            utility::assert_always(
-                HAL_FLASH_Program(
+            if (HAL_FLASH_Program(
                     FLASH_TYPEPROGRAM_WORD, address + static_cast<uint32_t>(offset), tail_word)
-                == HAL_OK);
+                != HAL_OK)
+                return false;
         }
+
+        return true;
     }
 
     static inline std::array<std::byte, kSectorBufferCapacity> sector_buffer_

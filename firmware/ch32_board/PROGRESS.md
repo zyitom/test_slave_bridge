@@ -75,6 +75,44 @@ Mirrors **upstream rmcs_board** (the reference RISC-V board), not mc02:
 - Our ISRs use plain `__attribute__((interrupt))` (GCC emits `mret`), sidestepping
   the risk that mainline GCC drops WCH's `interrupt("WCH-Interrupt-fast")`.
 
+### Host SDK board interface (2026-07-26)
+- `core/include/librmcs/spec/ch32_board/{can,uart}.hpp` - channel descriptor
+  tables (CAN1/CAN2, UART1/UART2), same shape as the other boards'. Order matches
+  `app/src/board_app.hpp`'s `kCanPorts` / `kUartPorts`.
+- `host/include/librmcs/board/ch32_board.hpp` - `librmcs::board::Ch32Board`,
+  `0xA11C:0xD403`. No IMU / DBUS / GPIO callbacks (the board has none) and no
+  `uartN_config`: the firmware's `uart_config_deserialized_callback` is a no-op,
+  so offering it would silently do nothing.
+- `host/examples/common/multi_board.hpp` - `Ch32BoardSession` + an entry in
+  `connect_any()`, so `rx_monitor` and every other example can drive this board.
+
+### Bootloader / DFU (2026-07-26)
+The V3F image is the bootloader (it already owns reset, the clock tree and the
+decision to wake V5F). Flash layout, metadata record, SHA-256 validation, the
+sequential flash writer and the DFU 1.1 state machine were in place; what was
+missing and is now done:
+- **DFU-mode descriptors**: `bsp/usb/usb_desc.c` selects between the application
+  configuration and a DFU-mode one on `LIBRMCS_DFU_DEVICE` (app 0, boot 1) -
+  single interface, no endpoints, `bInterfaceProtocol` 0x02, `wTransferSize` 512
+  (== `DEF_USBSSD_UEP0_SIZE`, so one DNLOAD block is one control-OUT packet).
+  Recorded in `bsp/PROVENANCE.md`.
+- **USB bring-up in DFU mode**: `run_dfu_mode()` in `boot/src/main.cpp` mirrors
+  the app's init order (`Chip`, `librmcs_usb_init_descriptors`, `USB_Timer_Init`,
+  `USBSS_Device_Init`), then polls for manifestation/detach, tears the link down
+  and resets. The poll carries an explicit memory barrier - `Dfu` has no volatile
+  members and is only mutated from the ISR, so -O2 would otherwise spin forever.
+- **Detach path made dual-core safe**: V5F must not reset itself (its reset
+  vector is flash `0x0`, the V3F image), so `poll_dfu_runtime_reboot()` drops the
+  SS link, writes the boot mailbox, sets `SharedBlock::reset_request` and parks;
+  V3F's offload loop performs `NVIC_SystemReset()`.
+- **Host-side artifact**: `ch32_board_app.dfu` (raw `.bin` + DFU suffix, no
+  `ImageHash` suffix - this bootloader hashes what it programmed) and
+  `flash-ch32.sh` at the repo root.
+
+Self-flashing is safe because `Link_v3f.ld` runs the V3F image from RAM
+(`0x20100000`), so erasing/programming the app slot never stalls an instruction
+fetch. Not yet exercised on hardware.
+
 ## Not done / on-target bring-up TODO (all compile-correct, values unconfirmed)
 1. **USB SS EP1-OUT received length**: `vendor.cpp` reads `UEP_RX_CHAIN_LEN` and
    the payload from the RX buffer base (single-buffer). Confirm the chained-DMA

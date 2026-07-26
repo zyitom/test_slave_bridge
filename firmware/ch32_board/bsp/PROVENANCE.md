@@ -80,8 +80,19 @@ edits, all marked `LIBRMCS LOCAL PATCH`:
    requests for; its `iInterface` is 0 because this stack only serves string
    indices 0..3 plus the OS string. Layout mirrors mc02's `TUD_DFU_RT_DESCRIPTOR`.
 
+5. `usb_desc.c`: `SS_ConfigDescriptor` exists twice, selected by
+   `LIBRMCS_DFU_DEVICE` (`CMakeLists.txt`: 0 for `ch32_board_app`, 1 for
+   `ch32_board_boot`). The `#if` branch is the bootloader's DFU-mode
+   configuration - one interface, no endpoints, `bInterfaceProtocol` 0x02 and a
+   DFU functional descriptor with `wTransferSize` 512 (== `DEF_USBSSD_UEP0_SIZE`,
+   so a DNLOAD block is exactly one control-OUT packet). The `#else` branch is
+   the application configuration described in 4. Both images share the same
+   VID/PID; the product string and this protocol byte are what tell them apart.
+
 Everything else in `usb_desc.c` (device / BOS / HS / FS descriptors) is
-unmodified WCH.
+unmodified WCH. Note the HS/FS configuration descriptors still describe the demo
+layout: with `LIBRMCS_USBSS_HS_FALLBACK=0` they are unreachable, and the DFU
+build does not override them either.
 
 `bsp/usb/ch32h417_usbss_it.c` + `ch32h417_usbss_device.c` + `ch32h417_usbss_device.h`
 - EP2 and EP3 removed entirely. The demo kept two extra bulk pairs enabled in

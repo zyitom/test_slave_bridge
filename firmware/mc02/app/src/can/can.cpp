@@ -91,12 +91,21 @@ void Can::handle_uplink(data::DataId field_id, core::protocol::Serializer& seria
             can_data.can_id = (rx_mailbox->RIR & 0x1FFC0000U) >> 18;
         }
 
+        // Hardware RX timestamping is disabled on this board: the FDCAN internal
+        // counter is only 16 bits wide, so the reported value wraps every ~65.5 ms
+        // and does not satisfy the 32-bit microsecond contract of
+        // CanDataView::timestamp_us (see core/include/librmcs/data/datas.hpp). Left
+        // unset, the serializer omits the field entirely and saves 4 bytes per
+        // uplink frame. To re-enable, restore the line below together with the
+        // FDCAN_TIMESTAMP_* configuration in config_can() -- and widen the value
+        // first (e.g. fold in the free-running TIM5 microsecond counter) so hosts
+        // can keep using plain 32-bit wrapping deltas.
+        //
         // 16-bit hardware timestamp captured at start-of-frame (R1 bits[15:0]). The
         // internal counter ticks once per nominal CAN bit time, which is 1 us at the
         // 1 Mbit/s arbitration rate (prescaler 1), so the value is already in
-        // microseconds. It wraps every ~65.5 ms; the host only uses deltas, which
-        // are wrap-safe.
-        can_data.timestamp_us = static_cast<uint32_t>(rdtr & 0x0000FFFFU);
+        // microseconds.
+        // can_data.timestamp_us = static_cast<uint32_t>(rdtr & 0x0000FFFFU);
 
         size_t can_data_length = (rdtr & 0x000F0000U) >> 16;
         if (can_data.is_remote_transmission)

@@ -35,6 +35,53 @@ SECTIONS
         . = ALIGN(4);
     } >FLASH
 
+    /* Latency-critical CAN forwarding code, executed from zero-wait ITCM so it
+     * never depends on the I-cache or incurs FLASH-XIP fetch jitter. Loaded from
+     * FLASH and copied to ITCM at boot by app.cpp (App constructor).
+     *
+     * Placed ahead of .text deliberately: the per-function input sections listed
+     * below are named .text.<mangled>, so the *(.text*) wildcard would swallow
+     * them -- the linker assigns each input section to the first output section
+     * that matches it in script order.
+     *
+     * WARNING: nothing selected here may execute before that copy loop. The boot
+     * path (Reset_Handler, SystemInit, main, utility::Lazy<App>::init) runs from
+     * FLASH while ITCM still holds garbage, so a pattern matching e.g.
+     * utility::Lazy would fault at startup. Keep the patterns narrow. */
+    _siitcm = LOADADDR(.itcm);
+    .itcm :
+    {
+        . = ALIGN(4);
+        _sitcm = .;
+        *(.itcm)
+        *(.itcm*)
+
+        /* Leaf calls of the CAN RX ISR. Left in FLASH they cost, per frame, a
+         * long-branch veneer (ITCM at 0x0 is far outside the BL reach of FLASH
+         * at 0x08040000) plus an I-cache-dependent fetch. Matched on the mangled
+         * class prefix, so member signatures may change freely; a class rename
+         * would silently stop matching, and the only consequence is that the
+         * veneers come back -- slower, still correct. */
+        *(.text._ZN7librmcs4core8protocol10Serializer*)         /* write_can + size helpers  */
+        *(.text._ZN7librmcs4core7utility8Bitfield*)             /* protocol header bit packing */
+        *(.text._ZN7librmcs8firmware3usb19InterruptSafeBuffer*) /* uplink batch allocation   */
+        *(.text._ZN7librmcs8firmware7utility10RingBuffer*)      /* CAN transmit ring         */
+        *(.text._ZZN7librmcs8firmware3can3Can*)                 /* out-of-line Can lambdas   */
+        *(.text._ZN7librmcs8firmware3usb14get_serializerEv)
+
+        /* Lazy accessors reached once per ISR entry. Full mangled names, since a
+         * utility::Lazy wildcard would also catch Lazy<App>::init(), which main()
+         * calls before the ITCM image exists. Template arguments are part of the
+         * name, so these are best-effort: if a constructor signature changes the
+         * match is lost and the call reverts to a veneer. */
+        *(.text._ZN7librmcs8firmware7utility4LazyINS0_3can3CanEJP19FDCAN_HandleTypeDefmEE3getEv)
+        *(.text._ZN7librmcs8firmware7utility4LazyINS0_3led3LedEJEEptEv)
+        *(.text._ZN7librmcs8firmware7utility4LazyINS0_3usb6VendorEJEEptEv)
+
+        . = ALIGN(4);
+        _eitcm = .;
+    } >ITCMRAM AT> FLASH
+
     .text :
     {
         . = ALIGN(4);
@@ -98,20 +145,6 @@ SECTIONS
         . = ALIGN(4);
         _edata = .;
     } >RAM AT> FLASH
-
-    /* Latency-critical CAN forwarding code, executed from zero-wait ITCM so it
-     * never depends on the I-cache or incurs FLASH-XIP fetch jitter. Loaded from
-     * FLASH and copied to ITCM at boot by app.cpp (App constructor). */
-    _siitcm = LOADADDR(.itcm);
-    .itcm :
-    {
-        . = ALIGN(4);
-        _sitcm = .;
-        *(.itcm)
-        *(.itcm*)
-        . = ALIGN(4);
-        _eitcm = .;
-    } >ITCMRAM AT> FLASH
 
     /* Hot forwarding data (serializer + USB batch buffers + CAN objects) in
      * zero-wait DTCM, so the uplink ISR's data accesses never reach the AXI bus

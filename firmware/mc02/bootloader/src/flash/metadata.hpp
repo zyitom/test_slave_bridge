@@ -7,11 +7,15 @@
 
 #include "firmware/mc02/bootloader/src/flash/layout.hpp"
 #include "firmware/mc02/bootloader/src/flash/unlock_guard.hpp"
-#include "firmware/mc02/bootloader/src/utility/assert.hpp"
 
 namespace librmcs::firmware::flash {
 
 // STM32H7 flash word = 256 bits = 32 bytes; each DataSlot occupies exactly one flash word.
+//
+// Every mutating entry point returns false instead of trapping on a flash
+// failure. The bootloader is the last line of recovery: a metadata sector that
+// has become unwritable must leave the device sitting in DFU reporting an error
+// status, not HardFault into a state no host can talk to.
 class Metadata {
 public:
     static Metadata& get_instance() {
@@ -22,42 +26,54 @@ public:
     bool is_ready()    const { return latest_valid_slot_state_ == DataSlotState::kReady; }
     bool is_flashing() const { return latest_valid_slot_state_ == DataSlotState::kFlashing; }
 
-    uint32_t image_size()  const { return latest_valid_slot_->image_size; }
-    uint32_t image_crc32() const { return latest_valid_slot_->image_crc32; }
+    uint32_t image_size() const { return latest_valid_slot_->image_size; }
 
-    void begin_flashing() {
+    bool begin_flashing() {
         if (!latest_valid_slot_ || latest_valid_slot_state_ == DataSlotState::kFatal) {
-            erase_and_rescan();
+            if (!erase_and_rescan())
+                return false;
         } else if (latest_valid_slot_state_ == DataSlotState::kEmpty) {
-            // Use current empty slot — already positioned
+            // Use current empty slot -- already positioned
         } else {
             // kFlashing or kReady: advance to next slot.
             // Need room for 2 more slots (flashing marker + ready record).
-            auto next_addr =
+            const auto next_addr =
                 reinterpret_cast<uintptr_t>(latest_valid_slot_) + sizeof(DataSlot);
-            if (next_addr + sizeof(DataSlot) > kMetadataEndAddress)
-                erase_and_rescan();
-            else
+            if (next_addr + sizeof(DataSlot) > kMetadataEndAddress) {
+                if (!erase_and_rescan())
+                    return false;
+            } else {
                 latest_valid_slot_ = reinterpret_cast<DataSlot*>(next_addr);
+            }
         }
 
-        latest_valid_slot_->enter_flashing_state();
+        if (!latest_valid_slot_->enter_flashing_state())
+            return false;
+
         latest_valid_slot_state_ = DataSlotState::kFlashing;
+        return true;
     }
 
     // On H7 we cannot modify a written flash word, so the ready record goes in
     // the NEXT slot after the flashing-marker slot.
-    void finish_flashing(uint32_t size, uint32_t crc32) {
-        utility::assert_debug(latest_valid_slot_state_ == DataSlotState::kFlashing);
+    bool finish_flashing(uint32_t size) {
+        if (latest_valid_slot_state_ != DataSlotState::kFlashing)
+            return false;
 
-        auto next_addr =
-            reinterpret_cast<uintptr_t>(latest_valid_slot_) + sizeof(DataSlot);
-        utility::assert_debug(next_addr < kMetadataEndAddress);
+        // A real bounds check, not an assertion: the ready record must never be
+        // allowed to land one slot past the end of the metadata sector, which
+        // is the first flash word of the application image.
+        const auto next_addr = reinterpret_cast<uintptr_t>(latest_valid_slot_) + sizeof(DataSlot);
+        if (next_addr + sizeof(DataSlot) > kMetadataEndAddress)
+            return false;
 
         auto* ready_slot = reinterpret_cast<DataSlot*>(next_addr);
-        ready_slot->enter_ready_state(size, crc32);
+        if (!ready_slot->enter_ready_state(size))
+            return false;
+
         latest_valid_slot_ = ready_slot;
         latest_valid_slot_state_ = DataSlotState::kReady;
+        return true;
     }
 
 private:
@@ -72,19 +88,23 @@ private:
 
     enum class DataSlotState : uint8_t { kFatal, kEmpty, kFlashing, kReady };
 
-    // Exactly 32 bytes — one STM32H7 flash word.
+    // Exactly 32 bytes -- one STM32H7 flash word.
     struct [[gnu::aligned(32)]] DataSlot {
         uint32_t magic;
         uint32_t image_state;
         uint32_t image_size;
-        uint32_t image_crc32;
+        // Retired CRC32 word. The image is covered by the SHA-256 suffix, which
+        // subsumes a CRC entirely; the word is kept so the on-flash slot layout
+        // and stride are unchanged and sectors written by earlier bootloaders
+        // still read back correctly. It is left erased.
+        uint32_t reserved;
         uint8_t  pad[16];
 
         DataSlotState read_state() const {
             switch (magic) {
             case kFlashWordErased:
                 if (image_state == kFlashWordErased && image_size == kFlashWordErased
-                    && image_crc32 == kFlashWordErased)
+                    && reserved == kFlashWordErased)
                     return DataSlotState::kEmpty;
                 return DataSlotState::kFatal;
             case kImageMetadataMagic:
@@ -98,37 +118,41 @@ private:
             }
         }
 
-        void enter_flashing_state() {
-            utility::assert_debug(read_state() == DataSlotState::kEmpty);
-            write_flash_word(kImageMetadataMagic, kFlashWordErased, kFlashWordErased, kFlashWordErased);
-            utility::assert_always(read_state() == DataSlotState::kFlashing);
+        bool enter_flashing_state() {
+            if (read_state() != DataSlotState::kEmpty)
+                return false;
+            if (!write_flash_word(kImageMetadataMagic, kFlashWordErased, kFlashWordErased))
+                return false;
+            return read_state() == DataSlotState::kFlashing;
         }
 
-        void enter_ready_state(uint32_t size, uint32_t crc32) {
-            utility::assert_debug(read_state() == DataSlotState::kEmpty);
-            write_flash_word(kImageMetadataMagic, kImageStateReady, size, crc32);
-            utility::assert_always(read_state() == DataSlotState::kReady);
+        bool enter_ready_state(uint32_t size) {
+            if (read_state() != DataSlotState::kEmpty)
+                return false;
+            if (!write_flash_word(kImageMetadataMagic, kImageStateReady, size))
+                return false;
+            return read_state() == DataSlotState::kReady;
         }
 
     private:
-        void write_flash_word(
-            uint32_t magic_val, uint32_t state_val, uint32_t size_val, uint32_t crc_val) {
+        bool write_flash_word(uint32_t magic_val, uint32_t state_val, uint32_t size_val) {
             alignas(32) DataSlot buf{};
             buf.magic       = magic_val;
             buf.image_state = state_val;
             buf.image_size  = size_val;
-            buf.image_crc32 = crc_val;
+            buf.reserved    = kFlashWordErased;
             std::memset(buf.pad, 0xFF, sizeof(buf.pad));
 
             const auto guard = UnlockGuard();
-            utility::assert_always(
-                HAL_FLASH_Program(
-                    FLASH_TYPEPROGRAM_FLASHWORD,
-                    reinterpret_cast<uintptr_t>(this),
-                    reinterpret_cast<uint32_t>(&buf))
-                == HAL_OK);
+            if (!guard.ok())
+                return false;
+
             // Bootloader runs cache-less (see main.cpp): flash reads are always
             // coherent, and issuing D-cache ops with the cache disabled faults.
+            return HAL_FLASH_Program(
+                       FLASH_TYPEPROGRAM_FLASHWORD, reinterpret_cast<uintptr_t>(this),
+                       reinterpret_cast<uint32_t>(&buf))
+                == HAL_OK;
         }
     };
     static_assert(sizeof(DataSlot) == 32);
@@ -158,12 +182,12 @@ private:
             latest_valid_slot_state_ = state;
         }
 
-        // Metadata sector is completely full — treat as fatal to force erase
+        // Metadata sector is completely full -- treat as fatal to force erase
         latest_valid_slot_ = nullptr;
         latest_valid_slot_state_ = DataSlotState::kFatal;
     }
 
-    void erase_and_rescan() {
+    bool erase_and_rescan() {
         FLASH_EraseInitTypeDef erase{};
         erase.TypeErase = FLASH_TYPEERASE_SECTORS;
         erase.Banks     = FLASH_BANK_1;
@@ -173,14 +197,16 @@ private:
         uint32_t sector_error = 0U;
         {
             const auto guard = UnlockGuard();
-            utility::assert_always(HAL_FLASHEx_Erase(&erase, &sector_error) == HAL_OK);
+            if (!guard.ok())
+                return false;
+            if (HAL_FLASHEx_Erase(&erase, &sector_error) != HAL_OK)
+                return false;
         }
         // Bootloader runs cache-less (see main.cpp): no D-cache maintenance needed.
 
         scan_latest_valid_slot();
-        utility::assert_always(
-            latest_valid_slot_ != nullptr
-            && latest_valid_slot_state_ == DataSlotState::kEmpty);
+        return latest_valid_slot_ != nullptr
+            && latest_valid_slot_state_ == DataSlotState::kEmpty;
     }
 
     DataSlot*     latest_valid_slot_       = nullptr;

@@ -1,5 +1,6 @@
 #include "firmware/mc02/app/src/app.hpp"
 
+#include <bdma.h>
 #include <device/usbd.h>
 #include <dma.h>
 #include <fdcan.h>
@@ -80,6 +81,15 @@ App::App() {
 
     MX_GPIO_Init();
     MX_DMA_Init();
+    // BDMA is the only DMA controller that reaches SPI6 (D3 domain), so the
+    // WS2812 LED depends on it. CubeMX emits its clock enable and NVIC setup in
+    // a file of its own, bdma.c, rather than in MX_DMA_Init() -- and app.cpp
+    // replaces the generated main(), so the call has to be made here. Must
+    // precede MX_SPI6_Init(), whose MspInit runs HAL_DMA_Init() on
+    // BDMA_Channel0: with the clock still gated those register writes are
+    // dropped, HAL_SPI_Transmit_DMA() then reports HAL_OK for a transfer that
+    // never starts, and hspi6 stays BUSY_TX forever with the LED dark.
+    MX_BDMA_Init();
     MX_FDCAN1_Init();
     MX_USART10_UART_Init();
     MX_UART7_Init();

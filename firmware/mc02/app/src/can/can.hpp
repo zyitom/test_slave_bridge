@@ -65,13 +65,20 @@ private:
                 FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE)
             == ok);
 
-        // Hardware RX timestamping: internal 16-bit counter, one tick = one nominal
-        // CAN bit time = 1 us at the 1 Mbit/s arbitration rate. Must be configured
-        // while the controller is still in READY state (before HAL_FDCAN_Start).
-        core::utility::assert_always(
-            HAL_FDCAN_ConfigTimestampCounter(hal_can_handle_, FDCAN_TIMESTAMP_PRESC_1) == ok);
-        core::utility::assert_always(
-            HAL_FDCAN_EnableTimestampCounter(hal_can_handle_, FDCAN_TIMESTAMP_INTERNAL) == ok);
+        // Hardware RX timestamping is disabled: the internal counter is 16 bits
+        // wide, which wraps every ~65.5 ms and cannot carry the 32-bit microsecond
+        // timestamp the protocol specifies. handle_uplink() leaves
+        // CanDataView::timestamp_us unset, so the counter would only burn bus
+        // cycles. Re-enable both calls here if the uplink ever reports timestamps
+        // again; they must run while the controller is still in READY state
+        // (before HAL_FDCAN_Start).
+        //
+        // Internal 16-bit counter, one tick = one nominal CAN bit time = 1 us at
+        // the 1 Mbit/s arbitration rate.
+        // core::utility::assert_always(
+        //     HAL_FDCAN_ConfigTimestampCounter(hal_can_handle_, FDCAN_TIMESTAMP_PRESC_1) == ok);
+        // core::utility::assert_always(
+        //     HAL_FDCAN_EnableTimestampCounter(hal_can_handle_, FDCAN_TIMESTAMP_INTERNAL) == ok);
 
         core::utility::assert_always(HAL_FDCAN_Start(hal_can_handle_) == ok);
         core::utility::assert_always(

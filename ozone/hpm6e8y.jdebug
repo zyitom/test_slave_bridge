@@ -1,0 +1,42 @@
+/*********************************************************************
+* Ozone project: hpm6e8y BOOTLOADER -- JTAG.
+*
+*   /opt/SEGGER/Ozone_V340j/Ozone ozone/hpm6e8y.jdebug
+*   ./ozone-debug.sh hpm6e8y
+*
+* Build first:
+*   export PATH=~/3rd_party/hpm/bin:$PATH
+*   cmake --build firmware/rmcs_board/ecat/build
+*
+* Bootloader rather than the EtherCAT application, and download-and-reset rather
+* than attach: same reasoning as ozone/mc02.jdebug -- the bootloader is only
+* observable from reset because it hands over within milliseconds.
+*
+* DEVICE NAME: HPM6E8YxGNx is what the New Project Wizard offers for this part
+* (register set RV32IFD, one QSPI flash bank at 0x80000000). SEGGER also ships
+* HPM6E8YxVMx -- the other package -- and the HPM SDK's own EVK profile is
+* HPM6E80xVMx. If a connection fails, that suffix is the first thing to change.
+*
+* CAVEAT SPECIFIC TO THIS PART: the XPI0 NOR at 0x80000000 is not AHB-mapped
+* embedded flash, it looks like external QSPI flash to J-Link and needs its flash
+* loader (firmware/rmcs_board/boards/hpm6e8y/README.md, "HPM6E00 的 Flash 对
+* J-Link 来说是 QSPI"). If the download step of CM_DOWNLOAD_RESET fails, program
+* with ./flash-ecat-bootloader.sh and switch this to CM_ATTACH_HALT -- but note
+* that attaching then only catches the bootloader if you reset the board while
+* the debugger is connected.
+*
+* To debug the EtherCAT application on core0 instead, change File.Open to
+* ../firmware/rmcs_board/ecat/build/rmcs_ecat_core0/output/demo.elf AND the
+* connect mode to CM_ATTACH_HALT.
+**********************************************************************/
+
+void OnProjectLoad (void) {
+  Project.SetDevice ("HPM6E8YxGNx");
+  Project.SetHostIF ("USB", "0");
+  Project.SetTargetIF ("JTAG");
+  Project.SetTIFSpeed ("4 MHz");
+
+  Debug.SetConnectMode (CM_DOWNLOAD_RESET);
+
+  File.Open ("../firmware/rmcs_board/ecat/build/rmcs_ecat_bootloader/output/rmcs_board_bootloader_hpm6e8y.elf");
+}
