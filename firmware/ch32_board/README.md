@@ -20,7 +20,27 @@ host) the debugger still reconnects.
 The bulk data path is verified end to end (2026-07-26): 11/11 downlink packets
 parsed and acked over EP1 with no drops. The host SDK reaches the board through
 `librmcs::board::Ch32Board` (PID `0xD403`), so the examples see it like any other
-board. Still open: the CAN/UART pin map is placeholder. See "Not done yet".
+board, including runtime UART reconfiguration (`uartN_config`). Still open: the
+CAN/UART pin map is placeholder. See "Not done yet".
+
+## UART runtime reconfiguration
+
+A `kUartNConfig` downlink reaches `Uart::handle_config`, which reprograms the
+port away from the power-on baudrate in its `kUartPorts` entry. The switch clears
+UE before re-running `USART_Init` and re-arms afterwards: `CTLR1_CLEAR_Mask`
+(`0x29F3`) preserves UE and the interrupt-enable bits, so TXE has to be disabled
+explicitly or the old frame would resume at the new rate. Bytes in flight in
+either direction are dropped -- the rate changes mid-character and the peer
+cannot be resynchronized -- so quiesce the port before switching.
+
+BRR holds `USARTDIV = HCLK / (16 * baudrate)` as 12.4 fixed point, so only
+`HCLK/65536 < baudrate <= HCLK/16` is representable (about 1.5 kBaud .. 6.25
+MBaud on a 100 MHz HCLK). Anything else is rejected and the current rate kept,
+returning false rather than asserting: this is host-supplied data and a bad
+packet must not panic the firmware. Representable is not the same as accurate --
+divisor quantization reaches ~4% error at the very top of the range, past what
+UART framing tolerates, while standard rates stay well inside it (115200 within
+0.006%, 3 MBaud within 1.01%).
 
 ## App layout (librmcs C++ layer)
 

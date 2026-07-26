@@ -136,10 +136,22 @@ private:
         return false;
     }
 
-    // No runtime UART reconfiguration on this board yet.
+    // Runtime UART reconfiguration, addressed by config_data_id rather than
+    // data_id so a config patch and a payload for the same port stay distinct.
+    // handle_config's own bool reports whether the patch carried a usable
+    // baudrate; the field was still ours either way, so the dispatch result does
+    // not depend on it.
     bool uart_config_deserialized_callback(
-        core::protocol::FieldId, const data::UartConfigView&) override {
-        return !session_established_;
+        core::protocol::FieldId id, const data::UartConfigView& data) override {
+        if (!session_established_)
+            return true;
+        for (auto& board_uart : uart::uart_array) {
+            if (static_cast<core::protocol::FieldId>(board_uart->config_data_id()) == id) {
+                board_uart->handle_config(data);
+                return true;
+            }
+        }
+        return false;
     }
 
     // This board has no GPIO application; GPIO commands from the host are ignored.

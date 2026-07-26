@@ -33,10 +33,10 @@ namespace internal {
 // The two USARTs brought up in firmware/ch32_board/app/src/board_app.hpp, in the
 // same order (index N here is uartN there).
 //
-// The config ids are carried for interface uniformity, but the firmware does not
-// act on them yet: its uart_config_deserialized_callback is a no-op, so a port's
-// baudrate is whatever kUartPorts fixes at init. Ch32Board therefore exposes no
-// *_config transmit method -- see host/include/librmcs/board/ch32_board.hpp.
+// The config ids address runtime reconfiguration: the firmware routes them to
+// Uart::handle_config, which reprograms the port's baudrate away from the
+// power-on value its kUartPorts entry fixes. Reached from the host through
+// Ch32Board::PacketBuilder::uartN_config.
 class UartDescriptors {
     static constexpr UartDescriptor kArray[]{
         UartDescriptor{data::DataId::kUart1, data::DataId::kUart1Config},

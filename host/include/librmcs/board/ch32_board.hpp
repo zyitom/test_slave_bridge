@@ -141,18 +141,36 @@ public:
             return *this;
         }
 
-        // No uartN_config counterpart: this firmware ignores UART configuration
-        // downlinks (link::HostSession::uart_config_deserialized_callback is a
-        // no-op), so a port stays at the baudrate its kUartPorts entry fixes.
-        // Offering the call here would silently do nothing.
         PacketBuilder& uart1_transmit(const librmcs::data::UartDataView& data) {
             if (!builder_.write_uart(data::DataId::kUart1, data)) [[unlikely]]
                 throw std::invalid_argument{"UART1 transmission failed: Invalid UART data"};
             return *this;
         }
+
+        // Runtime reconfiguration of UART1. Rides the same downlink stream as
+        // the data above, so it is ordered against it: bytes queued earlier in
+        // this batch are sent at the old baudrate, later ones at the new one.
+        //
+        // The firmware drops whatever is in flight when the rate changes and
+        // ignores a baudrate its BRR divisor cannot represent (outside roughly
+        // HCLK/65536 .. HCLK/16), keeping the previous rate. Quiesce the port
+        // before switching if the peer is mid-frame.
+        PacketBuilder& uart1_config(const librmcs::data::UartConfigView& config) {
+            if (!builder_.write_uart_config(data::DataId::kUart1Config, config)) [[unlikely]]
+                throw std::invalid_argument{"UART1 configuration failed: Invalid UART config"};
+            return *this;
+        }
+
         PacketBuilder& uart2_transmit(const librmcs::data::UartDataView& data) {
             if (!builder_.write_uart(data::DataId::kUart2, data)) [[unlikely]]
                 throw std::invalid_argument{"UART2 transmission failed: Invalid UART data"};
+            return *this;
+        }
+
+        // Runtime reconfiguration of UART2; see uart1_config above.
+        PacketBuilder& uart2_config(const librmcs::data::UartConfigView& config) {
+            if (!builder_.write_uart_config(data::DataId::kUart2Config, config)) [[unlikely]]
+                throw std::invalid_argument{"UART2 configuration failed: Invalid UART config"};
             return *this;
         }
 

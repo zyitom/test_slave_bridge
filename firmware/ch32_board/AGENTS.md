@@ -115,8 +115,14 @@ $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg -c "init" -c "wch_riscv unfreeze" -c 
   PID `0xD403`，CAN1/CAN2 + UART1/UART2），通道表在
   `core/include/librmcs/spec/ch32_board/`，`host/examples/common/multi_board.hpp`
   里有 `Ch32BoardSession`，所以 `rx_monitor` 等 example 都能直接连这块板。
-  固件不处理 UART config 下行（`uart_config_deserialized_callback` 是空的），
-  所以 host 类里**故意没有** `uartN_config`。
+- **UART 运行时改波特率已实现**（未上板）：下行 `kUartNConfig` 走
+  `link::HostSession::uart_config_deserialized_callback` → `Uart::handle_config`，
+  主机侧是 `Ch32Board::PacketBuilder::uart1_config` / `uart2_config`。切换时先清
+  UE 再 `USART_Init`（`CTLR1_CLEAR_Mask=0x29F3` 保住 UE 和中断使能位，所以 TXE 要
+  显式关掉），两个方向在途的字节一律丢弃。BRR 是 12.4 定点，只接受
+  `HCLK/65536 < baud <= HCLK/16` 的值，越界**返回 false 而不是断言**（这是主机来的
+  数据，坏包不该 panic 固件）。注意可表示 ≠ 精确：量化误差在范围顶端能到 ~4%，
+  标准速率不受影响（100 MHz HCLK 下 115200 误差 0.006%、3 MBaud 1.01%）。
 - **启动链已上板复验**（2026-07-26，无 USB 线，只接 WCH-Link）：flash 内容 == `app.bin`、
   metadata 里的 sha256 == sha256(flash) → `app_image_is_valid()` 为真、不进 DFU、唤醒 V5F；
   V5F 走完整个 `App()`（`diag[30] == 12`）、无断言、主循环 **release 219 ns/圈（4.6 MHz）、

@@ -80,9 +80,7 @@ Mirrors **upstream rmcs_board** (the reference RISC-V board), not mc02:
   tables (CAN1/CAN2, UART1/UART2), same shape as the other boards'. Order matches
   `app/src/board_app.hpp`'s `kCanPorts` / `kUartPorts`.
 - `host/include/librmcs/board/ch32_board.hpp` - `librmcs::board::Ch32Board`,
-  `0xA11C:0xD403`. No IMU / DBUS / GPIO callbacks (the board has none) and no
-  `uartN_config`: the firmware's `uart_config_deserialized_callback` is a no-op,
-  so offering it would silently do nothing.
+  `0xA11C:0xD403`. No IMU / DBUS / GPIO callbacks (the board has none).
 - `host/examples/common/multi_board.hpp` - `Ch32BoardSession` + an entry in
   `connect_any()`, so `rx_monitor` and every other example can drive this board.
 
@@ -113,6 +111,26 @@ Self-flashing is safe because `Link_v3f.ld` runs the V3F image from RAM
 (`0x20100000`), so erasing/programming the app slot never stalls an instruction
 fetch. Not yet exercised on hardware.
 
+### UART runtime reconfiguration (2026-07-26)
+Closes the one interface gap against the other boards: `kUartNConfig` downlinks
+were accepted and dropped, so a port was stuck at its `kUartPorts` baudrate.
+- `board::UartPort` gained `config_data_id` (must match the spec table), `Uart`
+  gained `config_data_id()` / `handle_config()`, and
+  `link::HostSession::uart_config_deserialized_callback` dispatches on it -- the
+  same shape as upstream rmcs_board.
+- `USART_Init` is now reached through one `apply_baudrate()` used by both the
+  constructor and the switch, so framing cannot drift between the two. The switch
+  brackets it with UE clear/set; TXE is disabled explicitly because
+  `CTLR1_CLEAR_Mask` (`0x29F3`) preserves the interrupt-enable bits.
+- Host side: `Ch32Board::PacketBuilder::uart1_config` / `uart2_config`.
+- Baudrates outside `HCLK/65536 < baud <= HCLK/16` are rejected (BRR is 12.4
+  fixed point and would overflow), returning false rather than asserting.
+  The bound was checked against the vendor's exact divisor math over four clock
+  trees x 20M baud values: no accepted value overflows BRR. Quantization error
+  reaches ~4% at the top of the accepted range, which is worth knowing before
+  trusting an arbitrary high rate; standard rates are unaffected.
+- **Not exercised on hardware, and not compiled** - see the note below.
+
 ## Not done / on-target bring-up TODO (all compile-correct, values unconfirmed)
 1. **USB SS EP1-OUT received length**: `vendor.cpp` reads `UEP_RX_CHAIN_LEN` and
    the payload from the RX buffer base (single-buffer). Confirm the chained-DMA
@@ -126,3 +144,10 @@ fetch. Not yet exercised on hardware.
 5. **Flashing**: EVT uses WCH-Link (wlink / openocd-wch), not the HPM openocd on
    this machine.
 6. On-target SS enumeration + speed test; bootloader / DFU.
+7. **UART runtime reconfiguration is unbuilt**: the change above was written on a
+   machine with no RISC-V toolchain, so it has not been through a compiler.
+   Build `ch32_board_app` before flashing it. On target, the first things to
+   check are that a `uartN_config` downlink actually changes the line rate and
+   that the port still receives afterwards (RXNEIE/IDLEIE are expected to
+   survive `USART_Init`, per `CTLR1_CLEAR_Mask`, but that is read from the
+   vendor source, not observed).

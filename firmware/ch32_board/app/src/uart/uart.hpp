@@ -34,19 +34,13 @@ public:
 
     explicit Uart(board::UartPort port)
         : data_id_(port.data_id)
+        , config_data_id_(port.config_data_id)
         , uart_base_(reinterpret_cast<USART_TypeDef*>(port.base))
         , max_receive_size_(port.max_receive_size) {
         core::utility::assert_always(max_receive_size_ <= sizeof(receive_buffer_));
-        board::init_uart(port);
+        uart_clock_ = board::init_uart(port);
 
-        USART_InitTypeDef config = {};
-        config.USART_BaudRate = port.baudrate;
-        config.USART_WordLength = USART_WordLength_8b;
-        config.USART_StopBits = USART_StopBits_1;
-        config.USART_Parity = USART_Parity_No;
-        config.USART_Mode = USART_Mode_Tx | USART_Mode_Rx;
-        config.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
-        USART_Init(uart_base_, &config);
+        apply_baudrate(port.baudrate);
 
         USART_ITConfig(uart_base_, USART_IT_RXNE, ENABLE);
         USART_ITConfig(uart_base_, USART_IT_IDLE, ENABLE);
@@ -55,6 +49,67 @@ public:
     }
 
     [[nodiscard]] data::DataId data_id() const { return data_id_; }
+
+    [[nodiscard]] data::DataId config_data_id() const { return config_data_id_; }
+
+    // Runtime baudrate switch requested by the host. An empty view (no baudrate
+    // set) is a deliberate no-op per the sparse-patch semantics of the config
+    // type, reported as false so the caller can tell it apart from a hit.
+    //
+    // Bytes in flight in either direction are dropped: the line rate changes
+    // mid-character, so a queued TX frame would be shifted out at the wrong rate
+    // and the partial RX frame was sampled at the old one. Neither is
+    // recoverable and the peer cannot be synchronized with, so the host is
+    // expected to quiesce the link before reconfiguring it.
+    bool handle_config(const data::UartConfigView& data) {
+        if (!data.baudrate.has_value() || *data.baudrate == 0) [[unlikely]]
+            return false;
+
+        // USARTDIV = clock / (16 * baudrate), held in BRR as 12.4 fixed point,
+        // so only rates whose divisor lands in [1, 4096) are representable.
+        // Outside that the divisor overflows BRR and the port comes up at a rate
+        // nothing can talk to -- including the host that would command it back.
+        // Reject and keep the current rate instead; this is host-supplied data,
+        // so a bad value must be reported, never asserted on.
+        //
+        // Representable is not the same as accurate: the divisor quantizes to
+        // 1/16, so error grows as the mantissa shrinks, reaching ~4% at the very
+        // top of the range (past what UART framing tolerates). Standard rates are
+        // unaffected -- 115200 lands within 0.006% and 3 MBaud within 1.01% of a
+        // 100 MHz HCLK -- but an arbitrary high rate is worth checking against
+        // the peer's tolerance before relying on it.
+        const uint32_t max_baudrate = uart_clock_ / 16u;
+        const uint32_t min_baudrate = uart_clock_ / 65536u;
+        if (*data.baudrate > max_baudrate || *data.baudrate <= min_baudrate) [[unlikely]]
+            return false;
+
+        // Clearing UE is what makes the reprogram atomic against this port's own
+        // USART interrupt: with the peripheral disabled neither RXNE, IDLE nor
+        // TXE can be raised, so nothing reaches the state reset below. TXEIE
+        // survives USART_Init (CTLR1_CLEAR_Mask keeps bits 7..4), hence the
+        // explicit disable -- otherwise re-enabling UE would resume the old
+        // frame at the new rate.
+        USART_Cmd(uart_base_, DISABLE);
+        USART_ITConfig(uart_base_, USART_IT_TXE, DISABLE);
+
+        tx_index_ = 0;
+        tx_size_ = 0;
+        tx_busy_.store(false, std::memory_order::relaxed);
+        transmit_buffers_[buffer_writing_.load(std::memory_order::relaxed)].written_size.store(
+            0, std::memory_order::relaxed);
+        rx_count_ = 0;
+
+        // This runs in the USBSS interrupt (downlink dispatch), which can preempt
+        // try_transmit() mid-sequence in the main loop. Every interleaving leaves
+        // the driver consistent -- a resuming try_transmit() at worst re-arms TXE
+        // over the tx_size_ it had already latched, which sends one stale frame
+        // at the new rate and then completes normally. That is the same
+        // byte-level loss the switch window causes anyway; no state is corrupted,
+        // so no lock is needed on the forwarding hot path.
+        apply_baudrate(*data.baudrate);
+        USART_Cmd(uart_base_, ENABLE);
+        return true;
+    }
 
     void handle_downlink(const data::UartDataView& data) {
         const auto size = data.uart_data.size();
@@ -145,6 +200,22 @@ public:
     }
 
 private:
+    // The one place USART_Init is called, so the constructor and a runtime
+    // switch cannot drift apart in framing. USART_Init derives the divisor from
+    // HCLK itself (the same clock board::init_uart reports), and its clear masks
+    // preserve UE and the interrupt-enable bits, so it is safe to re-run on a
+    // live port -- the caller controls UE around it.
+    void apply_baudrate(uint32_t baudrate) {
+        USART_InitTypeDef config = {};
+        config.USART_BaudRate = baudrate;
+        config.USART_WordLength = USART_WordLength_8b;
+        config.USART_StopBits = USART_StopBits_1;
+        config.USART_Parity = USART_Parity_No;
+        config.USART_Mode = USART_Mode_Tx | USART_Mode_Rx;
+        config.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
+        USART_Init(uart_base_, &config);
+    }
+
     void handle_uplink(uint16_t size, bool is_idle) {
         if (!size)
             return;
@@ -161,8 +232,12 @@ private:
     }
 
     const data::DataId data_id_;
+    const data::DataId config_data_id_;
     USART_TypeDef* uart_base_;
     uint16_t max_receive_size_;
+    // Kernel clock the divisor is computed from; needed to bound a host-supplied
+    // baudrate to what BRR can actually represent.
+    uint32_t uart_clock_ = 0;
 
     std::byte receive_buffer_[64]{};
     uint16_t rx_count_ = 0;

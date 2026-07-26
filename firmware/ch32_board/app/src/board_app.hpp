@@ -53,7 +53,11 @@ struct UartPort {
     PinConfig tx;
     PinConfig rx;
     data::DataId data_id;
-    uint32_t baudrate;
+    // Downlink field the host addresses runtime reconfiguration to, kept
+    // distinct from data_id so a config patch cannot be confused with payload.
+    // Must match the config_data_id in core/include/librmcs/spec/ch32_board/uart.hpp.
+    data::DataId config_data_id;
+    uint32_t baudrate; // power-on rate; the host may change it at runtime
     uint16_t max_receive_size;
 };
 
@@ -87,6 +91,7 @@ inline constexpr UartPort kUartPorts[] = {
         .tx = {GPIOA, GPIO_PinSource9, GPIO_AF7},
         .rx = {GPIOA, GPIO_PinSource10, GPIO_AF7},
         .data_id = data::DataId::kUart1,
+        .config_data_id = data::DataId::kUart1Config,
         .baudrate = 115'200,
         .max_receive_size = 64,
     },
@@ -96,6 +101,7 @@ inline constexpr UartPort kUartPorts[] = {
         .tx = {GPIOA, GPIO_PinSource2, GPIO_AF7},
         .rx = {GPIOA, GPIO_PinSource3, GPIO_AF7},
         .data_id = data::DataId::kUart2,
+        .config_data_id = data::DataId::kUart2Config,
         .baudrate = 115'200,
         .max_receive_size = 64,
     },
