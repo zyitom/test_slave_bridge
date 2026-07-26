@@ -1,128 +1,159 @@
-# ch32_board port - work log
+# ch32_board 移植工作日志
 
-Target: `firmware/ch32_board/` - a 4th firmware target for the WCH **CH32H417**
-(dual-core RISC-V, Qingke V5F) whose draw is the **USB 3.0 SuperSpeed** device
-controller. All work below is **build-verified only; nothing has run on hardware
-yet** (needs a WCH-Link). Source: EVT pack at `~/Downloads/CH32H417EVT`.
+> **文档类型**：过程记录（按时间推进的工作日志）
+> **适用范围**：`firmware/ch32_board/`
+> **状态**：历史记录 + 现行待办混合。**"已完成"各节记录的是当时的阶段性结论，其中若干条已被后续进展超越**，超越之处已就地标注；文末"尚未完成"清单仍然有效。
+> **相关文档**：[AGENTS.md](AGENTS.md)（现状以那份为准） · [README.md](README.md)（设计动机） · [PITFALLS.md](PITFALLS.md)
 
-## Done
+## 摘要
 
-### Board bring-up / build system
-- Vendored WCH standard peripheral library into `bsp/wch/` (Core, Peripheral,
-  Debug, Startup, Ld) and the CH372Device USBSS stack into `bsp/usb/`.
-- CMake build + `cmake/toolchain-wch-riscv.cmake` reusing the **stock
-  `riscv32-unknown-elf` GCC** already used for rmcs_board
-  (`GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm`). Builds `-march=rv32imafc_zicsr_zifencei
-  -mabi=ilp32f` **without** WCH's proprietary `xw` extension, so no MounRiver GCC
-  is needed. V5F single core (`-DCore_V5F -DRun_Core=Run_Core_V5F`).
-- Strict C11 kept: vendor GNU keywords aliased via `-Dasm=__asm__
-  -Dtypeof=__typeof__` (no gnu11). `bsp/syscalls.c` supplies newlib stubs
-  (debug.c owns `_write`/`_sbrk`; do NOT add nosys.specs - it collides).
-- Build: `cmake --preset debug -S firmware/ch32_board && cmake --build
-  firmware/ch32_board/build` -> `ch32_board_app.elf` / `.bin`. ~82% of 128K flash.
+本文件是 ch32_board 从零移植过程的**流水账**：做了什么、为什么这么做、当时确认到哪一步。
+它的价值在于保留推进顺序和判断依据；**要查"现在是什么状态"请看
+[AGENTS.md 的"现状"一节](AGENTS.md#现状改代码前须知)**，那里是唯一权威。
 
-### Version management (no git SDK exists)
-- WCH ships only a per-chip EVT zip (this one dated 2026.04). Solution =
-  vendored in-tree + provenance pin in `bsp/PROVENANCE.md` (source paths,
-  per-file versions, re-vendor procedure, and the local-patch list).
+移植目标：`firmware/ch32_board/`，librmcs 的第 4 个固件目标，芯片是 WCH **CH32H417**
+（双核 RISC-V，Qingke V5F），选它是因为片上带 **USB 3.0 SuperSpeed** 设备控制器。
+素材来源：EVT 包，位于 `~/Downloads/CH32H417EVT`（`[前机路径]`）。
 
-### Full forwarding app (CAN + UART + USB SS), canonical style
-Mirrors **upstream rmcs_board** (the reference RISC-V board), not mc02:
-- `app/src/board_app.hpp/.cpp` - single-board `board::` layer owning GPIO pins +
-  clock; `init_can`/`init_uart` return the peripheral clock.
-- `app/src/can/` - classic bxCAN. `handle_downlink` transmits **directly** to the
-  hardware TX mailboxes (no software TX ring buffer, **no `try_transmit`**);
-  `can_array[]` + `HardwareConfig` + `irq_handler()` method + thin ISR shims.
-- `app/src/uart/` - WCH USART, interrupt mode (RXNE bytes + IDLE frame delimiter,
-  TXE double-buffer TX); `uart_array[]` + `HardwareConfig` + `irq_handler()`;
-  `try_transmit()` drains the downlink buffer.
-- `app/src/usb/vendor.*` - the librmcs session/keepalive + serializer/deserializer
-  logic (board-agnostic, reused from the shared `core/`), with the transport
-  swapped to **WCH USBSS bulk EP1** (host has no TinyUSB-SS equivalent).
-- `app/src/timer/` - TIM10 (32-bit `CNT_32`) at 1 MHz -> quarter-us timestamps.
-- `app/src/led/` - no-op status-LED stub. `app/src/utility/` - `lazy`,
-  `ring_buffer`, `interrupt_safe_buffer` (shared), `interrupt_lock` (WCH
-  `__disable_irq`), `assert`.
-- `app/src/app.cpp` - provides `main()` (replaces the demo `app/User/main.c`,
-  excluded from build); WCH clock + `USB_Timer_Init` + `USBSS_Device_Init` +
-  range-for peripheral init; run loop matches upstream (usb try_transmit, then
-  `for (auto& u : uart_array) u->try_transmit()`).
+> **原文有一句已过时的总述，保留并更正**：日志开写时的表述是"以下全部工作**仅通过编译
+> 验证，尚未在硬件上跑过**（需要 WCH-Link）"。该状态已被推翻——2026-07-25 完成 USB SS
+> 枚举实测，2026-07-26 完成 bulk 数据面与启动链的上板验证。详见 [AGENTS.md](AGENTS.md)。
 
-### USB SS data path (real, not a stub)
-- `vendor.cpp` `ss::tx_write` arms EP1 IN (`UEP_TX_DMA/CHAIN_LEN/CHAIN_EXP_NUMP`,
-  patterned on the demo's real EP3 arming) with a `tx_in_flight` flag;
-  `usb_ss_ep1_in_complete()` / `usb_ss_ep1_out_complete()` service uplink/downlink.
-- **Local patch** to vendored `bsp/usb/ch32h417_usbss_it.c`: the EP1 IN+OUT
-  `DEF_UEP1` cases had a hardware EP1<->EP2 DMA loopback (the CH372 demo's echo);
-  replaced with calls to the two hooks. Marked `LIBRMCS LOCAL PATCH`, recorded in
-  `bsp/PROVENANCE.md` (re-apply after any re-vendor). EP1 = bulk pipe, OUT 0x01 /
-  IN 0x81 (matches the host SDK's endpoints).
+## 已完成
 
-### Host SDK (USB 3.0 SS tuning)
-- `host/src/transport/usb/usb.cpp` already uses async libusb (64 in-flight TX
-  transfers, `LIBUSB_TRANSFER_FREE_BUFFER`). Bumped `kReceiveTransferCount`
-  4 -> 16 (a 4-deep RX pool cannot fill a 5 Gbit pipe). Host builds.
+### 板级 bring-up 与构建系统
 
-## Key findings / decisions
-- **CH32H417 CAN is classic 2.0B, not CAN-FD** - forwarding speed rides entirely
-  on USB SS.
-- **ITCM/DTCM is free**: the linker runs all code from ITCM (`RAM_CODE=0x200A0000`)
-  and puts all `.data`/`.bss` in DTCM (`RAM=0x200C0000`), so mc02's manual
-  hot-path placement is unnecessary here.
-- Toolchain gotcha: WCH `CANx/USARTx/TIMx` macros are `reinterpret_cast`s (not
-  constant expressions) - pass the integer `*_BASE` through `Lazy`'s consteval
-  ctor and cast at runtime.
-- Our ISRs use plain `__attribute__((interrupt))` (GCC emits `mret`), sidestepping
-  the risk that mainline GCC drops WCH's `interrupt("WCH-Interrupt-fast")`.
+- 把 WCH 标准外设库 vendored 进 `bsp/wch/`（Core、Peripheral、Debug、Startup、Ld），
+  把 CH372Device USBSS 协议栈 vendored 进 `bsp/usb/`。
+- CMake 构建 + `cmake/toolchain-wch-riscv.cmake`，复用 rmcs_board 已经在用的**标准
+  `riscv32-unknown-elf` GCC**（`GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm`，`[前机路径]`）。
+  按 `-march=rv32imafc_zicsr_zifencei -mabi=ilp32f` 构建，**不带** WCH 私有的 `xw` 扩展，
+  因此不需要 MounRiver GCC。当时是 V5F 单核（`-DCore_V5F -DRun_Core=Run_Core_V5F`）。
 
-### Host SDK board interface (2026-07-26)
-- `core/include/librmcs/spec/ch32_board/{can,uart}.hpp` - channel descriptor
-  tables (CAN1/CAN2, UART1/UART2), same shape as the other boards'. Order matches
-  `app/src/board_app.hpp`'s `kCanPorts` / `kUartPorts`.
-- `host/include/librmcs/board/ch32_board.hpp` - `librmcs::board::Ch32Board`,
-  `0xA11C:0xD403`. No IMU / DBUS / GPIO callbacks (the board has none) and no
-  `uartN_config`: the firmware's `uart_config_deserialized_callback` is a no-op,
-  so offering it would silently do nothing.
-- `host/examples/common/multi_board.hpp` - `Ch32BoardSession` + an entry in
-  `connect_any()`, so `rx_monitor` and every other example can drive this board.
+  > **后续变更**：现已改为双核构建 `-DRun_Core=Run_Core_V3FandV5F`，V3F 作启动核兼
+  > bootloader、V5F 跑转发。见 [README.md 关键移植决策](README.md#关键移植决策)。
 
-### Bootloader / DFU (2026-07-26)
-The V3F image is the bootloader (it already owns reset, the clock tree and the
-decision to wake V5F). Flash layout, metadata record, SHA-256 validation, the
-sequential flash writer and the DFU 1.1 state machine were in place; what was
-missing and is now done:
-- **DFU-mode descriptors**: `bsp/usb/usb_desc.c` selects between the application
-  configuration and a DFU-mode one on `LIBRMCS_DFU_DEVICE` (app 0, boot 1) -
-  single interface, no endpoints, `bInterfaceProtocol` 0x02, `wTransferSize` 512
-  (== `DEF_USBSSD_UEP0_SIZE`, so one DNLOAD block is one control-OUT packet).
-  Recorded in `bsp/PROVENANCE.md`.
-- **USB bring-up in DFU mode**: `run_dfu_mode()` in `boot/src/main.cpp` mirrors
-  the app's init order (`Chip`, `librmcs_usb_init_descriptors`, `USB_Timer_Init`,
-  `USBSS_Device_Init`), then polls for manifestation/detach, tears the link down
-  and resets. The poll carries an explicit memory barrier - `Dfu` has no volatile
-  members and is only mutated from the ISR, so -O2 would otherwise spin forever.
-- **Detach path made dual-core safe**: V5F must not reset itself (its reset
-  vector is flash `0x0`, the V3F image), so `poll_dfu_runtime_reboot()` drops the
-  SS link, writes the boot mailbox, sets `SharedBlock::reset_request` and parks;
-  V3F's offload loop performs `NVIC_SystemReset()`.
-- **Host-side artifact**: `ch32_board_app.dfu` (raw `.bin` + DFU suffix, no
-  `ImageHash` suffix - this bootloader hashes what it programmed) and
-  `flash-ch32.sh` at the repo root.
+- 保持严格 C11：厂商代码里的 GNU 关键字用 `-Dasm=__asm__ -Dtypeof=__typeof__` 做别名
+  （不切到 gnu11）。`bsp/syscalls.c` 提供 newlib stub（`_write`/`_sbrk` 归 `debug.c` 管，
+  **不要**加 `nosys.specs`——会冲突）。
+- 构建方式：`cmake --preset debug -S firmware/ch32_board && cmake --build
+  firmware/ch32_board/build` -> `ch32_board_app.elf` / `.bin`。占 128K flash 的约 82%。
 
-Self-flashing is safe because `Link_v3f.ld` runs the V3F image from RAM
-(`0x20100000`), so erasing/programming the app slot never stalls an instruction
-fetch. Not yet exercised on hardware.
+### 版本管理（WCH 没有 git 形式的 SDK）
 
-## Not done / on-target bring-up TODO (all compile-correct, values unconfirmed)
-1. **USB SS EP1-OUT received length**: `vendor.cpp` reads `UEP_RX_CHAIN_LEN` and
-   the payload from the RX buffer base (single-buffer). Confirm the chained-DMA
-   RX length/offset semantics on target for multi-packet bursts.
-2. **GPIO pins** (CAN, USART) are placeholders in `board_app.cpp` - set from the
-   EVT schematic.
-3. **CAN bit timing + timer prescaler** are keyed off `SystemCoreClock` - confirm
-   the CAN/TIM kernel-clock dividers.
-4. **UART is interrupt-mode**; DMA + idle-line is a deferred optimization (needs
-   the DMAMUX request mapping).
-5. **Flashing**: EVT uses WCH-Link (wlink / openocd-wch), not the HPM openocd on
-   this machine.
-6. On-target SS enumeration + speed test; bootloader / DFU.
+- WCH 只按芯片发 EVT zip 包（本次这份日期为 2026.04）。解决办法：vendored 进仓库 +
+  在 `bsp/PROVENANCE.md` 里钉住来源（源文件路径、逐文件版本、重新 vendor 的流程、
+  以及本地补丁清单）。
+
+### 完整转发 app（CAN + UART + USB SS），采用规范写法
+
+对齐的是**上游 rmcs_board**（作为参考的 RISC-V 板），而不是 mc02：
+
+- `app/src/board_app.hpp/.cpp` —— 单板的 `board::` 层，负责 GPIO 引脚与时钟；
+  `init_can` / `init_uart` 返回外设时钟。
+- `app/src/can/` —— 经典 bxCAN。`handle_downlink` **直接**写硬件发送邮箱
+  （没有软件发送环形缓冲，**没有 `try_transmit`**）；`can_array[]` + `HardwareConfig`
+  + `irq_handler()` 方法 + 轻量 ISR 转接。
+- `app/src/uart/` —— WCH USART，中断模式（RXNE 收字节 + IDLE 作帧分隔，TXE 双缓冲发送）；
+  `uart_array[]` + `HardwareConfig` + `irq_handler()`；`try_transmit()` 负责排空下行缓冲。
+- `app/src/usb/vendor.*` —— librmcs 的会话/保活 + 序列化/反序列化逻辑（与板卡无关，
+  直接复用共享的 `core/`），传输层换成 **WCH USBSS bulk EP1**（主机侧没有 TinyUSB-SS
+  这种对应物）。
+- `app/src/timer/` —— TIM10（32 位 `CNT_32`）跑 1 MHz -> 四分之一微秒时间戳。
+- `app/src/led/` —— 空实现的状态 LED stub。`app/src/utility/` —— `lazy`、`ring_buffer`、
+  `interrupt_safe_buffer`（共享），`interrupt_lock`（WCH 的 `__disable_irq`），`assert`。
+- `app/src/app.cpp` —— 提供 `main()`（替换 demo 的 `app/User/main.c`，后者已排除出构建）；
+  WCH 时钟 + `USB_Timer_Init` + `USBSS_Device_Init` + 用 range-for 初始化各外设；
+  主循环与上游一致（先 usb 的 `try_transmit`，再
+  `for (auto& u : uart_array) u->try_transmit()`）。
+
+### USB SS 数据通路（真实实现，不是 stub）
+
+- `vendor.cpp` 的 `ss::tx_write` 装填 EP1 IN（`UEP_TX_DMA/CHAIN_LEN/CHAIN_EXP_NUMP`，
+  照搬 demo 里真实的 EP3 装填写法），配一个 `tx_in_flight` 标志；
+  `usb_ss_ep1_in_complete()` / `usb_ss_ep1_out_complete()` 分别处理上行/下行。
+- **本地补丁**打在 vendored 的 `bsp/usb/ch32h417_usbss_it.c` 上：原本 `DEF_UEP1` 的
+  IN + OUT 分支是一个硬件 EP1<->EP2 DMA 回环（CH372 demo 的 echo 功能），替换为调用上述
+  两个钩子。补丁标记为 `LIBRMCS LOCAL PATCH`，登记在 `bsp/PROVENANCE.md`（**任何一次
+  重新 vendor 之后都要重新打**）。EP1 即 bulk 管道，OUT `0x01` / IN `0x81`（与主机 SDK
+  的端点一致）。
+
+### 主机侧 SDK（USB 3.0 SS 调优）
+
+- `host/src/transport/usb/usb.cpp` 本来就用异步 libusb（64 个在途 TX 传输，
+  `LIBUSB_TRANSFER_FREE_BUFFER`）。把 `kReceiveTransferCount` 从 4 提到 16——只有 4 层深
+  的接收池喂不满 5 Gbit 的管道。主机侧构建通过。
+
+## 关键发现与决策
+
+- **CH32H417 的 CAN 是经典 2.0B，不是 CAN-FD**——所以转发速度完全押在 USB SS 上。
+- **ITCM/DTCM 是白送的**：链接脚本让全部代码从 ITCM 执行（`RAM_CODE=0x200A0000`），
+  并把所有 `.data`/`.bss` 放进 DTCM（`RAM=0x200C0000`），因此 mc02 那种手工挑热路径
+  往 ITCM 搬的做法在这里没有必要。
+- 工具链坑：WCH 的 `CANx/USARTx/TIMx` 宏本质是 `reinterpret_cast`（不是常量表达式）
+  ——要把整数形式的 `*_BASE` 传给 `Lazy` 的 consteval 构造函数，在运行时再转换。
+- 我们自己写的 ISR 用朴素的 `__attribute__((interrupt))`（GCC 会生成 `mret`），从而绕开
+  "主线 GCC 丢弃 WCH `interrupt("WCH-Interrupt-fast")`"的风险。
+
+  > **后续补充**：厂商代码里的那些 ISR 并没有绕开这个问题，它正是让 USB 彻底死掉的
+  > 真凶，最终用 `-Dinterrupt\(x\)=interrupt` 宏解决。完整分析见
+  > [README.md 已解决：中断返回 ret vs mret](README.md#已解决中断返回-ret-vs-mret)。
+
+### 主机侧板卡接口（2026-07-26）
+
+- `core/include/librmcs/spec/ch32_board/{can,uart}.hpp` —— 通道描述表（CAN1/CAN2、
+  UART1/UART2），形状与其他板一致。顺序与 `app/src/board_app.hpp` 里的 `kCanPorts` /
+  `kUartPorts` 对应。
+- `host/include/librmcs/board/ch32_board.hpp` —— `librmcs::board::Ch32Board`，
+  `0xA11C:0xD403`。没有 IMU / DBUS / GPIO 回调（这块板没有这些外设），也**没有**
+  `uartN_config`：固件的 `uart_config_deserialized_callback` 是空实现，暴露出来只会
+  静默地什么都不做。
+- `host/examples/common/multi_board.hpp` —— 新增 `Ch32BoardSession`，并在
+  `connect_any()` 里加了一项，因此 `rx_monitor` 等所有 example 都能直接驱动这块板。
+
+### Bootloader / DFU（2026-07-26）
+
+V3F 镜像本身就是 bootloader（它本来就掌管复位、时钟树，以及"要不要唤醒 V5F"这个决定）。
+Flash 布局、metadata 记录、SHA-256 校验、顺序写 flash 的 writer、DFU 1.1 状态机，这些
+原先就已到位；本轮补齐的是缺失的部分：
+
+- **DFU 模式描述符**：`bsp/usb/usb_desc.c` 按 `LIBRMCS_DFU_DEVICE` 在应用配置和 DFU 模式
+  配置之间二选一（app 为 0，boot 为 1）——DFU 那份是单接口、无端点、
+  `bInterfaceProtocol` 为 `0x02`、`wTransferSize` 为 512（等于 `DEF_USBSSD_UEP0_SIZE`，
+  于是一个 DNLOAD 块恰好是一个控制 OUT 包）。已登记在 `bsp/PROVENANCE.md`。
+- **DFU 模式下的 USB bring-up**：`boot/src/main.cpp` 的 `run_dfu_mode()` 复刻了 app 的
+  初始化顺序（`Chip`、`librmcs_usb_init_descriptors`、`USB_Timer_Init`、
+  `USBSS_Device_Init`），随后轮询 manifest/detach，最后拆链路并复位。这个轮询带一条
+  **显式的内存屏障**——`Dfu` 没有 volatile 成员且只被 ISR 改写，否则 -O2 会把读提到循环
+  外面变成死转。
+- **detach 路径做成双核安全**：V5F 不能自己复位（它的复位向量是 flash `0x0`，即 V3F
+  镜像），所以 `poll_dfu_runtime_reboot()` 的做法是断开 SS 链路、写 boot mailbox、置
+  `SharedBlock::reset_request` 然后 park；真正执行 `NVIC_SystemReset()` 的是 V3F 的
+  offload 循环。
+- **主机侧产物**：`ch32_board_app.dfu`（裸 `.bin` + DFU 后缀，**不带** `ImageHash` 后缀
+  ——这个 bootloader 是对自己烧进去的内容取哈希），以及仓库根的 `flash-ch32.sh`。
+
+自烧录之所以安全，是因为 `Link_v3f.ld` 让 V3F 镜像从 RAM（`0x20100000`）执行，所以擦写
+app 区不会卡住取指。
+
+> **状态更新**：原文此处记为"尚未在硬件上验证"。启动链已于 2026-07-26 上板复验通过
+> （flash 内容与 `app.bin` 一致、sha256 匹配、不进 DFU、成功唤醒 V5F）；但**经 DFU 实际
+> 推一次镜像**仍未做，见下面第 6 条与 [README.md 尚未完成](README.md#尚未完成)。
+
+## 尚未完成 / 上板 bring-up 待办（以下均已编译正确，但取值未经确认）
+
+1. **USB SS EP1-OUT 的接收长度**：`vendor.cpp` 读 `UEP_RX_CHAIN_LEN`，并从 RX 缓冲区
+   基址取负载（单缓冲）。需在目标板上确认链式 DMA 的接收长度/偏移语义，尤其是多包突发
+   的情况。
+
+   > **已完成**：2026-07-26 按芯片手册 RM 27.2.4 修正（`UEP_RX_DMA` 自增）并实测确认。
+
+2. **GPIO 引脚**（CAN、USART）在 `board_app.cpp` 里是占位值——需按 EVT 原理图确定。
+3. **CAN 位时序与定时器分频**都以 `SystemCoreClock` 为基准——需确认 CAN/TIM 的内核时钟
+   分频系数。
+4. **UART 目前是中断模式**；DMA + 空闲线检测属于推迟的优化项（需要 DMAMUX 的请求映射）。
+5. **烧录**：EVT 用的是 WCH-Link（wlink / openocd-wch），不是这台机器上的 HPM openocd。
+6. 上板 SS 枚举 + 速度测试；bootloader / DFU。
+
+   > **进展**：SS 枚举已完成（2026-07-25），bulk 数据面已完成（2026-07-26）；**速度测试**
+   > 与 **DFU 上板实跑**仍未做。

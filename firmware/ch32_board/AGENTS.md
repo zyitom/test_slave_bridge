@@ -1,16 +1,35 @@
 # ch32_board 固件指南
 
+> **文档类型**：现行规范（板级）
+> **适用范围**：`firmware/ch32_board/`，WCH CH32H417（Qingke V3F + V5F 双核 RISC-V）
+> **状态**：现行有效
+> **相关文档**：[仓库根 AGENTS.md](../../AGENTS.md) · [README.md](README.md)（设计与移植决策） · [PITFALLS.md](PITFALLS.md)（**上板前必读**） · [PROGRESS.md](PROGRESS.md)（工作日志）
+
 > 本目录专属指南，叠加在仓库根 `AGENTS.md` 之上。项目动机、app 布局、bring-up 缺口见本目录 `README.md` 与 `PROGRESS.md`，此处只列 agent 关键点。
 >
 > **改代码或上板之前先读 `PITFALLS.md`** —— 首次 bring-up 踩过的坑（调试口被 USB2 抢占、
 > ISR `mret`、读保护解除要两会话 + POR、`e339e339` 假数据等）都在那里，附判据和修法。
+
+## 摘要
+
+ch32_board 是四块板里**最容易把自己弄进死胡同**的一块，原因有三：
+
+1. **双核异构**——V3F 先复位、拥有时钟树、兼任 DFU bootloader，V5F 才是转发快路径；
+   "启动 App" 是唤醒 V5F 而不是跳转，V5F 也**不能自己复位**。
+2. **调试口和 USB2 抢引脚**——PB8/PB9 既是 USB2 的 D+/D-，也是 SWCLK/SWDIO，一旦回退到
+   USB 2.0 就丢调试口，只能断电恢复（所以仓库里把 USB2 回退关掉了）。
+3. **烧录链路坑多**——读保护、`e339e339` 假数据、`unfreeze` 的位置、halt 顺带复位导致
+   读到的 PC 不可信，全部记在 `PITFALLS.md`。
+
+本文件给的是**现在该怎么做**（工具链、构建、烧录、调试、当前进度）；**为什么这么做**
+在 `README.md`，**踩过什么坑**在 `PITFALLS.md`。
 
 ## 芯片与工具链
 - MCU：**WCH CH32H417**，RISC-V **双核**（V3F boot/offload + V5F 转发快路径）；卖点是片上 **USB 3.0 SuperSpeed（5 Gbps）** 设备控制器。
 - ISA/工具链：RISC-V bare-metal，`cmake/toolchain-wch-riscv.cmake`（RV32IMAFC/ilp32f，**不启用** WCH 私有 `xw` 扩展）。需 RISC-V GCC（**不是** ARM）。
 - **默认（推荐）**：复用 rmcs_board 的 HPM 工具链，构建前设：
   ```bash
-  export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm     # -> riscv32-unknown-elf-gcc 13.2
+  export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm     # [前机路径] -> riscv32-unknown-elf-gcc 13.2
   ```
 - **也支持 MounRiver `MRS_Toolchain_*`**。工具前缀由 `toolchain-wch-riscv.cmake`
   自动探测（依次试 `riscv32-wch-elf-` / `riscv-wch-elf-` / `riscv32-unknown-elf-`），
@@ -25,6 +44,7 @@
   | `RISC-V Embedded GCC15` | `riscv32-wch-elf-` | 15.2.0 | 可用 |
 
   ```bash
+  # 下面的安装位置是 [前机路径]，换机器后改成自己的 MRS 解压目录即可
   cmake --preset debug -S firmware/ch32_board \
       -DWCH_TOOLCHAIN_PATH="$HOME/3rd_party/MRS_Toolchain_Linux_X64_V240/Toolchain/RISC-V Embedded GCC15"
   ```
@@ -35,7 +55,7 @@
 
 ## 构建
 ```bash
-export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm
+export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm      # [前机路径]
 cmake --preset debug -S firmware/ch32_board
 cmake --build firmware/ch32_board/build
 # -> build/ch32_board_app.elf   (V5F @0x10000)
@@ -51,7 +71,13 @@ cmake --build firmware/ch32_board/build
   的 "Bootloader / DFU" 一节，或仓库根 `./flash-ch32.sh`。
 
 ## 烧录（WCH-Link）
-OpenOCD 现在取自 MounRiver 工具链包（旧的 `~/3rd_party/wch-openocd` 已不存在）。
+
+> **路径说明**：本节的 OpenOCD 取自 MounRiver 工具链包。前机上曾经单独放过一份
+> `~/3rd_party/wch-openocd`（`README.md` 里保留的就是那个版本的写法），后来改为直接用
+> MRS 包内自带的，所以以 **本节路径为准**。两个路径都是 `[前机路径]`，当前机器都未安装，
+> 含义见[仓库根 AGENTS.md](../../AGENTS.md#开发机环境路径约定重要先读这条再看任何路径)；
+> 换机器后只需把 `OCD=` 指向新装的 MRS 包即可，命令序列不变。
+
 注意是 **`OpenOCD/OpenOCD/bin`** 两层同名目录，`wch-riscv.cfg` 等 cfg 就和
 `openocd` 放在同一个 `bin/` 里：
 ```bash

@@ -1,4 +1,19 @@
-# IgH EtherCAT Transport —— 实现规格(交给实现者/模型的任务书)
+# IgH EtherCAT Transport —— 实现规格（交给实现者/模型的任务书）
+
+> **文档类型**：现行规范（实现任务书）
+> **适用范围**：`host/src/transport/igh/`，IgH EtherCAT Master 原生驱动后端
+> **状态**：现行有效
+> **相关文档**：[EVALUATION.md](EVALUATION.md)（为什么选它，含实测对比） · [LATENCY_ROADMAP_V2.md](LATENCY_ROADMAP_V2.md)（现行延迟优化结论） · [../soem/NIC_TUNING.md](../soem/NIC_TUNING.md)（网卡调优）
+
+## 摘要
+
+本文件是一份**任务书**：告诉实现者（人或模型）如何把 IgH EtherCAT Master 的原生 `igc`
+驱动接成 librmcs 的第二个 `Transport` 后端。它包含前置系统条件、从站 PDO 布局、必须避开
+的坑（分布式时钟 DC）、以及验收清单。
+
+**读之前先知道两件事**：一是这**不是**替换 SOEM，而是新增一个可选后端；二是本文的性能
+论据来自 `EVALUATION.md`，而延迟优化的**最新结论**在 `LATENCY_ROADMAP_V2.md`——那里
+指出换主站驱动对应用看到的*流*延迟并无帮助，选型时请一并读。
 
 本文档是**待实现**功能的规格说明:`host/src/transport/igh/igh.cpp`,作为
 `host/src/transport/soem/soem.cpp`(SOEM 后端)之外的第二个 `Transport` 实现,

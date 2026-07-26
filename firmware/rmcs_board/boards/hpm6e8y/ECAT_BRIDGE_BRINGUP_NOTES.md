@@ -1,15 +1,26 @@
-# HPM6E8Y EtherCAT Bridge Bring-up Notes
+# HPM6E8Y EtherCAT 桥 bring-up 笔记
 
-Updated: 2026-07-13
+> **文档类型**：过程记录（bring-up 踩坑 + 实测数据）
+> **适用范围**：`firmware/rmcs_board/boards/hpm6e8y/`，EtherCAT 桥固件
+> **状态**：现行有效（最后更新 2026-07-13）
+> **相关文档**：[README.md](README.md)（板级说明） · [ETHERNET_PIN_REVERSE_ENGINEERING.md](ETHERNET_PIN_REVERSE_ENGINEERING.md)（网络引脚逆向） · [GPIO_LED_REVERSE_ENGINEERING.md](GPIO_LED_REVERSE_ENGINEERING.md) · [../../ecat/README.md](../../ecat/README.md)
 
-This note records the traps found while bringing up the `hpm6e8y` EtherCAT
-bridge on hardware without a schematic. Keep it close to the board port: several
-of these facts contradict the HPM6E00 EVK-style assumptions that were present at
-the start of the investigation.
+## 摘要
 
-## Current Status
+本文件记录在**没有原理图**的情况下把 `hpm6e8y` EtherCAT 桥在硬件上跑起来时踩到的坑。
+**修改这块板的移植代码时请把本文放在手边**：其中好几条事实与调查之初沿用的
+"HPM6E00 EVK 式"假设是相反的。
 
-The clean normal firmware is able to run the EtherCAT bridge stably:
+**最容易踩的三个坑**：
+[ESC 逻辑端口与物理标签是反的](#6-esc-逻辑端口映射与物理标签相反)（当初"找不到从站"的
+真凶）、[HPM6E8Y 用的是片内 EtherCAT PHY](#1-hpm6e8y-使用片内-ethercat-phy)、
+[第三个 RJ45 不是 EtherCAT](#4-第三个-rj45-不是-ethercat)。
+
+现象与处置的速查见文末[症状对照表](#症状对照表)。
+
+## 当前状态
+
+干净的常规固件已经能稳定跑起 EtherCAT 桥：
 
 ```text
 EtherCAT link up on "enxc84d4429a4d3": slave "ECAT_Device", 48B chunks, expected WKC 3
@@ -18,452 +29,413 @@ EtherCAT cycle rate: 12.1-12.2 kHz (0 wkc errors)
 EtherCAT link closing: 364428 cycles total, 0 wkc errors
 ```
 
-This means the EtherCAT physical link, ESC, PDO mapping, WKC, and protocol
-session are working.
+这说明 EtherCAT 物理链路、ESC、PDO 映射、WKC 以及协议会话全部工作正常。
 
-### 2026-07-13 IgH loss and latency validation
+### 2026-07-13 IgH 丢包与延迟验证
 
-Two host-side protocol bugs previously looked like transport or dual-core loss:
+有两个**主机侧协议 bug** 曾经看起来像是传输层或双核丢数据：
 
-1. The CAN deserializer exposed a payload span backed by its pending-byte
-   cache, then reused that cache while reading the following hardware
-   timestamp. When both pieces crossed input chunks, the timestamp replaced
-   the first four payload bytes. Captured bad values decoded exactly as board
-   uptime in microseconds. Payload and timestamp are now read with one
-   contiguous `peek_bytes()` window.
-2. The host treated every libusb receive completion as a complete protocol
-   datagram and discarded a field split at that boundary. USB bulk completions
-   are arbitrary slices of a reliable byte stream, especially with the
-   EtherCAT bridge's cross-core-ring shuttle. USB and EtherCAT reception now
-   retain partial deserializer state across callbacks.
+1. CAN 反序列化器暴露出的负载 span 背后是它的待处理字节缓存，而它在随后读取硬件时间戳
+   时又复用了那块缓存。当负载和时间戳恰好跨越输入分块边界时，**时间戳会覆盖掉负载的前
+   四个字节**。抓到的坏数据解出来正好是板子的上电微秒数。现在负载和时间戳改为用一次
+   连续的 `peek_bytes()` 窗口读取。
+2. 主机把**每一次 libusb 接收完成都当成一个完整的协议数据报**，于是在该边界上被切开的
+   字段被直接丢弃。而 USB bulk 完成事件其实是一条可靠字节流的任意切片，在 EtherCAT 桥
+   的跨核环形缓冲接力下尤其如此。现在 USB 和 EtherCAT 的接收路径都会**跨回调保留反
+   序列化器的中间状态**。
 
-The USB transmit pool also applies backpressure when all 64 asynchronous
-transfers are in use. It no longer returns an empty buffer and silently omits a
-packet under load.
+另外，USB 发送池在 64 个异步传输全部占用时会施加**背压**，不再返回空缓冲、在高负载下
+静默丢掉一个包。
 
-Hardware results with CAN0 connected to CAN1 and CAN2 connected to CAN3, CAN-FD
-at 1 Mbit/s arbitration and 5 Mbit/s data phase:
+硬件实测结果（CAN0 接 CAN1、CAN2 接 CAN3，CAN-FD 仲裁 1 Mbit/s、数据段 5 Mbit/s）：
 
 ```text
-IgH, 12k frame/s/stream, 30 s:
-  352907 sent / 352907 received on each stream
+IgH，每流 12k 帧/秒，30 秒：
+  每条流 352907 发送 / 352907 接收
   gap=0 corrupt=0 reorder=0
-  1122973 EtherCAT cycles, 0 WKC errors
+  1122973 个 EtherCAT 周期，0 WKC 错误
 
-IgH, 16k target frame/s/stream, 20 s:
-  312145 sent / 312145 received on each stream (~15.6k actual)
+IgH，每流目标 16k 帧/秒，20 秒：
+  每条流 312145 发送 / 312145 接收（实际约 15.6k）
   gap=0 corrupt=0 reorder=0
-  739822 EtherCAT cycles, 0 WKC errors
+  739822 个 EtherCAT 周期，0 WKC 错误
 
-IgH with SCHED_FIFO, 16k frame/s/stream, 12 s:
-  192000 sent / 192000 received on each stream
-  gap=0 corrupt=0 reorder=0, 0 WKC errors
+IgH + SCHED_FIFO，每流 16k 帧/秒，12 秒：
+  每条流 192000 发送 / 192000 接收
+  gap=0 corrupt=0 reorder=0，0 WKC 错误
 
-IgH with SCHED_FIFO, 18k frame/s/stream, 12 s:
-  216003 sent / 216003 received on each stream
-  gap=0 corrupt=0 reorder=0, 0 WKC errors
+IgH + SCHED_FIFO，每流 18k 帧/秒，12 秒：
+  每条流 216003 发送 / 216003 接收
+  gap=0 corrupt=0 reorder=0，0 WKC 错误
 
-USB, 16k target frame/s/stream, 20 s:
-  239359 sent / 239359 received on each stream (~12.0k actual)
+USB，每流目标 16k 帧/秒，20 秒：
+  每条流 239359 发送 / 239359 接收（实际约 12.0k）
   gap=0 corrupt=0 reorder=0
-  80642 pacing slots skipped by non-realtime host scheduling
+  因非实时主机调度而跳过 80642 个发送时隙
 
-USB with SCHED_FIFO, 18k frame/s/stream, 10 s:
-  180001 sent / 180001 received on each stream
+USB + SCHED_FIFO，每流 18k 帧/秒，10 秒：
+  每条流 180001 发送 / 180001 接收
   gap=0 corrupt=0 reorder=0
 
-USB and IgH with SCHED_FIFO, 20k target frame/s/stream:
-  CAN0 plateaued near 19.4k frame/s
-  CAN2 plateaued near 19.8k frame/s
-  EtherCAT still reported 0 WKC errors and both transports reported 0 corruption
+USB 与 IgH 均加 SCHED_FIFO，每流目标 20k 帧/秒：
+  CAN0 在约 19.4k 帧/秒处见顶
+  CAN2 在约 19.8k 帧/秒处见顶
+  EtherCAT 仍报 0 WKC 错误，两种传输均报 0 数据损坏
 ```
 
-`missed pacing slots` are frames the stress generator never submitted after a
-scheduler delay or transport backpressure. They are not packets lost after
-submission; compare the explicit sent/received counters for that.
+`missed pacing slots`（跳过的发送时隙）指的是压力发生器因调度延迟或传输背压而**根本
+没有提交**的帧。它们**不是**提交之后丢失的包；要判断后者请对比显式的发送/接收计数。
 
-The nearly identical 20k USB and IgH plateaus identify the physical CAN/TX
-path as the sustained-rate limit. A 20k command period is 50 us, while the
-observed frames occupy about 51.5 us on CAN0 and 50.5 us on CAN2 (the CAN ID and
-payload affect bit stuffing). Once the 32-element nonblocking MCAN TX FIFO is
-full, the firmware reports `downlink_buffer_full` and drops that command;
-EtherCAT and USB cannot add capacity to the CAN wire.
+USB 和 IgH 在 20k 处几乎相同的平台期，说明**物理 CAN 发送路径**才是持续速率的上限。
+20k 的命令周期是 50 us，而实测帧在 CAN0 上约占 51.5 us、在 CAN2 上约占 50.5 us
+（CAN ID 与负载会影响位填充）。一旦 32 元素的非阻塞 MCAN 发送 FIFO 满了，固件就会报
+`downlink_buffer_full` 并丢弃该命令；**EtherCAT 和 USB 都无法给 CAN 线增加容量**。
 
-The four-byte receive timestamp is not the sustained-rate bottleneck in the
-measured two-stream setup. A standard 8-byte CAN uplink field is 15 bytes with a
-timestamp and 11 bytes without one. At two 18k streams, timestamped uplink
-traffic is only 0.54 MB/s. Removing the timestamp reduces byte load by 26.7%
-and increases byte headroom by 36.4%, but it does not raise the approximately
-19.4-19.8k physical CAN ceiling.
+在实测的双流配置下，那 4 字节的接收时间戳**不是**持续速率瓶颈。一个标准 8 字节 CAN
+上行字段，带时间戳是 15 字节、不带是 11 字节。两条 18k 流时，带时间戳的上行流量也只有
+0.54 MB/s。去掉时间戳能减少 26.7% 的字节负载、增加 36.4% 的字节余量，但**并不能抬高
+那个约 19.4-19.8k 的物理 CAN 天花板**。
 
-Do not extend that conclusion unchanged to four synchronized buses. Four
-timestamped fields occupy 60 bytes and therefore cross two 44-byte ARQ payload
-chunks; four fields without timestamps occupy exactly 44 bytes and fit in one.
-At four times 18k frame/s, the byte rates are 1.08 MB/s with timestamps and
-0.792 MB/s without them. The former has almost no margin against the measured
-full-duplex IgH byte-echo rate below. Thus timestamps are not the present
-two-bus loss cause, but removing or making them optional is useful if all four
-buses must run near 18k simultaneously. The gross PDO budget
-(`44 bytes * approximately 38 kHz = approximately 1.67 MB/s`) is not the same
-as sustained application-stream throughput.
+**不要把这个结论原样推广到四条同步总线的情形。** 四个带时间戳的字段占 60 字节，因而
+会跨越两个 44 字节的 ARQ 负载块；四个不带时间戳的字段正好占 44 字节，一块装得下。在
+四条 18k 帧/秒的流下，字节速率带时间戳是 1.08 MB/s、不带是 0.792 MB/s。前者相对下文实测
+的 IgH 全双工字节回显速率**几乎没有余量**。所以：时间戳不是当前双总线丢数据的原因，
+但如果四条总线都要同时跑到接近 18k，**去掉时间戳或把它做成可选项是有用的**。注意 PDO
+的毛预算（`44 字节 × 约 38 kHz = 约 1.67 MB/s`）**不等于**应用层持续流吞吐。
 
-One 18k run showed 21-22 missing uplink fields near a five-second cycle-rate
-log, but a fresh 12-second run crossed two log points with `216003/216003` per
-stream. The transient has not been reproduced, so it cannot be attributed to
-logging as a confirmed root cause. Synchronous formatting and output still do
-not belong in a production real-time cycle thread; publish counters and log
-them from a lower-priority thread instead.
+有一次 18k 的运行在某个五秒周期率日志点附近出现了 21-22 个上行字段缺失，但重新跑的
+12 秒运行跨越两个日志点、每条流都是 `216003/216003`。该瞬态**未能复现**，因此不能把
+"日志打印"确认为根因。不过话说回来，**同步的格式化与输出本来就不该放在生产环境的实时
+周期线程里**；正确做法是发布计数器，由更低优先级的线程去打印。
 
-Queue-free CAN0-to-CAN1 RTT with one CAN-FD frame in flight, the transport
-thread on isolated CPU 7 at `SCHED_FIFO 80`, and the sender on CPU 6 at
-`SCHED_FIFO 70`:
+无队列的 CAN0 到 CAN1 往返延迟（RTT），单帧在途、CAN-FD，传输线程在隔离的 CPU 7 上以
+`SCHED_FIFO 80` 运行，发送方在 CPU 6 上以 `SCHED_FIFO 70` 运行：
 
 ```text
-USB (50000 samples): p50 125.0 us, p99 152.2 us, p99.9 209.5 us,
-  max 1111.1 us, 0 timeouts
-IgH (50000 samples): p50 129.8 us, p99 140.6 us, p99.9 150.9 us,
-  max 291.9 us, 0 timeouts, 0 WKC errors
+USB（50000 个样本）：p50 125.0 us，p99 152.2 us，p99.9 209.5 us，
+  max 1111.1 us，0 次超时
+IgH（50000 个样本）：p50 129.8 us，p99 140.6 us，p99.9 150.9 us，
+  max 291.9 us，0 次超时，0 WKC 错误
 ```
 
-Configure the sender's CPU affinity and `SCHED_FIFO` policy only after the board
-object has been constructed. Doing it before construction makes the SDK's
-250 ms keepalive thread inherit the sender's CPU and FIFO priority. The
-busy-waiting sender then starves that thread, the firmware's 1000 ms session
-lease expires after approximately 7.5k queue-free frames, and every later CAN
-command is ignored even though EtherCAT continues with zero WKC errors. This
-was a host benchmark scheduling bug, not CAN or EtherCAT loss.
+> ⚠️ **发送方的 CPU 亲和性与 `SCHED_FIFO` 策略必须在板卡对象构造完成之后再设置。**
+> 在构造之前设置，会让 SDK 那个 250 ms 的 keepalive 线程继承发送方的 CPU 和 FIFO 优先级。
+> 于是忙等的发送方把该线程饿死，固件那 1000 ms 的会话租约在约 7.5k 个无队列帧之后过期，
+> 之后所有 CAN 命令都被忽略——**而 EtherCAT 侧仍然是 0 WKC 错误**，极具迷惑性。
+> 这是一个主机侧基准测试的调度 bug，不是 CAN 或 EtherCAT 丢数据。
 
-The measured IgH cycle rate was approximately 37 kHz, or a 27 us process-data
-period. The full CAN loopback RTT is several such scheduling/transport stages
-plus CAN wire time; moving ESC/SSC to core1 may reduce internal handoff cost,
-but it was not the cause of the observed corruption or loss.
+实测 IgH 周期率约 37 kHz，即 27 us 的过程数据周期。完整的 CAN 环回 RTT 是若干个这样的
+调度/传输阶段加上 CAN 线上时间；把 ESC/SSC 挪到 core1 或许能降低内部交接开销，但它**不是**
+本次观察到的数据损坏或丢失的原因。
 
-### 2026-07-13 transport-only USB versus IgH comparison
+### 2026-07-13 纯传输层的 USB 与 IgH 对比
 
-The core1 byte-echo validation image isolates the host transport, core0 shuttle,
-cross-core rings and core1 handoff from the external CAN wiring. The same host
-tool and CPU placement were used for both modes: the I/O thread ran on CPU 7 at
-`SCHED_FIFO 80`, the sender was pinned to CPU 6, and one frame was in flight for
-the latency runs.
+core1 的字节回显验证镜像可以把主机传输层、core0 接力、跨核环形缓冲、core1 交接这几段
+从外部 CAN 接线中隔离出来单独测。两种模式使用了相同的主机工具与 CPU 布局：I/O 线程在
+CPU 7 上跑 `SCHED_FIFO 80`，发送方钉在 CPU 6，延迟测试时保持单帧在途。
 
 ```text
-44-byte frame (one ARQ payload chunk):
-  USB, 20 s: 233850/233850, corrupt 0
-    RTT p50 80.1 us, p99 110.9 us, p99.9 123.8 us, max 1019.7 us
-  IgH, 20 s: 252574/252574, corrupt 0, 0 WKC errors
-    RTT p50 78.2 us, p99 87.6 us, p99.9 109.6 us, max 135.3 us
+44 字节帧（一个 ARQ 负载块）：
+  USB，20 秒：233850/233850，损坏 0
+    RTT p50 80.1 us，p99 110.9 us，p99.9 123.8 us，max 1019.7 us
+  IgH，20 秒：252574/252574，损坏 0，0 WKC 错误
+    RTT p50 78.2 us，p99 87.6 us，p99.9 109.6 us，max 135.3 us
 
-64-byte frame (two ARQ payload chunks):
-  USB, 30 s: 350541/350541, corrupt 0, RTT p50 80.1 us, p99 112.1 us
-  IgH, 30 s: 236916/236916, corrupt 0, 0 WKC errors,
-    RTT p50 131.8 us, p99 137.0 us
+64 字节帧（两个 ARQ 负载块）：
+  USB，30 秒：350541/350541，损坏 0，RTT p50 80.1 us，p99 112.1 us
+  IgH，30 秒：236916/236916，损坏 0，0 WKC 错误，
+    RTT p50 131.8 us，p99 137.0 us
 
-44-byte frame, 64 in flight, 10 s:
-  USB: 360819/360819, 1550.4 KiB/s per direction, corrupt 0
-  IgH: 247928/247928, 1065.3 KiB/s per direction, corrupt 0, 0 WKC errors
+44 字节帧，64 帧在途，10 秒：
+  USB：360819/360819，每方向 1550.4 KiB/s，损坏 0
+  IgH：247928/247928，每方向 1065.3 KiB/s，损坏 0，0 WKC 错误
 ```
 
-The 44-byte result is the relevant single-PDO case: USB and IgH have essentially
-the same median, while IgH has the tighter tail. Crossing from 44 to 64 bytes
-adds approximately 54 us to the IgH median because the frame needs a second
-ARQ chunk; USB is not quantized by the EtherCAT PDO size. The transport-only
-results also survived USB to IgH to USB ownership changes with no reset and no
-missing bytes.
+44 字节那组才是**单 PDO 的相关场景**：USB 和 IgH 的中位数基本相同，而 IgH 的尾部更收敛。
+从 44 字节跨到 64 字节，IgH 的中位数增加约 54 us，因为这一帧需要第二个 ARQ 块；**USB
+则不受 EtherCAT PDO 尺寸量化的影响**。这组纯传输层的结果还经受住了 USB -> IgH -> USB
+的所有权切换，全程无复位、无字节丢失。
 
-An absolute one-way number cannot be recovered from these software timestamps:
-the host steady clock and the board clock are not synchronized. Under the
-explicit assumption that downlink and uplink are symmetric, half of the
-44-byte RTT gives a median one-way estimate of 40.1 us for USB and 39.1 us for
-IgH; the p99 estimates are 55.5 us and 43.8 us respectively. Use synchronized
-hardware clocks or a scope/logic analyzer for ground-truth one-way latency.
+**从这些软件时间戳里得不到绝对的单向延迟数字**：主机的稳态时钟和板子的时钟并未同步。
+在"下行与上行对称"这一显式假设下，44 字节 RTT 的一半给出单向中位数估计：USB 40.1 us、
+IgH 39.1 us；p99 估计分别是 55.5 us 和 43.8 us。要拿到真值级别的单向延迟，请使用同步的
+硬件时钟，或者示波器/逻辑分析仪。
 
-The USB runtime product string is `RMCS EtherCAT Bridge v<version>`, not
-`RMCS Agent v<version>`. The host scanner now accepts that exact identity only
-for HPM6E8Y PID `0xA904`, while still requiring the exact protocol version.
-USB stress and latency tools no longer use `dangerously_skip_version_checks`.
-After restoring the normal core1 image, the default USB API completed the real
-protocol session handshake, confirming both cross-core directions were live.
+USB 运行时的产品字符串是 `RMCS EtherCAT Bridge v<版本号>`，**不是** `RMCS Agent v<版本号>`。
+主机扫描器现在只对 HPM6E8Y 的 PID `0xA904` 接受这个确切标识，同时仍然要求协议版本精确
+匹配。USB 压力测试与延迟工具**不再使用** `dangerously_skip_version_checks`。恢复常规
+core1 镜像之后，默认的 USB API 完成了真实的协议会话握手，从而确认跨核两个方向都是通的。
 
-`done: 0 CAN frames, 0 UART bytes received` from `ecat_board_test` does not mean
-EtherCAT failed. That example sends CAN0 and UART0 traffic and counts what the
-board receives back. CAN frames are counted only if an external CAN node sends
-frames to the board, and UART bytes are counted only if the UART is looped back
-or connected to a responder.
+`ecat_board_test` 打印的 `done: 0 CAN frames, 0 UART bytes received` **并不意味着
+EtherCAT 失败**。那个 example 会在 CAN0 和 UART0 上发流量，并统计板子**收回来**多少。
+只有当外部 CAN 节点向板子发帧时，CAN 帧计数才会增长；只有当 UART 被环回或接了一个会
+应答的设备时，UART 字节计数才会增长。
 
-## Clean Normal Firmware
+## 干净的常规固件
 
-The normal bridge firmware should be built with all diagnostic core1 modes off:
+常规桥固件应当在**关闭所有 core1 诊断模式**的前提下构建：
 
 ```bash
+# 下面的工具链路径是 [前机路径]，换机器后改成自己的安装位置
 GNURISCV_TOOLCHAIN_PATH="$HOME/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux" \
 cmake --build firmware/rmcs_board/ecat/build-ecat-normal-debug --target rmcs_ecat_core0
 ```
 
-Flash it with:
+烧录：
 
 ```bash
 sudo dfu-util -d 0xa11c:0xa904 -a 0 \
   -D firmware/rmcs_board/ecat/build-ecat-normal-debug/rmcs_ecat_core0/output/rmcs_ecat_bridge_hpm6e8y.dfu
 ```
 
-Run the host test with:
+跑主机侧测试：
 
 ```bash
 sudo ip link set dev enxc84d4429a4d3 up
 sudo ./host/build/examples/ecat_board_test enxc84d4429a4d3 30
 ```
 
-Expected healthy EtherCAT result: one slave named `ECAT_Device`, expected WKC 3,
-and zero WKC errors over the run.
+**健康的 EtherCAT 结果应该是**：发现一个名为 `ECAT_Device` 的从站，expected WKC 为 3，
+整个运行期间 WKC 错误为零。
 
-## Major Traps
+## 主要陷阱
 
-### 1. HPM6E8Y uses on-die EtherCAT PHYs
+### 1. HPM6E8Y 使用片内 EtherCAT PHY
 
-Do not copy the HPM6E00 EVK external MII pin assumptions onto this board.
+**不要把 HPM6E00 EVK 的外部 MII 引脚假设照搬到这块板上。**
 
-The HPM6E*Y* package has two on-die 100M EtherCAT PHYs. The external PA pads are
-mostly analog/strap pins:
+HPM6E\*Y\* 封装内含**两个片内 100M EtherCAT PHY**。外部的 PA 引脚大多是模拟/strap 引脚：
 
-- PHY differential/RBIAS/strap pads live around `PA16..PA29`.
-- Shared management is `PA30` MDIO and `PA31` MDC.
-- The ESC digital MII side uses internal pads:
+- PHY 的差分/RBIAS/strap 引脚集中在 `PA16..PA29` 附近。
+- 共享的管理接口是 `PA30` 作 MDIO、`PA31` 作 MDC。
+- ESC 的数字 MII 侧使用**内部**引脚：
   - `PV00..PV11/PV15`
   - `PW00..PW11/PW15`
-- PHY resets are internal GPIO pads `PV12` and `PW12`, active low.
-- `PW20` and `PW21` provide the internal PHY reference clocks.
+- PHY 复位是内部 GPIO 引脚 `PV12` 和 `PW12`，**低电平有效**。
+- `PW20` 和 `PW21` 提供内部 PHY 的参考时钟。
 
-Do not mux `PA16..PA29` as external ESC MII data pins.
+**不要**把 `PA16..PA29` 复用成外部 ESC MII 数据引脚。
 
-### 2. PA25 and PA28 are not normal yellow LEDs
+### 2. PA25 和 PA28 不是普通的黄色 LED
 
-`PA25` and `PA28` were first found during LED probing, but they are actually
-internal PHY LED/address-strap pads. Treat them as PHY strap/link-source related
-pads, not as free GPIO status LEDs.
+`PA25` 和 `PA28` 最早是在 LED 探测时被发现的，但它们**实际上是片内 PHY 的 LED / 地址
+strap 引脚**。请把它们当作与 PHY strap / 链路指示相关的引脚，**而不是可自由使用的 GPIO
+状态灯**。
 
-Normal firmware parks only safe LEDs. The EtherCAT RUN/ERR LEDs are routed to
-`PC20` and `PC21` through `ESC0_CTR_2` and `ESC0_CTR_3`.
+常规固件只会归位那些安全的 LED。EtherCAT 的 RUN/ERR 灯是通过 `ESC0_CTR_2` 和
+`ESC0_CTR_3` 引到 `PC20` 和 `PC21` 的。
 
-An unlit red ERR LED is not itself a failure. During a healthy INIT/OP path with
-no AL error, the error LED may be off.
+**红色 ERR 灯不亮本身不是故障**。在没有 AL 错误的健康 INIT/OP 流程中，错误灯本来就可能
+是熄灭的。
 
-### 3. ENET0 SMI is the proven internal PHY management path
+### 3. ENET0 SMI 是已验证的片内 PHY 管理通路
 
-The reliable way to read the two internal JL1111-class PHYs is:
+读取那两颗 JL1111 级片内 PHY 的可靠方式是：
 
 ```text
-PA30/PA31 muxed as ENET0 MDIO/MDC
-access path: ENET0 SMI
-PHY ID:      0x937c4024
+PA30/PA31 复用为 ENET0 MDIO/MDC
+访问路径：ENET0 SMI
+PHY ID：  0x937c4024
 ```
 
-The firmware temporarily muxes `PA30/PA31` to ENET0 SMI for PHY reads, then
-restores them to ESC MDIO/MDC.
+固件会在读 PHY 时**临时**把 `PA30/PA31` 复用到 ENET0 SMI，读完再恢复成 ESC 的 MDIO/MDC。
 
-### 4. The third RJ45 is not EtherCAT
+### 4. 第三个 RJ45 不是 EtherCAT
 
-The Realtek RTL8211F Ethernet port is a separate RJ45 and a separate problem:
+Realtek RTL8211F 那个以太网口是独立的 RJ45，也是独立的一摊问题：
 
 ```text
 PF00/PF01 = ENET0 MDC/MDIO
-PE01      = RTL8211F PHYRSTB, active low
-PF02..PF15 = confirmed RGMII data bus
+PE01      = RTL8211F PHYRSTB，低有效
+PF02..PF15 = 已确认的 RGMII 数据总线
 ```
 
-Do not use the Realtek RJ45 for EtherCAT tests. EtherCAT tests must use the two
-JL1111 on-die PHY RJ45s.
+**不要用 Realtek 那个 RJ45 做 EtherCAT 测试。** EtherCAT 测试必须用那两个 JL1111 片内
+PHY 的 RJ45。
 
-### 5. Physical RJ45 to PHY address mapping
+### 5. 物理 RJ45 与 PHY 地址的对应关系
 
-The hardware/user-facing names are valid: the RJ45 marked EtherCAT0 is the
-physical EtherCAT IN connector, and the RJ45 marked EtherCAT1 is the physical
-EtherCAT OUT connector.
+硬件上/面向用户的命名是准确的：标着 EtherCAT0 的 RJ45 就是物理的 EtherCAT **IN** 口，
+标着 EtherCAT1 的 RJ45 就是物理的 EtherCAT **OUT** 口。
 
-Status-probe confirmation with only EtherCAT0/IN cabled:
+只接 EtherCAT0/IN 时的状态探测确认：
 
 ```text
-0x783 = 50 42 00 03 31 00 78 6d  # port0 / PHY addr 2: read OK + link up
-0x784 = 50 42 01 01 31 00 78 49  # port1 / PHY addr 1: read OK + link down
-0x782 = 47 50 00 00 10 10 03 00  # GPR_CFG2 = 0x10100000, swapped link mapping
+0x783 = 50 42 00 03 31 00 78 6d  # port0 / PHY 地址 2：读取成功 + 链路已连接
+0x784 = 50 42 01 01 31 00 78 49  # port1 / PHY 地址 1：读取成功 + 链路断开
+0x782 = 47 50 00 00 10 10 03 00  # GPR_CFG2 = 0x10100000，交换后的链路映射
 ```
 
-This confirms EtherCAT0/IN is PHY address `2`. It does not remove the firmware
-requirement to swap that physical link into ESC logical port 1, documented below.
+这确认了 EtherCAT0/IN 对应 PHY 地址 `2`。但它**并不能免除**固件把该物理链路交换到 ESC
+逻辑端口 1 的要求，见下一条。
 
-Observed one-cable-at-a-time mapping:
+一次只插一根线时观察到的映射：
 
-| Physical connector | MDIO PHY address | Linked BMSR |
+| 物理接口 | MDIO PHY 地址 | 连接时的 BMSR |
 | --- | --- | --- |
-| EtherCAT0 / physical IN label | `2` | `0x786d` |
-| EtherCAT1 / physical OUT label | `1` | `0x786d` |
+| EtherCAT0 / 物理 IN 标签 | `2` | `0x786d` |
+| EtherCAT1 / 物理 OUT 标签 | `1` | `0x786d` |
 
-No cable gives BMSR `0x7849`.
+**不插线时读不到 BMSR `0x7849`。**
 
-### 6. ESC logical port mapping is reversed from the physical labels
+### 6. ESC 逻辑端口映射与物理标签相反
 
-This was the root cause of the original:
+**这就是当初那句报错的根因**：
 
 ```text
 error: No EtherCAT slave found on the network
 ```
 
-When the EtherCAT0 / physical IN connector was linked, PHY address `2` reported
-link up. Feeding that link to ESC logical port 0 produced no discoverable slave.
-Feeding it to ESC logical port 1 made SOEM enumerate `ECAT_Device` immediately.
+当 EtherCAT0 / 物理 IN 口接上线时，PHY 地址 `2` 报告链路已连接。把该链路喂给 ESC 逻辑
+端口 **0** 时，扫不到任何从站；喂给 ESC 逻辑端口 **1** 时，SOEM 立刻枚举出 `ECAT_Device`。
 
-The important observed values:
+关键的实测值：
 
 ```text
-Bad mapping:
+错误的映射：
   0x782 = 47 50 00 00 00 11 03 00
   GPR_CFG2 = 0x11000000
-  result: No EtherCAT slave found
+  结果：找不到 EtherCAT 从站
 
-Working mapping:
+正确的映射：
   0x782 = 47 50 00 00 10 10 03 00
   GPR_CFG2 = 0x10100000
-  result: ECAT_Device found, expected WKC 3
+  结果：发现 ECAT_Device，expected WKC 3
 ```
 
-Keep the software link mapping swapped unless hardware evidence proves a better
-fix. In current code this is represented by:
+**除非有硬件证据支持更好的修法，否则请保持软件侧的链路映射交换。** 当前代码里由这个宏
+表示：
 
 ```c
 #define BOARD_ECAT_SWAP_PHY_LINK_TO_ESC_PORT (1)
 ```
 
-Operational meaning:
+其操作含义是：
 
 ```text
-physical EtherCAT0 / PHY addr 2 -> ESC logical port 1
-physical EtherCAT1 / PHY addr 1 -> ESC logical port 0
+物理 EtherCAT0 / PHY 地址 2 -> ESC 逻辑端口 1
+物理 EtherCAT1 / PHY 地址 1 -> ESC 逻辑端口 0
 ```
 
-This is why the two RJ45s appear reversed from the physical IN/OUT labels. A
-single-slave test works in this state. Before changing this for a chained
-topology, test both physical connectors explicitly and record the desired
-logical topology.
+**这就是为什么两个 RJ45 看起来和物理 IN/OUT 标签是反的。** 在这个状态下单从站测试可以
+正常工作。将来为了链式拓扑要改动它之前，请先分别测试两个物理接口，并明确记录期望的
+逻辑拓扑。
 
-A direct no-swap test was run with:
+曾经直接做过一次不交换的对照测试：
 
 ```c
 #define BOARD_ECAT_SWAP_PHY_LINK_TO_ESC_PORT (0)
 ```
 
-Result: the host returned `No EtherCAT slave found on the network`. Restoring
-`BOARD_ECAT_SWAP_PHY_LINK_TO_ESC_PORT` to `1` restored enumeration and session
-establishment. Therefore the production hpm6e8y bridge firmware should keep
-`swap = 1` while still documenting EtherCAT0 as the physical IN connector.
+结果：主机返回 `No EtherCAT slave found on the network`。把
+`BOARD_ECAT_SWAP_PHY_LINK_TO_ESC_PORT` 改回 `1` 之后，枚举与会话建立恢复正常。
+因此**生产用的 hpm6e8y 桥固件应当保持 `swap = 1`**，同时在文档里仍把 EtherCAT0 记作
+物理 IN 口。
 
-### 7. Use software GPR link state, not a LINK input pad
+### 7. 用软件 GPR 链路状态，不要用 LINK 输入引脚
 
-The on-die PHYs do not provide the same stable external LINK pin path as the
-EVK's external PHYs. The SDK default of sourcing `NMII_LINKx` from IO is not
-usable here.
+片内 PHY 并不提供 EVK 上那些外部 PHY 所具备的稳定外部 LINK 引脚通路。SDK 默认那种
+从 IO 取 `NMII_LINKx` 的做法**在这里不可用**。
 
-The firmware drives ESC link state through `GPR_CFG2`:
+固件通过 `GPR_CFG2` 驱动 ESC 的链路状态：
 
 - `NMII_LINKx_FROM_IO = 0`
-- `NMII_LINKx_GPR = 0` means link valid
-- `NMII_LINKx_GPR = 1` means link invalid
+- `NMII_LINKx_GPR = 0` 表示链路有效
+- `NMII_LINKx_GPR = 1` 表示链路无效
 
-Do not force both ports up. With one cable connected, a false-up empty port can
-prevent the ESC from closing the loop and the master may not receive frames.
+**不要把两个端口都强制置为已连接。** 只接一根线时，一个被谎报为"已连接"的空端口会让
+ESC 无法闭合环路，主站可能因此收不到帧。
 
-Normal firmware polls both PHY BMSR link bits every 100 ms and refreshes the GPR
-state. A startup-only poll leaves the ESC with stale link state when the cable is
-inserted after boot or after a transient disconnect, making recovery appear to
-require a power cycle.
+常规固件每 100 ms 轮询两个 PHY 的 BMSR 链路位并刷新 GPR 状态。**只在启动时轮询一次是
+不够的**——那样在开机后才插线、或者经历一次瞬时断连之后，ESC 会保留过期的链路状态，
+表现为"必须重新上电才能恢复"。
 
-### 8. Force 100M MII mode at startup
+### 8. 启动时强制 100M MII 模式
 
-The clean normal firmware explicitly configures:
+干净的常规固件会显式配置：
 
-- ESC `PHY_CFG0.MAC_SPEED = 1` for 100M
-- ESC `PORT0_RMII_EN/PORT1_RMII_EN/PORT2_RMII_EN = 0`
-- JL1111 page 7 register 16 bit 3 cleared, selecting MII
+- ESC 的 `PHY_CFG0.MAC_SPEED = 1`，即 100M
+- ESC 的 `PORT0_RMII_EN/PORT1_RMII_EN/PORT2_RMII_EN = 0`
+- JL1111 第 7 页寄存器 16 的 bit 3 清零，选择 MII
 
-Do this once after the EtherCAT port layer releases PHY reset. Avoid repeatedly
-writing PHY page registers while the bridge is running.
+**在 EtherCAT 端口层释放 PHY 复位之后做一次即可。** 避免在桥运行期间反复写 PHY 的分页
+寄存器。
 
-### 9. Diagnostic CAN and normal CAN0
+### 9. 诊断用 CAN 与常规 CAN0
 
-Diagnostic images used MCAN0 on `PC00/PC01` to report bring-up frames such as
-`0x77f`, `0x780`..`0x789`, `0x78a`, and `0x78b`.
+诊断镜像用 `PC00/PC01` 上的 MCAN0 来汇报 bring-up 帧，例如 `0x77f`、`0x780`..`0x789`、
+`0x78a`、`0x78b`。
 
-The normal EtherCAT bridge application now uses the same physical CAN0 pins, but
-without the diagnostic telemetry task. Its logical host `CAN0` is:
-
-```text
-logical CAN0 = physical silk CAN0 = HPM_MCAN0
-TX/RX        = PC00/PC01
-baud         = classic CAN 1 Mbit/s
-```
-
-Therefore:
-
-- Seeing diagnostic frames on MCAN0/PC00-PC01 proves the physical CAN0 path.
-- The clean normal bridge does not send `0x77f/0x78x` diagnostic frames.
-- `ecat_board_test` sends CAN ID `0x123` on logical CAN0 = MCAN0/PC00-PC01.
-- A USB-CAN adapter in listen-only mode may not ACK board TX frames.
-- The host example only counts received CAN frames when something sends frames
-  back to the board. It does not count the board's own transmitted frames.
-
-To validate CAN0:
-
-1. Connect to physical CAN0, wired to MCAN0/PC00-PC01.
-2. Use classic CAN 1 Mbit/s.
-3. Ensure the other node ACKs frames. Do not use listen-only mode for this test.
-4. To make `ecat_board_test` print `[CAN0 RX]`, transmit any classic CAN frame
-   from the external node to the board while the test is running.
-
-### 10. UART0 echo requires a physical loopback
-
-The host example sends UART0 text on:
+常规 EtherCAT 桥应用现在使用**同一组物理 CAN0 引脚**，只是没有那个诊断遥测任务。它的
+逻辑主机 `CAN0` 是：
 
 ```text
-logical UART0 = HPM_UART1
-TX/RX         = PY07/PY06
-baud          = 921600
+逻辑 CAN0 = 物理丝印 CAN0 = HPM_MCAN0
+TX/RX     = PC00/PC01
+波特率     = 经典 CAN 1 Mbit/s
 ```
 
-`done: 0 UART bytes received` is expected unless `PY07` is looped to `PY06` or a
-device sends UART data back.
+因此：
 
-### 11. Diagnostic v4 was useful but not clean normal firmware
+- 在 MCAN0/PC00-PC01 上看到诊断帧，可以证明物理 CAN0 通路是好的。
+- 干净的常规桥**不会**发送 `0x77f/0x78x` 诊断帧。
+- `ecat_board_test` 在逻辑 CAN0（即 MCAN0/PC00-PC01）上发 CAN ID `0x123`。
+- **处于只听模式的 USB-CAN 适配器不会给板子的发送帧回 ACK。**
+- 主机 example 只统计**收到的** CAN 帧，也就是说必须有东西向板子发帧才会计数；它不统计
+  板子自己发出去的帧。
 
-The v4 diagnostic firmware proved the port mapping by sending:
+验证 CAN0 的步骤：
+
+1. 接到物理 CAN0，它连的是 MCAN0/PC00-PC01。
+2. 使用经典 CAN，1 Mbit/s。
+3. 确保对端节点会回 ACK。**本测试不要用只听模式。**
+4. 想让 `ecat_board_test` 打印 `[CAN0 RX]`，就在测试运行期间用外部节点向板子发任意一帧
+   经典 CAN 帧。
+
+### 10. UART0 回显需要物理环回
+
+主机 example 在这里发送 UART0 文本：
+
+```text
+逻辑 UART0 = HPM_UART1
+TX/RX      = PY07/PY06
+波特率      = 921600
+```
+
+除非把 `PY07` 短接到 `PY06`，或者接一个会回数据的设备，否则
+`done: 0 UART bytes received` **是预期结果**。
+
+### 11. 诊断版 v4 有用，但它不是干净的常规固件
+
+v4 诊断固件通过发送这些帧证明了端口映射：
 
 ```text
 0x77f = ESTA 04
 0x782 = GPR_CFG2 + MII_MNG_CS
 0x783/0x784 = PHY BMCR/BMSR
-0x785/0x786 = PHY IDs
-0x787/0x788/0x789 = ESC config/status
+0x785/0x786 = PHY ID
+0x787/0x788/0x789 = ESC 配置/状态
 0x78a/0x78b = JL1111 page7 RMSR
 ```
 
-It also helped expose that continuous diagnostic CAN/PHY access is not suitable
-for the clean normal bridge. The clean normal build removes the diagnostic CAN
-task and avoids periodic PHY page writes.
+它同时也暴露出：**持续的诊断 CAN/PHY 访问不适合放进干净的常规桥**。干净的常规构建
+移除了诊断 CAN 任务，也避免了周期性的 PHY 分页写。
 
-## Symptom Map
+## 症状对照表
 
-| Symptom | Meaning | Action |
+| 症状 | 含义 | 处置 |
 | --- | --- | --- |
-| `No EtherCAT slave found` | Link was being reported to the wrong ESC logical port | Keep swapped PHY-link-to-ESC-port mapping |
-| `ECAT_Device`, WKC 3, 0 WKC errors | EtherCAT transport is healthy | Proceed to CAN/UART physical validation |
-| `SAFE-OP+ERROR 0x001B` | SyncManager watchdog | Remove diagnostic runtime interference first; then inspect SSC/SM if it persists |
-| No `0x77f/0x78x` frames on clean normal | Expected | Diagnostic CAN is disabled in normal bridge firmware |
-| `done: 0 CAN frames` | No CAN frames received from an external node | Check MCAN0/PC00-PC01, 1 Mbit classic, ACK, and external transmit |
-| `done: 0 UART bytes` | No UART loopback/responder | Jumper PY07 to PY06 or connect a responder |
+| `No EtherCAT slave found` | 链路被上报到了错误的 ESC 逻辑端口 | 保持 PHY 链路到 ESC 端口的交换映射 |
+| `ECAT_Device`、WKC 3、0 WKC 错误 | EtherCAT 传输健康 | 可以继续做 CAN/UART 的物理验证 |
+| `SAFE-OP+ERROR 0x001B` | SyncManager 看门狗 | 先排除诊断固件的运行时干扰；若仍然存在再查 SSC/SM |
+| 干净常规固件上收不到 `0x77f/0x78x` 帧 | 预期行为 | 常规桥固件里诊断 CAN 是关闭的 |
+| `done: 0 CAN frames` | 没有从外部节点收到 CAN 帧 | 检查 MCAN0/PC00-PC01、1 Mbit 经典模式、ACK，以及外部是否真的在发 |
+| `done: 0 UART bytes` | 没有 UART 环回或应答设备 | 用跳线把 PY07 短到 PY06，或接一个应答设备 |
 
-## Known Open Items
+## 已知未决事项
 
-- Physical connector labels appear reversed relative to ESC logical port order:
-  physical EtherCAT0/IN is currently ESC logical port 1, physical EtherCAT1/OUT
-  is ESC logical port 0. This is documented and working for a single-slave link,
-  but chained topologies should be tested before changing code.
-- The normal bridge currently exposes one logical CAN bus: physical CAN0
-  (MCAN0/PC00-PC01). The remaining confirmed physical CAN1..CAN3 ports are not
-  exposed by `RmcsBoardEcatBridge` yet.
+- **物理接口标签与 ESC 逻辑端口顺序相反**：物理 EtherCAT0/IN 目前是 ESC 逻辑端口 1，
+  物理 EtherCAT1/OUT 是 ESC 逻辑端口 0。这一点已记录在案，且在单从站链路下工作正常，
+  但**改代码之前应当先测试链式拓扑**。
+- 常规桥目前只暴露一条逻辑 CAN 总线：物理 CAN0（MCAN0/PC00-PC01）。其余已确认可用的
+  物理 CAN1..CAN3 端口尚未被 `RmcsBoardEcatBridge` 暴露出来。

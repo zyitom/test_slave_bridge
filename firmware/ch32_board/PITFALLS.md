@@ -1,13 +1,38 @@
 # ch32_board 踩坑记录
 
-> 2026-07-25 首次上板 bring-up 起持续积累（07-26 补入 USB 数据通路打通期间的发现）。
-> 每条都是实测结论，附判据和修法。
-> 简版纪律见 `AGENTS.md`，这里是完整来龙去脉。
->
-> 标注约定：**[RM]** = 已在参考手册 `~/Downloads/CH32H417RM.PDF` 中找到依据；
-> **[EVT]** = 依据 EVT 例程/板级手册；**[实测]** = 只有板上实验证据，手册未覆盖。
+> **文档类型**：过程记录（实测踩坑档案）
+> **适用范围**：`firmware/ch32_board/`，WCH CH32H417
+> **状态**：现行有效。**改代码或上板之前必读。**
+> **相关文档**：[AGENTS.md](AGENTS.md)（简版纪律） · [README.md](README.md)（设计背景） · [PROGRESS.md](PROGRESS.md)（工作日志）
 
-## 一、硬件层
+## 摘要
+
+本文件是 ch32_board 上**每一个真实踩过的坑**：现象、判据、原因、修法。2026-07-25 首次
+上板 bring-up 起持续积累（07-26 补入 USB 数据通路打通期间的发现）。每条都是实测结论。
+
+`AGENTS.md` 里那份是简版纪律，这里是完整来龙去脉——当板子行为和预期不符时，先来这里
+按现象查，多数情况能省掉重新排查的几小时。
+
+**标注约定**：**[RM]** = 已在参考手册 `~/Downloads/CH32H417RM.PDF`（`[前机路径]`）中找到
+依据；**[EVT]** = 依据 EVT 例程/板级手册；**[实测]** = 只有板上实验证据，手册未覆盖。
+
+## 本文导航
+
+| 章 | 主题 | 什么时候来看 |
+|---|---|---|
+| [1. 硬件层](#1-硬件层) | 引脚复用、USB3 座、VBUS | 调试器连不上、插线就出怪事 |
+| [2. 工具链层](#2-工具链层) | 中断属性被丢、TinyUSB 不可用 | 换工具链之后、中断行为异常 |
+| [3. 烧录层](#3-烧录层时间黑洞集中地) | 读保护、option byte、hex 分段、metadata | 烧不进去、烧进去不跑 |
+| [4. 调试观测层](#4-调试观测层) | halt 会复位、什么值可信 | 读出来的值和预期对不上 |
+| [5. 固件结构层](#5-固件结构层) | 初始化顺序、时钟树归属、双核分工 | 改初始化流程之前 |
+
+**最容易浪费时间的三条**：[1.1（调试口被 USB2 抢走）](#11-pb8pb9-既是-usb2-的-dd也是-swclkswdio-实测--原理图)、
+[3.10（插着 USB3 线就烧不进）](#310-usb3-线插着就烧不了与固件无关-实测)、
+[4.7（调试器挂着时 V5F 根本不跑）](#47-调试器-attach-期间-v5f-根本不跑同会话的-reset-run-读到的全是残留-实测)。
+
+---
+
+## 1. 硬件层
 
 ### 1.1 PB8/PB9 既是 USB2 的 D+/D-，也是 SWCLK/SWDIO **[实测 + 原理图]**
 
@@ -47,10 +72,11 @@ USB 2.0（`TIM12_IRQHandler` → `USBSS_Device_Init(DISABLE)` + `USBHS_Device_In
   的 2/3 脚也是这两个网络。**同一个电气节点，中间没有串阻、没有跳线、没有模拟开关。**
   `P1` 的 VBUS 经 `F1`(2A 保险丝) 直接上 +5V 轨。
 
-### 1.1a 「SS 模式就安全」是错的表述
+### 1.2 「SS 模式就安全」是错的表述
 
-1.2 那句「SS 模式下 D+/D- 完全闲置」只说了**芯片这一侧**不再驱动它们，不等于这两个脚
-电气上干净——插着线时主机的 15 kΩ 下拉和线缆电容一直挂在 PB8/PB9 上。
+[1.4](#14-usb3-座子里有两套线但不能同时用) 那句「SS 模式下 D+/D- 完全闲置」只说了
+**芯片这一侧**不再驱动它们，不等于这两个脚电气上干净——插着线时主机的 15 kΩ 下拉和
+线缆电容一直挂在 PB8/PB9 上。
 
 正确的说法是**两个独立机制**，别混为一谈：
 
@@ -74,24 +100,25 @@ USB 2.0（`TIM12_IRQHandler` → `USBSS_Device_Init(DISABLE)` + `USBHS_Device_In
    **低速是靠 D- 上拉判定的**，而 D- 就是 PB9/SWDIO——主机看到的这个"低速设备"，
    其实是 WCH-Link 驱动调试线的静态电平。主机会反复重试、还会给端口做 power cycle。
 
-2. **插着线烧录必然失败**（见下面 3.10）。
+2. **插着线烧录必然失败**（见 [3.10](#310-usb3-线插着就烧不了与固件无关-实测)）。
 
 **操作纪律**：拔线烧录 → 插线测试。要长期同时有数据口和调试口，走 Type-C（P10，
 `OTG_FS` → PA11/PA12，引脚不相交）。自己画板时把 USB3 座的 USB2 D+/D- 串 0Ω 或不接
 （我们 `HS_FALLBACK=0` 本来就不用），官方 EVB 没留这个余地。
 
-### 1.1b 幻影低速设备会拖垮主机端口，进而挡掉热插拔 **[实测]**
+### 1.3 幻影低速设备会拖垮主机端口，进而挡掉热插拔 **[实测]**
 
 上面那串 `unable to enumerate USB device` 不只是噪声。主机对该端口放弃之后，**连带不再
 去轮询它的 SS 侧**，于是插上线也不枚举（`/sys/.../usb4-portN/state` 读作 `not attached`）。
 
-**这不是板子的问题**：板子这侧一直在找对端（见 4.5），是主机端口被拖住了。
+**这不是板子的问题**：板子这侧一直在找对端（见
+[4.5](#45-ss-的-rx_detect-会永远重试别信8-次就放弃-rm--实测)），是主机端口被拖住了。
 
 **判据**：`cat /sys/devices/.../usb4-portN/state`。`not attached` 且板子确实在跑，
 就是这条。**修法**：线插着的情况下复位板子（`openocd -c init -c "reset run"`），
 或者换一个 USB3 口。实测复位这招每次都灵。
 
-### 1.2 USB3 座子里有两套线，但不能同时用
+### 1.4 USB3 座子里有两套线，但不能同时用
 
 一个 USB3.0-A 座（P2）同时接出：
 - `USBHS_DM/DP` → PB8/PB9（USB 2.0 High Speed）
@@ -99,19 +126,22 @@ USB 2.0（`TIM12_IRQHandler` → `USBSS_Device_Init(DISABLE)` + `USBHS_Device_In
 
 USB 3.0 规范规定设备要么 SS 模式要么 USB2 模式，主机只枚举一次。SS 枚举成功时厂商栈
 会主动 `USBHS_Device_Init(DISABLE)`。**SS 模式下 D+/D- 完全闲置**，这正是能一边跑
-5 Gbps 一边用调试器的原因。
+5 Gbps 一边用调试器的原因。（这句话的适用边界见
+[1.2](#12-ss-模式就安全是错的表述)。）
 
 板上另有 Type-C 座（P10）接 `OTG_FS_DP/DM` → PA11/PA12，是**独立的第三个 USB 控制器**
 （Full Speed）。真要同时有数据面 + 调试/DFU 接口，走这个口。
 
-### 1.3 VBUS 会阻止 WCH-Link 给板子断电
+### 1.5 VBUS 会阻止 WCH-Link 给板子断电
 
 板子的 USB3 线插在电脑上时，VBUS 持续供电。此时拔插 WCH-Link **不等于给板子断电**，
 所有依赖上电复位（POR）的恢复手段全部失效。
 
 要真正 POR：两根线都拔掉，或只留 WCH-Link 供电（板子吃 Link 的 3V3，拔 Link 即断电）。
 
-## 二、工具链层
+---
+
+## 2. 工具链层
 
 ### 2.1 WCH 的 `interrupt("WCH-Interrupt-fast")` 会被主线 GCC 整条丢弃
 
@@ -141,7 +171,9 @@ riscv32-unknown-elf-objdump -d --disassemble=USBSS_LINK_IRQHandler \
 Companion 描述符、没有链路层。要 5 Gbps 就只能用 WCH 的 USBSS 栈。另外三块板
 （c_board / mc02 / rmcs_board）继续用 TinyUSB，不受影响。
 
-## 三、烧录层（时间黑洞集中地）
+---
+
+## 3. 烧录层（时间黑洞集中地）
 
 ### 3.1 绝对不要 `flash erase_sector wch_riscv.flash 0 last` **[RM]**
 
@@ -207,8 +239,8 @@ Companion 描述符、没有链路层。要 5 Gbps 就只能用 WCH 的 USBSS �
 ### 3.6 MounRiver 自带的 openocd 和我们用的完全相同
 
 `/usr/share/MRS2/.../components/WCH/OpenOCD/OpenOCD/bin/openocd` 与
-`~/3rd_party/wch-openocd/bin/openocd` **二进制和 `wch-riscv.cfg` 字节级相同**。
-IDE 能烧而命令行烧不进时，**先怀疑调用序列，不要怀疑工具**。
+`~/3rd_party/wch-openocd/bin/openocd`（均为 `[前机路径]`）**二进制和 `wch-riscv.cfg`
+字节级相同**。IDE 能烧而命令行烧不进时，**先怀疑调用序列，不要怀疑工具**。
 
 ### 3.7 WCH-Link 适配器自身会卡死
 
@@ -218,7 +250,7 @@ IDE 能烧而命令行烧不进时，**先怀疑调用序列，不要怀疑工�
 
 ### 3.8 救援镜像
 
-`~/mounriver-studio-projects/CH32H417MEU` 是个纯 USART2↔USART3 轮询 demo，
+`~/mounriver-studio-projects/CH32H417MEU`（`[前机路径]`）是个纯 USART2↔USART3 轮询 demo，
 **一行 USB 代码都没有**，所以 PB8/PB9 永远不被占用，调试口始终可用。
 调试口被占死时烧它可恢复到干净状态。建议长期保留。
 
@@ -270,7 +302,14 @@ Error: ** Programming Failed **
 
 运气好的话失败发生在切段边界、旧镜像没坏（那次就是），但不可依赖。**烧录前先拔线。**
 
-## 四、调试观测层
+---
+
+## 4. 调试观测层
+
+> 本章各条互相依赖，建议按顺序读。核心结论一句话：**halt 会顺带复位，所以外设寄存器
+> 和 PC 都不可信，唯一可靠的观测手段是让固件把状态写进 RAM，再按
+> [4.7](#47-调试器-attach-期间-v5f-根本不跑同会话的-reset-run-读到的全是残留-实测)
+> 的姿势去读。**
 
 ### 4.1 halt 之后读到的 PC 不可信
 
@@ -293,7 +332,8 @@ halt 会让主机判 USB 掉线，`resume` 无法恢复枚举，**必须 `reset 
 **补充**：它的 `init` 也会污染观测——只 `init` 不 `reset run`，照样看到两个 hart 的 PC
 都落在 V3F 的 `0x201xxxxx` 代码区、hart1 `mtvec = 0x20100003`。所以**用 dual-core cfg
 读出来的"V5F 在跑 V3F 镜像"未必是真的固件状态**，可能只是这个 cfg 自己造成的。
-判断 V5F 死活请用 4.7 的方法（不是 4.4 的——那条对 V5F 无效）。
+判断 V5F 死活请用 [4.7](#47-调试器-attach-期间-v5f-根本不跑同会话的-reset-run-读到的全是残留-实测)
+的方法（不是 4.4 的——那条对 V5F 无效）。
 
 ### 4.4 halt 会复位，但核冻结在 `handle_reset`——RAM 因此保留，这是唯一可靠的观测法 **[实测]**
 
@@ -323,10 +363,54 @@ hart0 的 PC 反解出来是 `bsp/wch/Startup/startup_ch32h417_v3f.S:534` 的 `h
   4.1 说 `v5f_ready` 不可信——那只针对**读到 0** 的情形（可能只是还没写）。
   **读到 1 是强证据**。
 
-> ⚠️ 2026-07-26 更正：上面那条"标准动作"在 V5F 上**会骗人**，`v5f_ready` 这个观测点
-> 也已作废。见 4.7。
+> ⚠️ **2026-07-26 更正**：上面那条"标准动作"在 V5F 上**会骗人**，`v5f_ready` 这个观测点
+> 也已作废。见 [4.7](#47-调试器-attach-期间-v5f-根本不跑同会话的-reset-run-读到的全是残留-实测)。
+> 本条对 **V3F** 仍然成立，故完整保留。
+
+### 4.5 SS 的 RX_DETECT 会永远重试（别信"8 次就放弃"） **[RM + 实测]**
+
+手册 27.2.6 `LINK_GO_DISABLED`（复位值 1）说：清零它 → LTSSM 进 SS.RX_DETECT →
+每 12 ms 检测一次共 8 次 → 没检测到 TERM 就进 SS.DISABLE。**读到这里很容易误以为
+"检测窗口一次性用完就再也不找了"，从而把热插拔失败归到板子头上。那是错的。**
+
+厂商的 `USBSS_LINK_Handle()` 在 `LINK_STATE_DISABLE` 分支里第一句就是
+`USBSSHx->LINK_CTRL &= ~LINK_GO_DISABLED;`，等于立刻把 RX_DETECT 重新拉起来。
+**实测**：拔掉 USB 线空跑 3 秒，`diag[13]` 记录到 **11 次状态跃迁**，`diag[11]` 的
+位图只有 bit4(DISABLE) 和 bit5(RXDET)——LTSSM 在这两态之间约每 270 ms 循环一次，
+永远等下去。
+
+被我们 `HS_FALLBACK=0` 短路掉的 `USB_Timer_Start(ENABLE)` 只影响"超时后切 USB2.0"，
+**不影响这个重试循环**。所以插上线不枚举时，先怀疑主机端口
+（[1.3](#13-幻影低速设备会拖垮主机端口进而挡掉热插拔-实测)），不是板子。
+
+### 4.6 USB 层的实时状态只能靠固件自己记
+
+4.4 说 halt 会复位。**外设寄存器首当其冲**：LTSSM 状态、`USBSS_DevEnumStatus`、
+EP 的 chain 寄存器，halt 之后读到的全是复位值，毫无意义（我在 TIM10 上栽过一次，
+又在 USB 上差点栽第二次）。
+
+可用的办法是让固件把关心的值写进 `0x20170000` 那片 RAM，再按 4.4 的姿势读。
+`app/src/app.cpp` 的 `poll_usb_link_diagnostics()` 和 `app/src/usb/vendor.cpp` 里的
+计数就是这么做的（都标了 `TODO(usb-bringup)`），布局：
+
+| 字 | 内容 |
+|---|---|
+| `diag[11]` | 出现过的 LTSSM 态位图（bit N = LINK_STATE 值 N） |
+| `diag[12]` | 最后一次 `LINK_STATUS` |
+| `diag[13]` | 状态跃迁次数 |
+| `diag[14]` | `USBSS_DevEnumStatus` |
+| `diag[15]` | EP1 OUT 完成次数 |
+| `diag[16..21]` | `NUMP` / `DMA_OFS` / `CHAIN_LEN` / 收后 `RX_DMA` / armed 基址 / 算出的长度 |
+| `diag[22]` | 缓冲基址处的头 4 字节 |
+| `diag[23..25]` | 上行 armed 次数 / 最后长度 / 完成次数 |
+
+**实测确认**：`收后 RX_DMA - armed 基址` 恒等于 `NUMP × DMA_OFS`，即
+**`UEP_RX_DMA` 确实会自增**——这正是 `usb_ss_ep1_out_complete()` 倒推起始地址的依据，
+原先只是从厂商 EP2 OUT 代码反推、手册未明说，现在有板上证据。
 
 ### 4.7 调试器 attach 期间 V5F 根本不跑——同会话的 `reset run` 读到的全是残留 **[实测]**
+
+> 本条推翻了 4.4 在 V5F 上的适用性，是**当前观测 V5F 的唯一正确方法**。
 
 4.4 那条命令（同一个 openocd 会话里 `reset run` → `sleep` → `halt` → `mdw`）用来看
 V3F 没问题，**用来看 V5F 是错的**：openocd 挂着的时候 V5F 不会被真正放出来，那段
@@ -362,47 +446,9 @@ $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg -c "init" -c "wch_riscv unfreeze" \
 
 被这条坑了半小时：先后误判成"V5F 没被唤醒"和"V5F 卡在 init 里"，实际固件一直是好的。
 
-### 4.5 SS 的 RX_DETECT 会永远重试（别信"8 次就放弃"） **[RM + 实测]**
+---
 
-手册 27.2.6 `LINK_GO_DISABLED`（复位值 1）说：清零它 → LTSSM 进 SS.RX_DETECT →
-每 12 ms 检测一次共 8 次 → 没检测到 TERM 就进 SS.DISABLE。**读到这里很容易误以为
-"检测窗口一次性用完就再也不找了"，从而把热插拔失败归到板子头上。那是错的。**
-
-厂商的 `USBSS_LINK_Handle()` 在 `LINK_STATE_DISABLE` 分支里第一句就是
-`USBSSHx->LINK_CTRL &= ~LINK_GO_DISABLED;`，等于立刻把 RX_DETECT 重新拉起来。
-**实测**：拔掉 USB 线空跑 3 秒，`diag[13]` 记录到 **11 次状态跃迁**，`diag[11]` 的
-位图只有 bit4(DISABLE) 和 bit5(RXDET)——LTSSM 在这两态之间约每 270 ms 循环一次，
-永远等下去。
-
-被我们 `HS_FALLBACK=0` 短路掉的 `USB_Timer_Start(ENABLE)` 只影响"超时后切 USB2.0"，
-**不影响这个重试循环**。所以插上线不枚举时，先怀疑主机端口（1.1b），不是板子。
-
-### 4.6 USB 层的实时状态只能靠固件自己记
-
-4.4 说 halt 会复位。**外设寄存器首当其冲**：LTSSM 状态、`USBSS_DevEnumStatus`、
-EP 的 chain 寄存器，halt 之后读到的全是复位值，毫无意义（我在 TIM10 上栽过一次，
-又在 USB 上差点栽第二次）。
-
-可用的办法是让固件把关心的值写进 `0x20170000` 那片 RAM，再按 4.4 的姿势读。
-`app/src/app.cpp` 的 `poll_usb_link_diagnostics()` 和 `app/src/usb/vendor.cpp` 里的
-计数就是这么做的（都标了 `TODO(usb-bringup)`），布局：
-
-| 字 | 内容 |
-|---|---|
-| `diag[11]` | 出现过的 LTSSM 态位图（bit N = LINK_STATE 值 N） |
-| `diag[12]` | 最后一次 `LINK_STATUS` |
-| `diag[13]` | 状态跃迁次数 |
-| `diag[14]` | `USBSS_DevEnumStatus` |
-| `diag[15]` | EP1 OUT 完成次数 |
-| `diag[16..21]` | `NUMP` / `DMA_OFS` / `CHAIN_LEN` / 收后 `RX_DMA` / armed 基址 / 算出的长度 |
-| `diag[22]` | 缓冲基址处的头 4 字节 |
-| `diag[23..25]` | 上行 armed 次数 / 最后长度 / 完成次数 |
-
-**实测确认**：`收后 RX_DMA - armed 基址` 恒等于 `NUMP × DMA_OFS`，即
-**`UEP_RX_DMA` 确实会自增**——这正是 `usb_ss_ep1_out_complete()` 倒推起始地址的依据，
-原先只是从厂商 EP2 OUT 代码反推、手册未明说，现在有板上证据。
-
-## 五、固件结构层
+## 5. 固件结构层
 
 ### 5.1 USB 初始化必须排在最后
 

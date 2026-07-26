@@ -1,77 +1,81 @@
-# hpm5321 - Hardware Pinout
+# hpm5321 —— 硬件引脚分配
 
-SoC: **HPM5361** (`HPM5361xEGx`, QFN48; `openocd-soc: hpm5300`). The board is
-*named* hpm5321 after the board series, but the silicon is HPM5361.
+> **文档类型**：硬件参考（引脚表）
+> **适用范围**：`firmware/rmcs_board/boards/hpm5321/`
+> **状态**：现行有效
+> **相关文档**：[README.md](README.md)（板级说明） · [../hpm5321_dual_can/PINOUT.md](../hpm5321_dual_can/PINOUT.md)（双 CAN 版对照）
 
-Every entry is taken directly from the firmware source; the "Source" column
-lists where the pin is configured so the table stays verifiable.
+## 摘要
 
-## CAN (MCAN)
+本文件是 hpm5321 的**引脚速查表**。每一项都直接取自固件源码，"来源"列标明该引脚在哪里
+被配置，**便于随时回源核对**——发现表与代码不一致时，以代码为准并回来更正本表。
 
-| Logical | Hardware | TXD  | RXD  | Mode    | Source                   |
+SoC 是 **HPM5361**（`HPM5361xEGx`，QFN48；`openocd-soc: hpm5300`）。注意板子**名字**叫
+hpm5321 是沿用板系列名，实际硅片是 HPM5361。
+
+## CAN（MCAN）
+
+| 逻辑名 | 硬件 | TXD | RXD | 模式 | 来源 |
 | ------- | -------- | ---- | ---- | ------- | ------------------------ |
-| CAN0    | MCAN0    | PA00 | PA01 | Classic | `app/board_app.cpp` `init_can()` |
+| CAN0 | MCAN0 | PA00 | PA01 | 经典 | `app/board_app.cpp` 的 `init_can()` |
 
-Port table: `app/board_app.hpp` (`kCanPorts`). CAN0 is the DM (Damiao) motor
-bus. The controller is configured classic-only (`CanMode::kClassic`): host
-frames requesting CAN-FD are capped to classic on the wire (see README).
+端口表在 `app/board_app.hpp`（`kCanPorts`）。CAN0 是 DM（达妙）电机总线。控制器配置为
+仅经典模式（`CanMode::kClassic`）：主机请求 CAN-FD 的帧上线时会被降为经典，见
+[README.md](README.md)。
 
 ## UART
 
-| Logical | Hardware | TXD  | RXD  | Baud   | Parity | Source                    |
+| 逻辑名 | 硬件 | TXD | RXD | 波特率 | 校验 | 来源 |
 | ------- | -------- | ---- | ---- | ------ | ------ | ------------------------- |
-| UART0   | UART2    | PB08 | PB09 | 921600 | None   | `app/board_app.cpp` `init_uart()` |
+| UART0 | UART2 | PB08 | PB09 | 921600 | 无 | `app/board_app.cpp` 的 `init_uart()` |
 
-Port table: `app/board_app.hpp` (`kUartPorts`). Both pins use internal
-pull-up; RX additionally enables the Schmitt trigger. TX/RX are DMA-driven
-(`HPM_DMA_SRC_UART2_TX/RX`), rings placed in `.ahb_sram` (naturally
-non-cached on this SoC).
+端口表在 `app/board_app.hpp`（`kUartPorts`）。两个引脚都启用了内部上拉；RX 额外开了
+施密特触发器。收发均由 DMA 驱动（`HPM_DMA_SRC_UART2_TX/RX`），环形缓冲放在
+`.ahb_sram`（在这颗 SoC 上天然是非缓存的）。
 
-## LED (plain GPIO RGB, active-low)
+## LED（普通 GPIO 驱动的 RGB，低电平有效）
 
-Common-anode RGB LED: drive the pad LOW to light a channel
-(`make_gpio_pin<..., false>`). Defined in `app/board_app.hpp`, muxed by
-`init_led_pins()` in `app/board_app.cpp`.
+共阳极 RGB 灯：把引脚**拉低**才点亮对应通道（`make_gpio_pin<..., false>`）。定义在
+`app/board_app.hpp`，由 `app/board_app.cpp` 的 `init_led_pins()` 完成引脚复用。
 
-| Color | Pin  |
+| 颜色 | 引脚 |
 | ----- | ---- |
-| Blue  | PA29 |
-| Green | PA30 |
-| Red   | PA31 |
+| 蓝 | PA29 |
+| 绿 | PA30 |
+| 红 | PA31 |
 
-This board has no per-CAN indicator LEDs (`kCanIndicatorPins` is empty).
+这块板**没有**每路 CAN 的独立指示灯（`kCanIndicatorPins` 为空）。
 
-## USB (device, high speed)
+## USB（设备模式，高速）
 
-`usb_use_high_speed()` returns true. Pins are set to analog and the DP/DM
-45-ohm pull-downs are disconnected in `board.c`
-(`board_init_usb_dp_dm_pins()`); VBUS is internal.
+`usb_use_high_speed()` 返回 true。引脚设为模拟功能，并且在 `board.c` 的
+`board_init_usb_dp_dm_pins()` 里断开了 DP/DM 的 45 欧下拉；VBUS 走内部。
 
-| Function | Pin  | Notes  |
+| 功能 | 引脚 | 说明 |
 | -------- | ---- | ------ |
-| USB0 DM  | PA24 | Analog |
-| USB0 DP  | PA25 | Analog |
+| USB0 DM | PA24 | 模拟 |
+| USB0 DP | PA25 | 模拟 |
 
-## Buttons / Debug
+## 按键 / 调试
 
-| Function          | Pin  | Notes                                                        |
+| 功能 | 引脚 | 说明 |
 | ----------------- | ---- | ------------------------------------------------------------ |
-| Bootloader button | PA07 | Shared with JTAG_TMS; sampled by `board_check_bootloader_force_stay_requested()` (`board.c`), then restored to JTAG_TMS so the debugger can attach |
-| JTAG TCK          | PA04 | Default JTAG function; not muxed by the app                  |
-| JTAG TDO          | PA05 | Default JTAG function; not muxed by the app                  |
-| JTAG TDI          | PA06 | Default JTAG function; not muxed by the app                  |
+| Bootloader 按键 | PA07 | 与 JTAG_TMS 复用；由 `board.c` 的 `board_check_bootloader_force_stay_requested()` 采样，采样完毕后**恢复为 JTAG_TMS**，以便调试器仍能连接 |
+| JTAG TCK | PA04 | 默认 JTAG 功能，app 不做复用 |
+| JTAG TDO | PA05 | 默认 JTAG 功能，app 不做复用 |
+| JTAG TDI | PA06 | 默认 JTAG 功能，app 不做复用 |
 
-## PY domain
+## PY 域
 
-| Pin  | Function      | Notes                                                   |
+| 引脚 | 功能 | 说明 |
 | ---- | ------------- | ------------------------------------------------------- |
-| PY00 | SOC_GPIO_Y_00 | Switched to SoC GPIO domain in `board.c`, no peripheral |
-| PY01 | SOC_GPIO_Y_01 | Switched to SoC GPIO domain in `board.c`, no peripheral |
+| PY00 | SOC_GPIO_Y_00 | 在 `board.c` 里切到 SoC GPIO 域，不接外设 |
+| PY01 | SOC_GPIO_Y_01 | 在 `board.c` 里切到 SoC GPIO 域，不接外设 |
 
-## Clocks / timebases (firmware-relevant constants)
+## 时钟 / 时基（与固件相关的常量）
 
-| Item                | Value                | Source                              |
+| 项目 | 取值 | 来源 |
 | ------------------- | -------------------- | ----------------------------------- |
-| MCHTMR0 (app timer) | 4 MHz (0.25 us tick) | `board.c`; `kMchtmrClockName`       |
-| PTPC (CAN timestamp) | 160 MHz AHB, 6 ns step (`kCanTimestampNsPerUs = 960`) | `app/board_app.hpp` |
-| Flash               | 1 MiB XPI NOR        | `board.h` (`BOARD_FLASH_SIZE`)      |
+| MCHTMR0（app 定时器） | 4 MHz（0.25 us 一个 tick） | `board.c`；`kMchtmrClockName` |
+| PTPC（CAN 时间戳） | 160 MHz AHB，6 ns 步进（`kCanTimestampNsPerUs = 960`） | `app/board_app.hpp` |
+| Flash | 1 MiB XPI NOR | `board.h`（`BOARD_FLASH_SIZE`） |

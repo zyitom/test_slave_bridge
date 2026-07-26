@@ -1,170 +1,160 @@
 # RMCS Slave HPM5321 DualCan
 
-USB<->fieldbus forwarding bridge with two CAN-FD controllers, one data UART, a
-main RGB status LED and one indicator LED per CAN bus. No IMU, no DBUS
-receiver, no GPIO application channels.
+> **文档类型**：硬件参考（板级说明）+ 故障排查指引
+> **适用范围**：`firmware/rmcs_board/boards/hpm5321_dual_can/`，双 CAN-FD 版 HPM5321 板
+> **状态**：现行有效
+> **相关文档**：[PINOUT.md](PINOUT.md)（引脚分配，含原理图丢失后如何反推出引脚表） · [../hpm5321/README.md](../hpm5321/README.md)（单 CAN 版） · [../../AGENTS.md](../../AGENTS.md)
 
-Hardware pin assignments live in [PINOUT.md](PINOUT.md), including how the pin
-map was recovered after the schematic was lost.
+## 摘要
 
-## Identifiers
+USB <-> 现场总线转发桥：**两路 CAN-FD 控制器、一路数据 UART、一颗主 RGB 状态灯，外加
+每路 CAN 各一颗指示灯**。没有 IMU、没有 DBUS 接收机、没有 GPIO 应用通道。
 
-| Item        | Value                                     |
+与单 CAN 版 `hpm5321` 的关键差别：**这块板的两路 CAN 都是真 CAN-FD**（仲裁 1 Mbps /
+数据 5 Mbps），需要 FD 上线就用这块。
+
+本文件后半部分是一份**CAN 故障排查手册**——指示灯的每种闪法对应什么故障、常见误报的
+原因。板子接线出问题时直接查[常见的点灯原因](#常见的点灯原因)那一节。
+
+硬件引脚分配见 [PINOUT.md](PINOUT.md)，其中也记录了原理图丢失后引脚表是怎么恢复出来的。
+
+## 标识信息
+
+| 项目 | 取值 |
 | ----------- | ----------------------------------------- |
-| Board name  | `RMCS_Slave_HPM5321_DualCan` (`BOARD_NAME`) |
-| SoC         | HPM5361 (QFN48), single RV32 core         |
-| USB PID     | `0xA902` (VID `0xA11C`)                   |
-| USB speed   | High speed (480 Mbps)                     |
-| Flash       | 1 MiB XPI NOR, app behind the shared DFU bootloader |
+| 板名 | `RMCS_Slave_HPM5321_DualCan`（`BOARD_NAME`） |
+| SoC | HPM5361（QFN48），单 RV32 核 |
+| USB PID | `0xA902`（VID `0xA11C`） |
+| USB 速度 | High speed（480 Mbps） |
+| Flash | 1 MiB XPI NOR，app 位于共享 DFU bootloader 之后 |
 
-## What the host sees
+## 主机侧看到什么
 
-The board runs the shared rmcs_board USB application (`app/`): a USB
-vendor-class device carrying the librmcs byte stream, with the session
-handshake (kStart nonce + keepalive lease) handled by the shared
-`link::HostSession`.
+这块板跑的是 rmcs_board 的共享 USB 应用（`app/`）：一个承载 librmcs 字节流的 USB
+vendor 类设备，会话握手（kStart nonce + keepalive 租约）由共享的 `link::HostSession`
+处理。
 
-| Host endpoint    | Board resource                  | Notes                     |
+| 主机侧端点 | 板上资源 | 说明 |
 | ---------------- | ------------------------------- | ------------------------- |
-| `DataId::kCan0`  | MCAN0, CAN-FD 1 Mbps / 5 Mbps   | DM (Damiao) motor bus     |
-| `DataId::kCan1`  | MCAN3, CAN-FD 1 Mbps / 5 Mbps   | Second motor bus          |
-| `DataId::kUart0` | UART2, 921600-8N1               | DMA-driven both directions |
+| `DataId::kCan0` | MCAN0，CAN-FD 1 Mbps / 5 Mbps | DM（达妙）电机总线 |
+| `DataId::kCan1` | MCAN3，CAN-FD 1 Mbps / 5 Mbps | 第二条电机总线 |
+| `DataId::kUart0` | UART2，921600-8N1 | 收发双向均由 DMA 驱动 |
 
-## Build and flash
+## 构建与烧录
 
 ```bash
 cmake --preset debug -S firmware/rmcs_board -DBOARD=hpm5321_dual_can
 cmake --build firmware/rmcs_board/build
 ```
 
-Flash over USB DFU with the repo script (builds the release preset first):
+用仓库脚本走 USB DFU 烧录（脚本会先按 release preset 构建）：
 
 ```bash
-./flash-dual.sh                # build release + flash
-PRESET=debug ./flash-dual.sh   # debuggable (-O0) image instead
+./flash-dual.sh                # 构建 release 并烧录
+PRESET=debug ./flash-dual.sh   # 改烧可调试的 -O0 镜像
 ```
 
-The shared RMCS DFU bootloader must already be on the chip (one-time, needs a
-debugger: `./flash-dual-bootloader.sh`). A running app exposes the DFU runtime
-interface, so dfu-util detaches it automatically; to force the bootloader to
-stay resident, hold the PA07 button through reset.
+**前提是芯片上已经有共享的 RMCS DFU bootloader**（一次性操作，需要调试器：
+`./flash-dual-bootloader.sh`）。正在运行的 app 会暴露 DFU 运行时接口，所以 `dfu-util`
+能自动让它 detach；若要强制 bootloader 常驻，复位时按住 PA07 按键。
 
-## Main status LED (RGB)
+## 主状态灯（RGB）
 
-The 3-channel RGB LED shows the host link and the forwarding buffers. Each
-state is a distinct color (yellow = red+green, cyan = green+blue; all three
-channels are never lit at once); priority is top to bottom
-(`app/src/led/led.hpp`):
+三通道 RGB 灯表示主机链路状态与转发缓冲状态。每个状态一种独立颜色（黄 = 红+绿，
+青 = 绿+蓝；三个通道**不会**同时点亮）；**优先级从上到下**（`app/src/led/led.hpp`）：
 
-| Pattern               | Meaning                                                   |
+| 灯效 | 含义 |
 | --------------------- | --------------------------------------------------------- |
-| yellow/cyan alternate | both directions congested (uplink AND downlink full)      |
-| yellow blink (~4 Hz)  | uplink buffer full (board -> host); host not draining     |
-| cyan blink (~4 Hz)    | downlink buffer full (host -> board); CAN TX backed up    |
-| steady green          | host session established, data forwarding                 |
-| slow green blink 1 Hz | alive, waiting for a host session                         |
+| 黄/青交替 | 双向都拥塞（上行和下行缓冲同时满） |
+| 黄色闪烁（约 4 Hz） | 上行缓冲满（板 -> 主机）；主机没在取数据 |
+| 青色闪烁（约 4 Hz） | 下行缓冲满（主机 -> 板）；CAN 发送积压 |
+| 绿色常亮 | 主机会话已建立，正在转发数据 |
+| 绿色慢闪 1 Hz | 存活，等待主机会话 |
 
-"Host session established" means the librmcs handshake is up (kStart nonce
-acknowledged and the keepalive lease refreshed within 1 s) -- NOT merely that
-the USB cable is plugged in. An enumerated device without a live host
-application stays on the slow green blink.
+"主机会话已建立"指的是 **librmcs 握手已完成**（kStart nonce 得到确认，且 keepalive
+租约在 1 秒内被刷新），**不等于"USB 线插上了"**。设备枚举成功但主机侧没有应用程序在跑
+时，灯会停在绿色慢闪。
 
-## CAN status LEDs (light language)
+## CAN 状态灯（灯语）
 
-One indicator LED per CAN controller. The on-board silkscreen labels them CAN1
-and CAN2, but in firmware they are CAN0/CAN1 (0-based) -- keep the mapping
-straight, it is a common source of confusion:
+每个 CAN 控制器一颗指示灯。**板上丝印标的是 CAN1 和 CAN2，但固件里叫 CAN0/CAN1**
+（从 0 开始编号）——这个对应关系要记牢，它是常见的困惑来源：
 
-| Silkscreen | Pin  | Firmware | Controller | Bus pins        |
+| 丝印 | 引脚 | 固件名 | 控制器 | 总线引脚 |
 | ---------- | ---- | -------- | ---------- | --------------- |
-| CAN1       | PB14 | CAN0     | MCAN0      | TX=PA00 RX=PA01 |
-| CAN2       | PB15 | CAN1     | MCAN3      | TX=PA31 RX=PA30 |
+| CAN1 | PB14 | CAN0 | MCAN0 | TX=PA00 RX=PA01 |
+| CAN2 | PB15 | CAN1 | MCAN3 | TX=PA31 RX=PA30 |
 
-The CAN ISR classifies every error interrupt into one of a few states a CAN
-controller can actually tell apart, and the LED shows it until ~5 s after the
-last error, then returns to off (implemented in `app/src/can/can.hpp` and
-`app/src/led/led.hpp`):
+CAN 中断服务程序会把每个错误中断归类到"CAN 控制器真正能区分开"的几种状态之一，指示灯
+保持该状态直到最后一次错误后约 5 秒，然后熄灭（实现在 `app/src/can/can.hpp` 与
+`app/src/led/led.hpp`）：
 
-| Pattern         | State         | What it means / where to look                                 |
+| 灯效 | 状态 | 含义 / 该查哪里 |
 | --------------- | ------------- | ------------------------------------------------------------- |
-| off             | healthy       | no errors                                                     |
-| slow blink 1 Hz | NO-ACK        | nobody acknowledged -- alone on the bus, partner unpowered, or TX wire cut |
-| fast blink 5 Hz | WIRING (Bit0) | bus cannot be driven dominant -- CAN_H/L shorted together, reversed, or open |
-| double blink    | SIGNAL        | corrupted bits -- missing 120R termination, baudrate mismatch, or noise |
-| solid on        | BUS-OFF       | too many errors; controller is recovering / offline           |
+| 熄灭 | 健康 | 无错误 |
+| 慢闪 1 Hz | NO-ACK | 没人应答——总线上只有自己、对端没上电，或 TX 线断了 |
+| 快闪 5 Hz | WIRING（Bit0） | 总线无法被拉成显性——CAN_H/L 短接、接反，或开路 |
+| 双闪 | SIGNAL | 位被破坏——缺 120 欧终端电阻、波特率不匹配，或干扰 |
+| 常亮 | BUS-OFF | 错误过多；控制器正在恢复 / 已离线 |
 
-Why only these states: a controller can reliably separate "nobody answered"
-(ACK error) from "the bits on the wire are wrong". The exact wire error
-(stuff/form/CRC, and the rare Bit1 "stuck dominant") fluctuates frame to frame
-and its physical causes (no termination, wrong baudrate, noise) are electrically
-indistinguishable, so they are merged into one SIGNAL state instead of pretending
-to tell them apart. A hard short/reversal is the one wiring fault that shows up
-stably (Bit0), so it gets its own pattern.
+**为什么只做这几种状态**：控制器能可靠区分的只有"没人应答"（ACK 错误）和"线上的位不对"
+两类。具体是哪种线路错误（stuff/form/CRC，以及罕见的 Bit1"卡在显性"）逐帧波动，而它们的
+物理成因（没终端电阻、波特率错、干扰）在电气上无法区分，所以合并成一个 SIGNAL 状态，
+而不是假装能分辨。硬短路/接反是唯一能**稳定**表现出来的接线故障（Bit0），因此单独给了
+一种灯效。
 
-Note: CAN errors only arise while the controller is actively transmitting or
-receiving. An idle bus reports nothing -- to surface a fault you must send
-traffic (e.g. `host/examples/can_error_test`).
+注意：**CAN 错误只在控制器正在收发时才会产生**。总线空闲时什么都不会报——要让故障显现
+出来必须发流量（例如跑 `host/examples/can_error_test`）。
 
-### Common mistakes that light the CAN LED
+### 常见的点灯原因
 
-- **Double blink right after another node joins -- duplicate CAN ID.** Two
-  transmitters sending the SAME id with different data both win arbitration (the
-  id bits are identical), then collide in the data field -> bit error -> SIGNAL.
-  Give every transmitter on the bus a unique id. Most frames still get through, so
-  the bus looks "mostly working" while the LED stays lit.
-- **NO-ACK or double blink against a classic-only device while sending FD.** A
-  classic CAN 2.0 node (typical USB-to-CAN adapter, RoboMaster motor) cannot
-  acknowledge a CAN-FD frame: it either ignores it (-> NO-ACK) or sends an error
-  frame (-> SIGNAL). Send classic frames (`is_fdcan = false`) to such devices.
-- **Double blink with no obvious cause -- termination.** A CAN bus needs exactly
-  two 120R resistors, one at each end. Zero, one or three cause reflections ->
-  intermittent stuff/form/CRC -> SIGNAL.
-- **Slow blink with a device attached -- it is not acknowledging.** It is on a
-  different bus, unpowered, in listen-only/silent mode, or its TX wire is cut.
-- **LED never lights even on a broken bus -- the bus is idle.** Errors only occur
-  while transmitting/receiving; send traffic to test.
-- **The "wrong" LED reacts -- silkscreen vs firmware numbering.** Board CAN1/CAN2
-  are firmware CAN0/CAN1 (see the mapping table above).
+- **另一个节点一接入就开始双闪 —— CAN ID 重复。** 两个发送方用**相同 ID** 发不同数据时
+  都会赢得仲裁（ID 位完全一样），然后在数据场撞车 -> 位错误 -> SIGNAL。给总线上每个发送方
+  分配唯一 ID。注意此时**大部分帧仍能通过**，所以总线看起来"基本能用"，但灯一直亮着。
+- **对着只支持经典 CAN 的设备发 FD 帧，出现 NO-ACK 或双闪。** 经典 CAN 2.0 节点
+  （典型的 USB 转 CAN 适配器、RoboMaster 电机）无法应答 CAN-FD 帧：它要么直接忽略
+  （-> NO-ACK），要么发错误帧（-> SIGNAL）。对这类设备要发经典帧（`is_fdcan = false`）。
+- **没有明显原因的双闪 —— 终端电阻。** 一条 CAN 总线需要**恰好两个** 120 欧电阻，两端
+  各一个。零个、一个或三个都会造成反射 -> 间歇性 stuff/form/CRC 错误 -> SIGNAL。
+- **接了设备却还在慢闪 —— 对方没有应答。** 它可能挂在另一条总线上、没上电、处于
+  只听/静默模式，或者它的 TX 线断了。
+- **总线明明是坏的，灯却从不亮 —— 总线是空闲的。** 错误只在收发过程中产生；要测试就得
+  发流量。
+- **反应的是"另一颗"灯 —— 丝印与固件编号不一致。** 板上的 CAN1/CAN2 对应固件的
+  CAN0/CAN1，见上面的对应表。
 
-### Bus-off auto-recovery
+### Bus-off 自动恢复
 
-This is a forwarding bridge, so a transient bus fault must not take a CAN port
-offline until reboot. When TEC reaches 256 the controller enters bus-off and
-hardware latches `CCCR.INIT`, halting it. The ISR clears INIT
-(`mcan_enter_normal_mode`) to start the standard bus-off recovery sequence: the
-controller waits for the bus to go idle (129 * 11 recessive bits), resets its
-error counters and resumes automatically. While the bus stays faulty it simply
-cycles bus-off -> recover -> retry, keeping the port alive (and preventing the
-TX FIFO from backing up, which would otherwise flash the main LED forever).
+这是一块转发桥，所以**一次瞬时总线故障不能让某路 CAN 一直离线到重启为止**。当 TEC 达到
+256 时控制器进入 bus-off，硬件会锁存 `CCCR.INIT` 把它停住。中断服务程序会清掉 INIT
+（`mcan_enter_normal_mode`），从而启动标准的 bus-off 恢复流程：控制器等待总线空闲
+（129 × 11 个隐性位），复位错误计数器，然后自动恢复。只要总线还是坏的，它就在
+bus-off -> 恢复 -> 重试之间循环，从而保持端口存活（同时避免 TX FIFO 积压——否则主状态灯
+会一直闪个不停）。
 
-## Classic CAN 2.0 vs CAN-FD
+## 经典 CAN 2.0 与 CAN-FD
 
-Both controllers run permanently in CAN-FD mode (arbitration 1 Mbps, data
-5 Mbps). CAN-FD mode is a strict superset: an FD-enabled M_CAN transmits and
-receives classic CAN 2.0 frames too, selected per element via the FDF/BRS bits.
-So there is no controller-level "mode switch" -- the frame type is chosen
-per-frame:
+两个控制器都**常驻** CAN-FD 模式（仲裁 1 Mbps，数据 5 Mbps）。CAN-FD 模式是严格的超集：
+一个启用了 FD 的 M_CAN 同样能收发经典 CAN 2.0 帧，逐个元素通过 FDF/BRS 位选择。所以
+**不存在控制器级别的"模式切换"**——帧类型是逐帧决定的：
 
-- **Receive**: the hardware auto-detects each frame; `handle_uplink` reports the
-  real type back to the host in `CanDataView::is_fdcan`.
-- **Transmit**: `handle_downlink` honors the host's per-frame `is_fdcan` flag,
-  capped by controller capability: `send_fd = canfd_ && data.is_fdcan`.
-  `is_fdcan` defaults to `false`, so a frame is **classic CAN 2.0 unless the host
-  explicitly sets `is_fdcan = true`**.
+- **接收**：硬件自动识别每一帧；`handle_uplink` 会把真实类型通过
+  `CanDataView::is_fdcan` 报回主机。
+- **发送**：`handle_downlink` 尊重主机下发的逐帧 `is_fdcan` 标志，但受控制器能力封顶：
+  `send_fd = canfd_ && data.is_fdcan`。`is_fdcan` 默认为 `false`，也就是说
+  **除非主机显式设 `is_fdcan = true`，否则发出去的是经典 CAN 2.0**。
 
-| Host `is_fdcan`     | Controller FD-capable | Frame sent on the wire        |
+| 主机 `is_fdcan` | 控制器支持 FD | 线上实际发出的帧 |
 | ------------------- | --------------------- | ----------------------------- |
-| false (default)     | any                   | classic CAN 2.0 (1 Mbps)      |
-| true                | yes (this board)      | CAN-FD (1 Mbps arb / 5 Mbps data) |
-| true                | no (classic-only)     | classic CAN 2.0 (capped, safe)|
+| false（默认） | 任意 | 经典 CAN 2.0（1 Mbps） |
+| true | 支持（本板） | CAN-FD（仲裁 1 Mbps / 数据 5 Mbps） |
+| true | 不支持（仅经典） | 经典 CAN 2.0（被封顶，安全） |
 
-This is free on the hot path: it adds one already-cached bool read and one AND
-per frame, and never reconfigures the controller (no INIT-mode stall, no bus
-interruption). The host can therefore mix classic and FD frames freely on the
-same bus, frame by frame.
+这在热路径上是**零成本**的：每帧只多一次已在缓存里的 bool 读取和一次与运算，而且从不
+重配置控制器（不会进 INIT 模式停顿，不会中断总线）。因此主机可以在同一条总线上逐帧
+自由混发经典帧和 FD 帧。
 
-Interop note: a classic-only node (e.g. a typical USB-to-CAN adapter, or a
-RoboMaster motor) will NOT acknowledge an FD frame -- it ignores it, so the board
-sees a pure ACK error and the indicator shows NO-ACK (slow blink). Send classic
-frames (`is_fdcan = false`) to such devices. The arbitration baudrate must match
-on all nodes regardless (1 Mbps here).
+**互操作提示**：只支持经典的节点（例如典型的 USB 转 CAN 适配器，或 RoboMaster 电机）
+**不会**应答 FD 帧——它直接忽略，于是板子看到的是纯 ACK 错误，指示灯显示 NO-ACK（慢闪）。
+对这类设备请发经典帧（`is_fdcan = false`）。另外无论如何，**所有节点的仲裁段波特率必须
+一致**（这里是 1 Mbps）。

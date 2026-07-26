@@ -1,6 +1,27 @@
 # LibRMCS
 
+> **文档类型**：背景说明 + 上手指引
+> **适用范围**：整个仓库（host SDK 与全部四块板）
+> **状态**：现行有效
+> **相关文档**：[AGENTS.md](AGENTS.md)（开发约束与文档规范） · [ENV.md](ENV.md)（外部工具下载入口）
+
+## 摘要
+
 librmcs 是 [无下位机控制系统 RMCS（RoboMaster Control System）](https://github.com/Alliance-Algorithm/RMCS) 的核心通讯部分。
+本文档面向第一次接触本仓库的人，讲清三件事：**装什么依赖**、**怎么把 host SDK 和固件编出来**、
+**怎么把固件烧进板子**。芯片内部的外设设计、踩坑记录、烧录细节在各板自己的文档里，见文末索引。
+
+## 本文导航
+
+| 你想做什么 | 看哪一节 |
+|---|---|
+| 了解版本状态 | [LibRMCS v3](#librmcs-v3) |
+| 在 PC 上编 SDK | [Host SDK 编译](#host-sdk-编译) |
+| 编固件 | [固件编译与烧录](#固件编译与烧录) |
+| 第一次烧板子 | [烧录 Bootloader](#烧录-bootloader首次或更新引导) |
+| 日常更新固件 | [烧录 App（USB DFU）](#烧录-appusb-dfu) |
+| 认板子 / 查 PID | [各板 USB 标识](#各板-usb-标识) |
+| 找某块板的深入文档 | [各板文档索引](#各板文档索引) |
 
 ## LibRMCS v3
 
@@ -50,6 +71,10 @@ cmake --preset linux-debug -S host -DBUILD_EXAMPLES=ON \
 - `arm-none-eabi-gcc`（C11 + C++23 工具链）
 - `cmake`（>= 3.28）与 `ninja`
 - `dfu-util`（>= 0.11，用于 USB DFU 烧录）
+
+> 上面这份依赖针对 STM32 两块板（`c_board`、`mc02`）。RISC-V 的两块板
+> （`ch32_board`、`rmcs_board`）用的是另一套工具链，见 [ch32_board 的差异](#ch32_board-的差异)
+> 与 `firmware/rmcs_board/BUILD_ENVIRONMENT.md`。
 
 ### 编译
 
@@ -119,7 +144,8 @@ VID 均为 `0xA11C`。
 ### ch32_board 的差异
 
 RISC-V 双核，工具链是 `riscv32-unknown-elf-gcc`（不是 `arm-none-eabi-gcc`），
-编译前需 `export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm`：
+编译前需 `export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm`（`[前机路径]`，含义见
+[AGENTS.md 开发机环境路径约定](AGENTS.md#开发机环境路径约定重要先读这条再看任何路径)）：
 
 ```bash
 cmake --preset debug -S firmware/ch32_board && cmake --build firmware/ch32_board/build
@@ -133,3 +159,14 @@ cmake --preset debug -S firmware/ch32_board && cmake --build firmware/ch32_board
   自己哈希烧进去的内容并写进独立的 metadata 记录。
 
 细节见 `firmware/ch32_board/README.md`。
+
+## 各板文档索引
+
+| 板子 | 入口文档 | 深入阅读 |
+|---|---|---|
+| `c_board`（STM32F407） | [firmware/c_board/AGENTS.md](firmware/c_board/AGENTS.md) | — |
+| `mc02`（STM32H723） | [firmware/mc02/AGENTS.md](firmware/mc02/AGENTS.md) | [README.md](firmware/mc02/README.md)（外设与低延迟设计） |
+| `ch32_board`（CH32H417） | [firmware/ch32_board/AGENTS.md](firmware/ch32_board/AGENTS.md) | [README.md](firmware/ch32_board/README.md) · [PITFALLS.md](firmware/ch32_board/PITFALLS.md)（上板前必读） · [PROGRESS.md](firmware/ch32_board/PROGRESS.md) |
+| `rmcs_board`（HPM6E8Y/5321） | [firmware/rmcs_board/AGENTS.md](firmware/rmcs_board/AGENTS.md) | [BUILD_ENVIRONMENT.md](firmware/rmcs_board/BUILD_ENVIRONMENT.md) · [ecat/README.md](firmware/rmcs_board/ecat/README.md) |
+
+完整文档清单见 [AGENTS.md 的文档地图](AGENTS.md#文档地图)。

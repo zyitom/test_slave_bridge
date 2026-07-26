@@ -1,4 +1,21 @@
-# EtherCAT 主站网卡调优清单(host/soem 传输层)
+# EtherCAT 主站网卡调优清单（host/soem 传输层）
+
+> **文档类型**：现行规范（运行环境准备清单）
+> **适用范围**：`host/src/transport/soem/`，EtherCAT 主站所在机器的网卡与系统配置
+> **状态**：现行有效
+> **相关文档**：[../igh/EVALUATION.md](../igh/EVALUATION.md)（选型对比） · [../igh/LATENCY_ROADMAP_V2.md](../igh/LATENCY_ROADMAP_V2.md)（系统调优的持久化做法） · `host/third_party/soem/README.afxdp.md`
+
+## 摘要
+
+本文件是一份**一次性环境准备清单**：机器重装或换机器后，照着过一遍，让 EtherCAT 主站
+达到应有的低延迟。内容与 librmcs 代码无关，全部是网卡、内核、CPU 调度层面的配置。
+
+验证环境是 Intel igc（i225/i226）网卡 + Ubuntu `*-realtime` 内核；不同网卡/内核的具体
+现象会有差异，但检查思路通用。
+
+> **补充**：本文的调优项如何做成**开机持久生效**，见
+> [../igh/LATENCY_ROADMAP_V2.md](../igh/LATENCY_ROADMAP_V2.md) 第 1 节——那里记录了
+> 一个"RT throttling 导致 RTT max 出现约 50 ms 尾巴"的根因修复，运行实时任务前务必了解。
 
 本文档记录让 `soem.cpp`(可选 `LIBRMCS_SOEM_AFXDP=ON` 的 AF_XDP nicdrv 变体,见
 `host/third_party/soem/README.afxdp.md`)达到低延迟所需的**主站侧网卡/系统配置**。

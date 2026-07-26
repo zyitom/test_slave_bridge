@@ -1,6 +1,18 @@
 # mc02 固件指南
 
+> **文档类型**：现行规范（板级）
+> **适用范围**：`firmware/mc02/`，DM-MC02 / CtrBoard-H7（STM32H723VGT6）
+> **状态**：现行有效
+> **相关文档**：[仓库根 AGENTS.md](../../AGENTS.md) · [本目录 README.md](README.md)（外设与低延迟设计） · [仓库根 README.md](../../README.md)（烧录流程）
+
 > 本目录专属指南，叠加在仓库根 `AGENTS.md` 之上。深入的外设/时钟/低延迟设计见本目录 `README.md`，此处只列 agent 关键点。
+
+## 摘要
+
+mc02 是 Cortex-M7 @ 550 MHz 的高性能板，特点是 **CAN-FD 常驻 FD+BRS** 与 **热路径代码
+放 `.itcm`**；USB 受封装限制只能跑 Full-Speed，所以吞吐瓶颈在 USB 而非 CAN。改这块板
+之前必须知道两件事：外设配置回 CubeMX 改，以及**每次 CubeMX 重新 Generate 之后要手工
+复原一批改动**（清单在 [README.md](README.md)）。
 
 ## 芯片与工具链
 - MCU：**STM32H723VGT6**（DM-MC02 / CtrBoard-H7），Cortex-M7 @ 550 MHz，LQFP100。
