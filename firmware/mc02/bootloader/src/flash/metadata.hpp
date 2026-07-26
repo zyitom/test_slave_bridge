@@ -35,16 +35,28 @@ public:
         } else if (latest_valid_slot_state_ == DataSlotState::kEmpty) {
             // Use current empty slot -- already positioned
         } else {
-            // kFlashing or kReady: advance to next slot.
-            // Need room for 2 more slots (flashing marker + ready record).
-            const auto next_addr =
-                reinterpret_cast<uintptr_t>(latest_valid_slot_) + sizeof(DataSlot);
-            if (next_addr + sizeof(DataSlot) > kMetadataEndAddress) {
-                if (!erase_and_rescan())
-                    return false;
-            } else {
-                latest_valid_slot_ = reinterpret_cast<DataSlot*>(next_addr);
-            }
+            // kFlashing or kReady: advance to the next slot. Running off the end
+            // is caught by the room check below, which every branch shares.
+            latest_valid_slot_ = reinterpret_cast<DataSlot*>(
+                reinterpret_cast<uintptr_t>(latest_valid_slot_) + sizeof(DataSlot));
+        }
+
+        // A session consumes two slots: the flashing marker written just below,
+        // and the ready record finish_flashing() places in the slot after it.
+        // Reserving only one let begin_flashing() settle on the very last slot
+        // of the sector, leaving finish_flashing() nowhere to put the ready
+        // record -- the download would run to completion and only then fail at
+        // manifestation.
+        //
+        // An uninterrupted sequence never reaches that state, because sessions
+        // land on every other slot and the sector fills exactly. It takes a
+        // session that lost power between the marker and the ready record: the
+        // recovery shifts every later session by one slot, and the last one
+        // before the sector wraps then starts on the final slot. Checked here,
+        // after the branches, so it holds however the slot was chosen.
+        if (!has_room_for_session(latest_valid_slot_)) {
+            if (!erase_and_rescan())
+                return false;
         }
 
         if (!latest_valid_slot_->enter_flashing_state())
@@ -60,9 +72,11 @@ public:
         if (latest_valid_slot_state_ != DataSlotState::kFlashing)
             return false;
 
-        // A real bounds check, not an assertion: the ready record must never be
-        // allowed to land one slot past the end of the metadata sector, which
-        // is the first flash word of the application image.
+        // begin_flashing() reserved this slot, so the check should never fire;
+        // it stays as a real bounds check rather than an assertion because the
+        // ready record must never be allowed to land one slot past the end of
+        // the metadata sector, which is the first flash word of the application
+        // image.
         const auto next_addr = reinterpret_cast<uintptr_t>(latest_valid_slot_) + sizeof(DataSlot);
         if (next_addr + sizeof(DataSlot) > kMetadataEndAddress)
             return false;
@@ -156,6 +170,12 @@ private:
         }
     };
     static_assert(sizeof(DataSlot) == 32);
+
+    // A flashing session needs two consecutive slots: the flashing marker and
+    // the ready record that follows it.
+    static bool has_room_for_session(const DataSlot* slot) {
+        return reinterpret_cast<uintptr_t>(slot) + 2U * sizeof(DataSlot) <= kMetadataEndAddress;
+    }
 
     void scan_latest_valid_slot() {
         latest_valid_slot_ =
