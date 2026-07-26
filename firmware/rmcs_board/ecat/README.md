@@ -1,7 +1,20 @@
-# RMCS EtherCAT Bridge (HPM6E00EVK, dual-core)
+# RMCS EtherCAT 转发桥（HPM6E00EVK，双核）
+
+> **文档类型**：背景说明 + 操作指引
+> **适用范围**：`firmware/rmcs_board/ecat/`，HPM6E8Y 上的 EtherCAT 桥固件
+> **状态**：现行有效
+> **相关文档**：[DESIGN.md](DESIGN.md)（选型论证） · [LINKX_HW_ACCEL_PLAN.md](LINKX_HW_ACCEL_PLAN.md)（硬件加速规划） · [../AGENTS.md](../AGENTS.md) · [../BUILD_ENVIRONMENT.md](../BUILD_ENVIRONMENT.md)
+
+## 摘要
+
+本文件讲 EtherCAT 桥固件的**架构、构建、验证与烧录**：双核怎么分工、过程数据怎么承载
+librmcs 字节流、怎么跑 P1 回环验证、怎么烧到板子上。
+
+**为什么这么设计**（同步模式选型、应用层协议选型、延迟优化路线）在
+[DESIGN.md](DESIGN.md)；**下一步准备怎么用硬件加速**在
+[LINKX_HW_ACCEL_PLAN.md](LINKX_HW_ACCEL_PLAN.md)。
 
 将 librmcs 协议字节流通过 EtherCAT 过程数据转发的从站固件（P1 阶段：回环验证）。
-同步模式/协议选型论证与延迟优化路线见 `DESIGN.md`。
 
 ## 架构
 

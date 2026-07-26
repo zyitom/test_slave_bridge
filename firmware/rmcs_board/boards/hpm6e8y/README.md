@@ -1,12 +1,37 @@
 # hpm6e8y 板子适配完整记录
 
-> HPM6E80 固件运行在 HPM6E00 芯片上，hpm6e00evk 等效硬件，
-> XPI NOR Flash 使用 FCFG option 1 (`0xfcf90002`)。
+> **文档类型**：过程记录（适配全过程）+ 现行操作步骤（烧录）
+> **适用范围**：`firmware/rmcs_board/boards/hpm6e8y/`，HPM6E00 芯片 / hpm6e00evk 等效硬件
+> **状态**：现行有效（烧录步骤仍是当前做法；文首一处 CAN0 结论与 bring-up 笔记不一致，见下方提示）
+> **相关文档**：[ECAT_BRIDGE_BRINGUP_NOTES.md](ECAT_BRIDGE_BRINGUP_NOTES.md)（EtherCAT/CAN bring-up 踩坑） · [ETHERNET_PIN_REVERSE_ENGINEERING.md](ETHERNET_PIN_REVERSE_ENGINEERING.md) · [GPIO_LED_REVERSE_ENGINEERING.md](GPIO_LED_REVERSE_ENGINEERING.md) · [CAN_PIN_REVERSE_ENGINEERING.md](CAN_PIN_REVERSE_ENGINEERING.md)
+
+## 摘要
+
+本文件是把这块板**从零适配起来**的完整记录，重点解决一个问题：**怎么把固件正确烧进去
+并让它自启动**。当初卡住最久的两个坑是 **FCFG 选错 option** 和 **bootloader 烧录地址
+偏移写错**，两者都会让芯片启动失败、回退到 Boot ROM ISP 模式（`lsusb` 显示 `34b7:0006`）。
+
+**赶时间就直接看这三节**：[验证 FCFG 的方法](#验证-fcfg-的方法)、
+[正确烧录步骤](#正确烧录步骤)、[完整避坑清单](#完整避坑清单)。
+
+基本前提：HPM6E80 固件运行在 HPM6E00 芯片上，hpm6e00evk 等效硬件，
+XPI NOR Flash 使用 FCFG option 1（`0xfcf90002`）。
 
 > EtherCAT/CAN bring-up 的最新避坑记录见
 > [`ECAT_BRIDGE_BRINGUP_NOTES.md`](ECAT_BRIDGE_BRINGUP_NOTES.md)。该文档记录了
-> hpm6e8y 内置 PHY、ESC port 映射反向、clean normal 固件、以及 normal CAN0
-> 实际为 MCAN4/PZ00-PZ01 的结论。
+> hpm6e8y 内置 PHY、ESC port 映射反向、clean normal 固件等结论。
+
+> ⚠️ **一处待核实的不一致（原文保留，未改动）**：本文件原先在此处写着"normal CAN0
+> 实际为 **MCAN4/PZ00-PZ01**"，而
+> [`ECAT_BRIDGE_BRINGUP_NOTES.md` 第 9 条](ECAT_BRIDGE_BRINGUP_NOTES.md#9-诊断用-can-与常规-can0)
+> 和 [`CAN_PIN_REVERSE_ENGINEERING.md`](CAN_PIN_REVERSE_ENGINEERING.md) 都明确写的是
+> **逻辑 CAN0 = 物理丝印 CAN0 = HPM_MCAN0，TX/RX 为 PC00/PC01**。两处结论相互矛盾，
+> **以代码 `board_app.cpp` / `board.c` 的实际配置为准**，核实后请更正本行。
+
+> **路径说明**：本文出现的 `/home/zyi/3rd_party/...`、`/home/zyi/Desktop/librmcs/...`
+> 等绝对路径均为 `[前机路径]`，记录的是上一台开发机上真实可用的位置；当前机器未安装
+> 这些工具属正常现象，含义见
+> [仓库根 AGENTS.md 的开发机环境路径约定](../../../../AGENTS.md#开发机环境路径约定重要先读这条再看任何路径)。
 
 ---
 
@@ -260,6 +285,7 @@ write-memory 0x10000 0x80020000 demo.bin
 ### 环境
 
 ```bash
+# 以下三行均为 [前机路径]，换机器后改成自己的安装位置
 cd /home/zyi/3rd_party/hpm/HPMicro_Manufacturing_Tool_v0.6.0
 export GNURISCV_TOOLCHAIN_PATH="/home/zyi/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux"
 export PATH="${GNURISCV_TOOLCHAIN_PATH}/bin:$PATH"
@@ -645,6 +671,8 @@ PA02=1, PA03=0 → 上电 → 芯片不进你的固件 → PMP 不存在 → J-L
 ---
 
 ## 参考文件路径
+
+> 下列绝对路径全部是 `[前机路径]`，仅作参照；仓库内的相对位置才是稳定的。
 
 ```
 固件:

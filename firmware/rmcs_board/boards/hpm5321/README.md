@@ -1,76 +1,81 @@
 # RMCS Slave HPM5321
 
-Minimal USB<->fieldbus forwarding bridge: one classic CAN controller, one data
-UART, and a plain GPIO RGB status LED. No IMU, no DBUS receiver, no GPIO
-application channels, no per-CAN indicator LEDs.
+> **文档类型**：硬件参考（板级说明）
+> **适用范围**：`firmware/rmcs_board/boards/hpm5321/`，单 CAN 版 HPM5321 板
+> **状态**：现行有效
+> **相关文档**：[PINOUT.md](PINOUT.md)（引脚分配） · [../hpm5321_dual_can/README.md](../hpm5321_dual_can/README.md)（双 CAN 版，需要 CAN-FD 时用那块） · [../../AGENTS.md](../../AGENTS.md) · [../../BUILD_ENVIRONMENT.md](../../BUILD_ENVIRONMENT.md)
 
-Hardware pin assignments live in [PINOUT.md](PINOUT.md).
+## 摘要
 
-## Identifiers
+最精简的 USB <-> 现场总线转发桥：**一路经典 CAN 控制器、一路数据 UART、一颗普通 GPIO
+驱动的 RGB 状态灯**。没有 IMU、没有 DBUS 接收机、没有 GPIO 应用通道、也没有每路 CAN
+的独立指示灯。
 
-| Item        | Value                             |
+**选板提醒**：这块板的 CAN 控制器配置为**仅经典模式**，主机请求 CAN-FD 的帧会被静默降
+成经典 CAN 2.0 发出。真需要 CAN-FD 上线，请用 `hpm5321_dual_can`。
+
+硬件引脚分配见 [PINOUT.md](PINOUT.md)。
+
+## 标识信息
+
+| 项目 | 取值 |
 | ----------- | --------------------------------- |
-| Board name  | `RMCS_Slave_HPM5321` (`BOARD_NAME`) |
-| SoC         | HPM5361 (QFN48), single RV32 core |
-| USB PID     | `0xA901` (VID `0xA11C`)           |
-| USB speed   | High speed (480 Mbps)             |
-| Flash       | 1 MiB XPI NOR, app behind the shared DFU bootloader |
+| 板名 | `RMCS_Slave_HPM5321`（`BOARD_NAME`） |
+| SoC | HPM5361（QFN48），单 RV32 核 |
+| USB PID | `0xA901`（VID `0xA11C`） |
+| USB 速度 | High speed（480 Mbps） |
+| Flash | 1 MiB XPI NOR，app 位于共享 DFU bootloader 之后 |
 
-## What the host sees
+## 主机侧看到什么
 
-The board runs the shared rmcs_board USB application (`app/`): a USB
-vendor-class device carrying the librmcs byte stream, with the session
-handshake (kStart nonce + keepalive lease) handled by the shared
-`link::HostSession`.
+这块板跑的是 rmcs_board 的共享 USB 应用（`app/`）：一个承载 librmcs 字节流的 USB
+vendor 类设备，会话握手（kStart nonce + keepalive 租约）由共享的 `link::HostSession`
+处理。
 
-| Host endpoint | Board resource | Notes                          |
+| 主机侧端点 | 板上资源 | 说明 |
 | ------------- | -------------- | ------------------------------ |
-| `DataId::kCan0` | MCAN0 (classic 1 Mbps) | DM (Damiao) motor bus |
-| `DataId::kUart0` | UART2, 921600-8N1     | DMA-driven both directions |
+| `DataId::kCan0` | MCAN0（经典模式 1 Mbps） | DM（达妙）电机总线 |
+| `DataId::kUart0` | UART2，921600-8N1 | 收发双向均由 DMA 驱动 |
 
-### Classic-only CAN and the per-frame FD flag
+### 仅经典 CAN 与逐帧的 FD 标志
 
-The shared CAN driver honors the host's per-frame `is_fdcan` flag capped by
-controller capability (`send_fd = canfd_ && data.is_fdcan`). This board
-configures MCAN0 classic-only, so `is_fdcan = true` frames are transmitted as
-classic CAN 2.0 -- safe, but silently capped. Use `hpm5321_dual_can` if you
-need CAN-FD on the wire.
+共享的 CAN 驱动会尊重主机下发的逐帧 `is_fdcan` 标志，但受控制器能力封顶
+（`send_fd = canfd_ && data.is_fdcan`）。这块板把 MCAN0 配成仅经典模式，因此
+`is_fdcan = true` 的帧仍会以经典 CAN 2.0 发出——**安全，但是被静默降级了**。
+需要 CAN-FD 真正上线时请改用 `hpm5321_dual_can`。
 
-## Build and flash
+## 构建与烧录
 
 ```bash
 cmake --preset debug -S firmware/rmcs_board -DBOARD=hpm5321
 cmake --build firmware/rmcs_board/build
 ```
 
-The build produces `rmcs_board_app_hpm5321.dfu` under
-`firmware/rmcs_board/build/app/output/`. Flash over USB DFU (the shared RMCS
-DFU bootloader must already be on the chip; first-time bootloader flashing
-needs a debugger):
+构建产物是 `firmware/rmcs_board/build/app/output/` 下的
+`rmcs_board_app_hpm5321.dfu`。通过 USB DFU 烧录（**前提是芯片上已经有共享的 RMCS DFU
+bootloader**；首次烧 bootloader 需要调试器）：
 
 ```bash
 dfu-util -d 0xa11c:0xa901 -a 0 -D firmware/rmcs_board/build/app/output/rmcs_board_app_hpm5321.dfu
 ```
 
-A running app exposes the DFU runtime interface, so dfu-util detaches and
-re-enumerates it into DFU mode automatically. To force the bootloader to stay
-resident, hold the PA07 button through reset (or power up with no valid app).
+正在运行的 app 会暴露 DFU 运行时接口，所以 `dfu-util` 能自动让它 detach 并重新枚举进
+DFU 模式。若要强制 bootloader 常驻，复位时按住 PA07 按键（或者在没有有效 app 的状态
+下上电）。
 
-## Status LED light language
+## 状态灯语义
 
-Single RGB LED (see PINOUT.md for pins), driven by the shared Led driver
-(`app/src/led/led.hpp`). Yellow is red+green, cyan is green+blue; priority is
-top to bottom:
+单颗 RGB 灯（引脚见 [PINOUT.md](PINOUT.md)），由共享的 Led 驱动
+（`app/src/led/led.hpp`）驱动。黄色 = 红+绿，青色 = 绿+蓝；**优先级从上到下**：
 
-| Pattern               | Meaning                                                   |
+| 灯效 | 含义 |
 | --------------------- | --------------------------------------------------------- |
-| yellow/cyan alternate | both directions congested (uplink AND downlink full)      |
-| yellow blink (~4 Hz)  | uplink buffer full (board -> host); host not draining     |
-| cyan blink (~4 Hz)    | downlink buffer full (host -> board); CAN TX backed up    |
-| steady green          | host session established, data forwarding                 |
-| slow green blink 1 Hz | alive, waiting for a host session                         |
+| 黄/青交替 | 双向都拥塞（上行和下行缓冲同时满） |
+| 黄色闪烁（约 4 Hz） | 上行缓冲满（板 -> 主机）；主机没在取数据 |
+| 青色闪烁（约 4 Hz） | 下行缓冲满（主机 -> 板）；CAN 发送积压 |
+| 绿色常亮 | 主机会话已建立，正在转发数据 |
+| 绿色慢闪 1 Hz | 存活，等待主机会话 |
 
-"Host session established" means the librmcs handshake is up (kStart nonce
-acknowledged and the keepalive lease refreshed within 1 s) -- NOT merely that
-the USB cable is plugged in. An enumerated device without a live host
-application stays on the slow green blink.
+"主机会话已建立"指的是 **librmcs 握手已完成**（kStart nonce 得到确认，且 keepalive
+租约在 1 秒内被刷新），**不等于"USB 线插上了"**。设备枚举成功但主机侧没有应用程序在跑
+时，灯会停在绿色慢闪。

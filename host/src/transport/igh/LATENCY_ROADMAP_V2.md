@@ -1,4 +1,20 @@
-# EtherCAT 延迟优化全记录 v2(2026-07-12/13 实施与结论)
+# EtherCAT 延迟优化全记录 v2（2026-07-12/13 实施与结论）
+
+> **文档类型**：过程记录 + 现行结论
+> **适用范围**：`host/src/transport/`、`core/include/librmcs/ecat/`，EtherCAT 端到端延迟
+> **状态**：**现行有效**，是延迟话题的权威版本（v1 已降为历史）
+> **相关文档**：[LATENCY_ROADMAP.md](LATENCY_ROADMAP.md)（v1，历史推导） · [EVALUATION.md](EVALUATION.md) · [DESIGN.md](DESIGN.md) · [../soem/NIC_TUNING.md](../soem/NIC_TUNING.md)
+
+## 摘要
+
+本文件是 EtherCAT 延迟优化的**现行权威记录**：做了哪些优化、各自量化收益多少、踩了哪
+三个 bug、以及"还剩多少空间"的诚实清单。
+
+一句话成绩单：单帧 RTT p50 从 **42.5 us 降到 25.7 us**、周期率从 22.2 kHz 提到
+**38.8 kHz**、64B 流 RTT p50 从 172 us 降到 **131.5 us**，且 RTT max 从约 50 ms 的
+病态尾巴收敛到 **48.3 us**。详细数据见下面第 0 节。
+
+第 4 节"运维规程"是血泪坑清单，**上手操作这套系统之前先读那节**。
 
 > 本文接替 `LATENCY_ROADMAP.md`(v1,保留作历史)。v1 中的 P0a(PDO 右尺寸)、P1(系统
 > 调优持久化)已完成,P0b(压缩 ARQ 周期数)以 go-back-N 的形式完成——本文记录全部实施、

@@ -1,5 +1,18 @@
 # EtherCAT 转发桥设计决策与延迟优化路线
 
+> **文档类型**：背景说明（选型论证）
+> **适用范围**：`firmware/rmcs_board/ecat/`，EtherCAT 转发桥
+> **状态**：现行有效
+> **相关文档**：[README.md](README.md)（实现现状与操作） · [LINKX_HW_ACCEL_PLAN.md](LINKX_HW_ACCEL_PLAN.md)（硬件加速规划） · [host 侧延迟结论](../../../host/src/transport/igh/LATENCY_ROADMAP_V2.md)
+
+## 摘要
+
+本文件回答的是**为什么**：为什么选这种同步模式、为什么自己设计应用层协议而不用现成的、
+双核为什么这样分工、延迟预算花在哪里。每个决策都写了备选方案和排除理由。
+
+**注意本文所有结论都绑定在一组场景约束上**（单从站、转发的是事件而非状态、优化目标是
+延迟而非吞吐）——场景变了，结论需要重新评估。约束原文见下方。
+
 本文档记录 rmcs_board EtherCAT 流桥(HPM6E 双核)的选型论证:同步模式、应用层协议、
 双核分工,以及按收益排序的延迟优化路线。实现现状见 `README.md`;线格式见
 `core/include/librmcs/ecat/pd_stream.hpp` 头注释。

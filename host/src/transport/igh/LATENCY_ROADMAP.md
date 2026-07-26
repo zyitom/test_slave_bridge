@@ -1,7 +1,22 @@
-# EtherCAT 延迟进一步优化路线(纯分析,本文不改代码)
+# EtherCAT 延迟进一步优化路线 v1（纯分析，本文不改代码）
 
-> **已被 `LATENCY_ROADMAP_V2.md` 接替(2026-07-13)**:P0a/P0b/P1 均已实施,最终实测、
-> 踩坑记录与新的剩余空间清单见 v2。本文保留作历史推导。
+> **文档类型**：过程记录（分析推导）
+> **适用范围**：`host/src/transport/`，EtherCAT 端到端延迟
+> **状态**：**历史记录** —— 已被 [LATENCY_ROADMAP_V2.md](LATENCY_ROADMAP_V2.md) 接替（2026-07-13），保留备查
+> **相关文档**：[LATENCY_ROADMAP_V2.md](LATENCY_ROADMAP_V2.md)（**现行结论看这份**） · [EVALUATION.md](EVALUATION.md) · [DESIGN.md](DESIGN.md)
+
+## 摘要
+
+> ⚠️ **本文是历史文档。** 文中提出的 P0a（缩小 PDO）、P0b（压缩 ARQ-echo 周期数）、
+> P1（系统调优持久化）**均已实施完毕**，实测结果、踩坑记录和新的剩余空间清单都在
+> [LATENCY_ROADMAP_V2.md](LATENCY_ROADMAP_V2.md)。**要看现在该做什么，请直接去 v2。**
+
+保留本文的价值在于**推导过程**：它记录了当时如何把 42.9 us 的单帧延迟逐项拆开、如何
+识别出"帧周期"与"N_echo 周期"是两个相乘的杠杆，以及哪些方向被判定为死路（第 4 节
+"别走的弯路"至今仍然有效，可避免重复踩坑）。
+
+> **6e8y 现状**：PDO 已从本文旧基线的双向 128B 缩到双向 48B,
+> ARQ payload 从 124B 缩到 44B。下面的 128B 计算保留为历史基线。
 
 > **6e8y 现状**:PDO 已从本文旧基线的双向 128B 缩到双向 48B,
 > ARQ payload 从 124B 缩到 44B。下面的 128B 计算保留为历史基线。

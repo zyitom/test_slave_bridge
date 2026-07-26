@@ -10,3 +10,4 @@ compile_commands.json
 # Claude Code: track shared project policy (.claude/settings.json),
 # ignore personal local overrides.
 .claude/settings.local.json
+.claude/worktrees/

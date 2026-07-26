@@ -1,4 +1,19 @@
-# EtherCAT 主站延迟调查记录:从 "找不到从站" 到 IgH 原生驱动
+# EtherCAT 主站延迟调查记录：从"找不到从站"到 IgH 原生驱动
+
+> **文档类型**：过程记录（排查与选型全过程）
+> **适用范围**：`host/src/transport/`，EtherCAT 主站方案选型
+> **状态**：现行有效（结论仍成立；后续优化进展见 LATENCY_ROADMAP_V2.md）
+> **相关文档**：[DESIGN.md](DESIGN.md)（实现规格） · [LATENCY_ROADMAP_V2.md](LATENCY_ROADMAP_V2.md)（现行优化结论） · [../soem/NIC_TUNING.md](../soem/NIC_TUNING.md)
+
+## 摘要
+
+本文件回答一个问题：**为什么最终选了 IgH 原生驱动，而不是继续调 SOEM？** 它按时间顺序
+记录了从"AF_XDP zero-copy 模式下一个从站都找不到"开始的整段排查：每一步的现象、证据、
+以及被排除的猜想，最后给出三种方案的同口径实测对比。
+
+想直接看结论去
+[正式集成后的 like-for-like 实测](#正式集成后的-like-for-like-实测2026-07-05重要修正)
+一节；想知道怎么实现看 `DESIGN.md`；想知道现在还能怎么优化看 `LATENCY_ROADMAP_V2.md`。
 
 这是一份过程记录,不是实现文档(实现规格见 `DESIGN.md`)。目的是把排查过程和每一步的
 证据留下来,避免以后重新踩一遍坑,也避免以后有人问"为什么不干脆用 SOEM 就行了"时,
