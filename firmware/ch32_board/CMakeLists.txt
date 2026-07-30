@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.26)
+cmake_minimum_required(VERSION 3.21...3.26)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 set(CMAKE_C_STANDARD 11)

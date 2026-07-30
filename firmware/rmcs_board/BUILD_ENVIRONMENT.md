@@ -36,12 +36,19 @@
 | Ninja | 任意近版(实测 1.11.1) | 否 | 已装 |
 | Python | 3.x(实测 3.12.3) | 否 | 已装 |
 | Python 包 | `PyYAML`、`jinja2` | 否(pip 装) | 需确认 |
-| HPM SDK | v1.11.0 | **是**(`bsp/hpm_sdk`) | 随仓库 |
-| RISC-V 工具链 | `rv32imac_zicsr_zifencei_multilib_b_ext`(HPMicro GNU) | **否** | **缺** |
+| HPM SDK | v1.12.0(fork `zyitom/hpm_sdk`,`v1.12.0-3-ge4347411`) | **是**(`bsp/hpm_sdk`) | 随仓库 |
+| RISC-V 工具链 | `rv32imac_zicsr_zifencei_multilib_b_ext`(HPMicro GNU) | **否** | 见下方状态更新 |
 | 烧录工具 | HPMicro Manufacturing Tool v0.6.0(DFU) | 否 | 见 §5 |
 
-**结论:TL101 上目前缺 RISC-V 工具链**(`~/3rd_party/hpm` 不存在,PATH 里无
-`riscv32-unknown-elf-gcc`),所以固件的实际编译/烧录需在**已装工具链的开发 PC**
+> **状态更新(2026-07-27,实测):当前开发机已装 RISC-V 工具链**,下面这段"缺工具链"的
+> 结论只适用于 TL101 那台机器,不要照搬到当前机器。本机实测:
+> `/home/zyi/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux/bin/riscv32-unknown-elf-gcc`
+> 存在,`cmake --build firmware/rmcs_board/ecat/build` 全量通过(core0 FLASH 163468 B /
+> ILM 24800 B)。`~/3rd_party/hpm` 下还有 `hpm_sdk`、`openocd-linux-x86_64`、
+> `HPMicro_Manufacturing_Tool_v0.6.0`。**断言"本机没工具链"之前先 `ls` 确认。**
+
+**(历史结论,针对 TL101)TL101 上目前缺 RISC-V 工具链**(`~/3rd_party/hpm` 不存在,
+PATH 里无 `riscv32-unknown-elf-gcc`),所以固件的实际编译/烧录需在**已装工具链的开发 PC**
 上完成。Host 端 SDK / examples(纯 x86)可以在 TL101 上编。
 
 ---
@@ -81,6 +88,39 @@ pip3 install PyYAML jinja2
 ### 2.3 HPM SDK
 
 无需单独安装——已随仓库 vendored 在 `firmware/rmcs_board/bsp/hpm_sdk`。
+
+submodule 指向 **fork `zyitom/hpm_sdk`**(不是上游),当前
+`v1.12.0-3-ge4347411`,分支 `migrate-v1.12.0`。fork 里的本地补丁:tinyusb 构建
+vendor class 并去掉示例 BSP、vendor ZLP 显式写 API、`rh_init` 按速度强制 full speed,
+外加 HPM5300 的 `__cpluscplus` typo 修复。
+
+#### v1.11.0 -> v1.12.0 迁移评估(2026-07-27,已完成迁移)
+
+只有一项改动对本仓库有实际价值,其余与我们用到的代码无关。记录于此以免重复调研:
+
+- **有价值:USB setup 包的 SUTW(setup tripwire)修复**,落在
+  `middleware/tinyusb/src/portable/hpm/dcd_hpm.c`——**这个文件在我们的编译路径里**
+  (`ecat/core0` 与 `app/`/`bootloader/` 都用 tinyusb 的 hpm port)。v1.11 直接读
+  `qhd0->setup_request`,无 tripwire 保护;主机在读取途中又发来 setup 包时会读到撕裂
+  或过期的 8 字节,表现为**枚举偶发失败、控制传输卡死**。v1.12 改为
+  `set_sutw -> memcpy -> 检查 sutw` 的重读循环(ChipIdea/EHCI 手册要求的协议),并给
+  `bus_reset` 分支补了 `return`。属白捡的稳定性修复。
+- **无关:cherryusb 升到 v1.6.1**。本仓库用 **TinyUSB**,不编 cherryusb,该改动零影响。
+- **暂不采用:MCAN 新增 queue 模式与 `*_unchecked` 高吞吐 API**
+  (`mcan_read_rxfifo_unchecked` 等)。相比 checked 版省掉 NULL/边界/空 FIFO 检查,且只
+  拷 DLC 对应字数;但 unchecked 版**不判空**,要配 `mcan_get_rxfifo_fill_level()` 改写
+  排空循环。省下的是每帧几十个周期,而链路瓶颈在线速与 echo 往返上,改了测不出来还要
+  重验 ISR 排空语义。`mcan_transmit_via_txqueue_nonblocking`(按 ID 优先级而非时序发送)
+  仅在出现"某些 CAN ID 必须插队"的需求时才有意义。
+- **无关:HPM5E00 SoC 文件重新生成**(本项目用 HPM6E8Y / HPM5321)、**boards 宏重命名**
+  (`BOARD_APP_HDMA` -> `BOARD_APP_DMA0`;全仓库零引用,`boards/*/board.c` 是手写的)、
+  `hpm_l1c_drv.c` 的 assert typo(仅影响开 assert 的构建)、
+  `usb_phyctrl1_select_utmi_clk_src`(门在 `HPM_IP_FEATURE_USB_CLK_SELECT` 后)。
+- **`hpm_interrupt.h` 重构**:纯 SEGGER SysView 埋点,未定义 `CONFIG_SEGGER_SYSVIEW`
+  时展开为空,生成代码无变化;可作为 ISR 级延迟剖析的现成入口,见
+  [ecat/DESIGN.md](ecat/DESIGN.md) 3.3。
+- **v1.12.1 是空版本**:改动全在 `samples/*/app.yaml`(加 DFU 构建排除标记),与我们
+  使用的代码零关系。
 
 ---
 

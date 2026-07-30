@@ -23,6 +23,8 @@ CAN/UART <-> USB 转发固件。它与其他板共用 `core/` 和主机 SDK；�
 | [为什么 USB 只能跑 Full-Speed](#为什么-usb-只能跑-full-speed) | 封装限制，非软件问题 |
 | [低延迟设计](#低延迟设计) | 时钟、CAN-FD、中断优先级、ITCM 热路径 |
 | [重要：每次 CubeMX Generate 之后](#重要每次-cubemx-generate-code-之后) | **必做**的复原清单 |
+| [已配置但未启用的外设](#已配置但未启用的外设) | 为什么它们不影响转发延迟 |
+| [引脚与 DMA 余量](#引脚与-dma-余量) | 加外设前先看这里 |
 | [构建](#构建) | 编译命令 |
 
 ## 外设一览
@@ -94,6 +96,73 @@ Full-Speed，**转发吞吐的杠杆在 CAN 侧（CAN-FD），不在 USB 侧**�
 
 > 相关约束见[仓库根 AGENTS.md 的 CubeMX BSP 修改纪律](../../AGENTS.md#cubemx-bsp-修改纪律)：
 > 生成目录禁止直接编辑，配置改动一律回到 `.ioc` / CubeMX。
+
+## 已配置但未启用的外设
+
+`.ioc` 里配了一批当前固件用不到的外设（为将来的 LCD、摄像头、更多串口留位）。
+它们**不影响转发延迟**，判断规则只有一条：
+
+> **看 `app/src/app.cpp` 有没有调它的 `MX_xxx_Init()`。**
+
+外设的时钟使能（`__HAL_RCC_USART2_CLK_ENABLE()`）、引脚 AF、NVIC 优先级、DMA 通道配置，
+**全都在 `MX_xxx_Init()` 及它调用的 MspInit 里面**。没调用 → 时钟门控关闭 → 那个外设在
+硅片上等于不存在：不耗电、不占总线、不产生中断。而且 `-ffunction-sections` +
+`-Wl,--gc-sections`（见 `cmake/gcc-arm-none-eabi.cmake`）会把没人引用的 `MX_*_Init`
+整段从 FLASH 里剪掉——用 `arm-none-eabi-nm` 查 ELF 可以确认符号表里只有被调用的那些。
+
+当前**已配置但 `app.cpp` 未调用**：DCMI、SPI1（LCD）、UART8、UART9、USART2、USART3、
+TIM3、TIM12。
+
+三个例外，配了就会真的生效：
+
+1. **`MX_GPIO_Init()` 一定会被调用**（`app.cpp`），所以在 CubeMX 里点成 `GPIO_Output`
+   的引脚会真的驱动电平。`gpio.c` 开头那几条 `HAL_GPIO_WritePin` 决定上电默认状态——
+   改 GPIO 配置前先确认默认电平（例如 `Power_OUT1_EN` / `Power_OUT2_EN` 目前是拉低）。
+2. **`MX_DMA_Init()` 是全局的**：它打开**所有**在 `.ioc` 里配了 DMA 请求的 stream 的
+   NVIC，跟对应外设有没有 init 无关。给一个不 init 的外设配 DMA 请求，会得到一个
+   「中断使能位已开、但 `HAL_DMA_Init` 从没跑过」的空句柄 handler（`stm32h7xx_it.c`
+   里 `HAL_DMA_IRQHandler(&hdma_xxx)` 的 `hdma_xxx` 全零）。时钟关着时触发不了，但是
+   个哑弹——**不打算启用的外设不要在 `.ioc` 里给它配 DMA**。
+3. **时钟树是全局的**：`RCC` 页上改分频/时钟源会影响所有外设，与 init 无关。
+
+反过来最危险的情况是**`app.cpp` 调了但 `.ioc` 里没配**——那是链接错误
+（`undefined reference to MX_xxx_Init`）。CubeMX 会在某些冲突下静默删掉整个外设，
+例如 UART5 在 Asynchronous 模式下**必须同时占住 TX 和 RX 两个引脚**（即使外设配的是
+`MODE_RX`），一旦 TX 引脚 PC12 被别的信号抢走，CubeMX 加载 `.ioc` 时就把 UART5 整个
+移除。改完引脚务必 grep 一遍 `app.cpp` 里的 `MX_*_Init` 是否都还有定义。
+
+## 引脚与 DMA 余量
+
+加外设前先看这张表——**引脚极度紧张，DMA 通道有富余**。
+
+| 资源 | 容量 | 已用 | 说明 |
+|---|---|---|---|
+| GPIO（LQFP100） | 82 | 81 | **只剩 PB4**，且它是 SPI1_MISO |
+| DMA1 stream | 8 | 7 | UART5_RX、USART1/10 RX+TX、UART7 RX+TX |
+| DMA2 stream | 8 | 2 | SPI2 RX+TX |
+| BDMA channel | 8 | 1 | SPI6_TX（WS2812） |
+| MDMA channel | 16 | 0 | 存储器间搬运 |
+
+两条硬约束：
+
+- **DMA1/DMA2 前面是 DMAMUX1，任何 D2 域外设可路由到 16 个 stream 中的任意一个**，
+  所以选哪个 stream 无所谓，挑空的就行。
+- **SPI6 只能用 BDMA**（它在 D3 域），而 BDMA 够不到 AXI/D2 SRAM，只能访问 D3 SRAM
+  （`0x38000000`）——这就是 WS2812 帧缓冲必须放 `.d3_sram` 的原因，见
+  `bsp/linker/STM32H723VGTx_APP.ld` 的 `RAM_D3` 区。
+
+FDCAN 不占 DMA（用内部 Message RAM），USB OTG 也不占（自带 DMA 引擎）。
+若把 USART2/3、UART8/9、SPI1_TX、DCMI 的 DMA 全配上，总需求约 19 个，
+**会超过 DMA1+DMA2 的 16 个上限**——DCMI 那一路不能省，优先留给它。
+
+引脚上最紧的是这两组互斥（LQFP100 上各自只有这些候选）：
+
+- `UART5_TX`：PC12、PB6（FDCAN2_TX 占）、PB13（BMI088_SCK 占）
+- `SPI6_SCK`：PA5、PB3（SPI1_SCK 占，LCD 用）、PC12
+
+两者都想要 PC12，所以 **DBUS（UART5）和 WS2812（SPI6）二者不能再挪位**；
+要腾出引脚只能从 SPI1/LCD、FDCAN2、BMI088 里让，或者把 WS2812 改成 TIM PWM+DMA
+驱动（PA7 上可走 TIM3_CH2/AF2 或 TIM14_CH1/AF9）彻底不用 SPI6。
 
 ## 构建
 

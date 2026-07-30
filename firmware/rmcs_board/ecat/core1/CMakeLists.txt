@@ -6,7 +6,7 @@
 # as samples/multicore/hello). Build this project BEFORE core0 -- or use the
 # ecat superbuild (../CMakeLists.txt), which orders everything.
 
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.21...3.28)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 set(HPM_BUILD_TYPE "sec_core_img")

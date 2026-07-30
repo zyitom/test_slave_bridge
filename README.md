@@ -33,15 +33,7 @@ LibRMCS v3 正在开发！目前处于测试阶段，无良好的文档/教程�
 
 ### 依赖
 
-- `gcc` / `g++` >= 14（需要 C++23 `<print>` 支持，GCC 13 不包含该头文件）
-- `cmake` >= 3.28 与 `ninja`
-- `libusb-1.0-dev`
-
-Ubuntu 22.04 默认 GCC 版本较低，需手动安装：
-
-```bash
-sudo apt install g++-14 gcc-14 libusb-1.0-0-dev
-```
+见 [ENV.md](ENV.md)。
 
 ### 编译
 
@@ -68,13 +60,10 @@ cmake --preset linux-debug -S host -DBUILD_EXAMPLES=ON \
 
 ### 依赖
 
-- `arm-none-eabi-gcc`（C11 + C++23 工具链）
-- `cmake`（>= 3.28）与 `ninja`
-- `dfu-util`（>= 0.11，用于 USB DFU 烧录）
+见 [ENV.md](ENV.md)。
 
-> 上面这份依赖针对 STM32 两块板（`c_board`、`mc02`）。RISC-V 的两块板
-> （`ch32_board`、`rmcs_board`）用的是另一套工具链，见 [ch32_board 的差异](#ch32_board-的差异)
-> 与 `firmware/rmcs_board/BUILD_ENVIRONMENT.md`。
+> STM32 板（`c_board`、`mc02`）用 ARM GCC。RISC-V 板（`ch32_board`、`rmcs_board`）
+> 用另一套工具链，见各自章节。
 
 ### 编译
 
@@ -97,12 +86,6 @@ c_board（STM32F407VG）同理，把路径换成 `firmware/c_board`、目标换�
 ### 烧录 Bootloader（首次或更新引导）
 
 Bootloader 位于 Flash 起始地址 `0x08000000`，需要用调试器（ST-Link / J-Link）烧录一次，例如：
-
-```bash
-# 使用 OpenOCD（示例，按你的调试器调整 interface/target）
-openocd -f interface/stlink.cfg -f target/stm32h7x.cfg \
-    -c "program firmware/mc02/build/bootloader/mc02_bootloader.elf verify reset exit"
-```
 
 App 之后即可通过下面的 DFU 流程烧录，无需调试器。
 

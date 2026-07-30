@@ -35,7 +35,7 @@
 | `c_board` | STM32F4xx | ARM `cmake/gcc-arm-none-eabi.cmake` | `c_board_app` `c_board_bootloader` | CubeMX BSP + TinyUSB |
 | `mc02` | STM32H723VGT6（M7） | ARM `cmake/gcc-arm-none-eabi.cmake` | `mc02_app` `mc02_bootloader` | CAN-FD，USB Full-Speed |
 | `ch32_board` | WCH CH32H417（Qingke V3F + V5F 双核） | RISC-V `cmake/toolchain-wch-riscv.cmake` | `ch32_board_app` `ch32_board_boot` `ch32_board_merged` | USB 3.0 SuperSpeed；`boot` 是 V3F 启动核兼 DFU bootloader |
-| `rmcs_board` | HPM6E8Y / HPM5321（Andes） | RISC-V 超级构建 + HPMicro GNU 工具链 | `rmcs_board_app` `rmcs_board_bootloader`；EtherCAT 桥在 `ecat/` | HPM SDK v1.11.0，双核 ECAT 桥 |
+| `rmcs_board` | HPM6E8Y / HPM5321（Andes） | RISC-V 超级构建 + HPMicro GNU 工具链 | `rmcs_board_app` `rmcs_board_bootloader`；EtherCAT 桥在 `ecat/` | HPM SDK v1.12.0，双核 ECAT 桥 |
 
 > RISC-V 芯片（`ch32_board`、`rmcs_board`）用 `riscv32-unknown-elf-gcc`，**不要**用
 > `arm-none-eabi-gcc`；后者只给 STM32（`c_board`、`mc02`）用。
@@ -47,8 +47,16 @@
 
 - 这些是**上一台开发机上真实可用的安装位置**，不是示例、不是占位符。原样保留是为了
   让换机器的人有一份"确实跑通过"的配置可以照抄。
-- **当前这台机器尚未安装这些工具链**，因此上述路径在本机不存在——这是正常现象，
-  不代表文档写错了，也不要因为"路径不存在"就去删改它们。
+- **当前机器上的实际安装情况（2026-07-27 实测，本节此前写的"尚未安装"已过时）**：
+
+  | 路径 | 本机 | 说明 |
+  |---|---|---|
+  | `~/3rd_party/hpm` | **已装** | HPM RISC-V 工具链 + hpm_sdk + openocd + Manufacturing Tool。已实测编出 `rmcs_board/ecat` 全部目标 |
+  | `~/3rd_party/MRS_Toolchain_Linux_X64_V240` | **已装** | MounRiver，ch32_board 用；内含 OpenOCD |
+  | `~/3rd_party/wch-openocd` | 不存在 | 已被 MRS 包内自带的 OpenOCD 取代，见 `firmware/ch32_board/AGENTS.md` |
+
+- **不要凭本节旧措辞断言"本机没有工具链"——先 `ls` 确认。** 路径不存在时也不要删改
+  文档里的路径，按下一条重新指向即可。
 - 换到新机器时的正确做法：按对应 `firmware/<board>/AGENTS.md` 的依赖清单重新安装，
   再把 `GNURISCV_TOOLCHAIN_PATH`、`WCH_TOOLCHAIN_PATH`、`PATH` 等环境变量指向新的
   安装位置；文档里的路径只当参照。

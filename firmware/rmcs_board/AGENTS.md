@@ -18,7 +18,9 @@ rmcs_board 与其他三块板最大的不同：它是 **RISC-V（Andes 核）**�
 - MCU：**HPM6E8Y / HPM5321**（HPMicro，**Andes RISC-V 核，不是 ARM**）；HPM6E8Y 双核。
 - ISA/工具链：RISC-V，用 HPMicro GNU 工具链 `rv32imac_zicsr_zifencei_multilib_b_ext`（带 B 扩展 multilib），需 `riscv32-unknown-elf-gcc`。
 - 工具链是仓库外预编译二进制，约定放 `~/3rd_party/hpm/`（`[前机路径]`，**不要**入库或做 submodule）。
-- HPM SDK **v1.11.0 随仓库自带**（`bsp/hpm_sdk`，submodule），无需另装。
+- HPM SDK **v1.12.0 随仓库自带**（`bsp/hpm_sdk`，submodule），无需另装。submodule 指向
+  fork `zyitom/hpm_sdk`（含 tinyusb vendor class / ZLP / full-speed 三处本地补丁），
+  当前提交 `v1.12.0-3-ge4347411`，分支 `migrate-v1.12.0`。
 
 ## 两套独立镜像
 | 固件 | 源码目录 | 传输 | 说明 |

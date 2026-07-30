@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.21...3.28)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 # Fold the selected board into the output name so the bootloader ELF/BIN makes

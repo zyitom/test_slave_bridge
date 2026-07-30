@@ -37,7 +37,6 @@ set(MX_Application_Src
     ${MX_CUBEMX}/Core/Src/sysmem.c
     ${MX_CUBEMX}/Core/Src/syscalls.c
     ${MX_CUBEMX}/Core/Startup/startup_stm32h723vgtx.s
-    ${CMAKE_CURRENT_SOURCE_DIR}/usb_device.c
 )
 
 set(STM32_Drivers_Src

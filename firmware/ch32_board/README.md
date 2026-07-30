@@ -81,6 +81,42 @@ CH372 demo 把数据当成**纯硬件 DMA 回环**转发：EP1-OUT 直接链到 
 要确认的事是 EP1-OUT 的收长：回调读的是 `UEP_RX_CHAIN_LEN`，负载从 RX 缓冲区基址取
 （单缓冲，无乒乓），多包突发的行为未经验证。
 
+## 为什么用 WCH 裸驱动，而不是开源 USB 栈
+
+**结论：截至 2026-07 不存在支持 USB 3.x SuperSpeed 设备侧的开源 MCU USB 栈。**
+`bsp/usb/ch32h417_usbss_device.c` 这条厂商裸驱动路线是唯一选项，不是将就 —— 不必再花
+时间去找"更好的 SS 库"。
+
+- **CherryUSB**：device 端 SS 明确标为未实现，其 README 原文为"支持 USB2.0 全速和高速
+  设备（USB3.0 超高速 TODO）"。仓库里的 `USB_SPEED_SUPER` / `USB_SPEED_SUPER_PLUS`
+  常量只出现在 **host 侧** hub 枚举路径（`class/hub/usbh_hub.c`、`core/usbh_core.c`），
+  那是"主机去枚举别人的 SS 设备"，与设备侧无关。另外其 `version.rst` 写明 **ch32 的
+  porting 冻结在 `<= v0.10.2`，后续不再支持**。
+- **TinyUSB**：速度枚举 `TUSB_SPEED_*` 中根本没有 SS 取值，是纯 USB 2.0 栈。
+- **根因**：USB 3 的链路层（LTSSM、link training、包头 CRC、credit-based 流控）几乎全部
+  固化在硅里，而各家 SS 控制器的寄存器模型互不兼容——不像 USB 2.0 有 dwc2 / ChipIdea /
+  EHCI 这类事实标准 IP 可以共用一个 port 层。"可移植 SS 栈"的投入产出比过低，因此没有
+  项目在做。[推断]
+- 实际能跑 SS device 的只有三条路：**(1) 厂商裸驱动**（本板所选）；(2) 跑 Linux 的 SoC +
+  dwc3 + gadget/configfs，MCU 不适用；(3) Cypress/Infineon FX3 自带 SS SDK，同样厂商专用。
+
+### 值得对照的参考实现：HydraUSB3
+
+[hydrausb3/hydrausb3_fw](https://github.com/hydrausb3/hydrausb3_fw) 面向 **WCH CH569**
+（同为 WCH 的 USB3 SS RISC-V MCU），是目前最接近"开源 SS 参考实现"的东西：bare-metal SS
+栈、Device Bulk + Burst，项目实测 **> 330 MB/s**；用 WinUSB WCID 描述符做到 Windows 免驱，
+并给了 libusb 主机侧示例。它不是可直接链入的库，但有三处值得逐项对照本板实现：
+
+1. **burst / NUMP 的配置方式** —— 决定能否吃满 SS 带宽，是 SS 相对 HS 的主要增益来源。
+   本板当前用 `CHAIN_LEN` / `CHAIN_EXP_NUMP`（见上节）。**若 SS 实测吞吐远低于预期，
+   先查这里，而不是怀疑协议层。**
+2. **WCID 描述符** —— 若将来要 Windows 免驱可直接借鉴。
+3. **libusb 主机侧代码** —— 与 host SDK 的 transport 层对照。
+
+> [推断，未比对手册] CH569 与 CH32H417 的 SS 控制器同为 WCH 自研，寄存器组织可能同源，
+> 但尚未逐项比对两颗芯片的手册确认。参考量级：WCH 官方对 CH32H417 宣称 USB3.0 带宽
+> 450 MB/s。官方 SDK 见 [openwch/ch569](https://github.com/openwch/ch569)。
+
 ## 目录结构
 
 ```

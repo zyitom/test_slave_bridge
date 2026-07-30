@@ -17,9 +17,25 @@
 
 namespace librmcs::firmware::usb {
 
+// Why the bootloader stayed in DFU instead of launching the application.
+// Surfaced through the alt-setting string so `dfu-util -l` reports it without
+// any vendor-specific protocol: the bootloader has no vendor interface, and a
+// DFU status code cannot describe a decision made before the host showed up.
+enum class DfuEntryReason : uint8_t {
+    kUnknown,       // Not set yet
+    kUserKey,       // KEY held at reset -- unconditional recovery path
+    kHostRequest,   // Application asked for DFU through the boot mailbox
+    kNoValidApp,    // No application image, or it failed validation
+    kInterrupted,   // A previous download lost power mid-session
+};
+
 class UsbDescriptors {
 public:
     UsbDescriptors() { update_serial_string(); }
+
+    // Must be called before the host enumerates (string descriptors are read
+    // during enumeration), i.e. before tusb_rhport_init() in main().
+    void set_entry_reason(DfuEntryReason reason) { entry_reason_ = reason; }
 
     static uint8_t const* get_device_descriptor() {
         return reinterpret_cast<uint8_t const*>(&kDeviceDescriptor);
@@ -43,7 +59,7 @@ public:
             case 1: str = kManufacturerString; break;
             case 2: str = kProductString; break;
             case 3: str = std::string_view{serial_string_.data(), serial_string_.size() - 1}; break;
-            case 4: str = kAlt0String; break;
+            case 4: str = alt0_string(); break;
             default: return nullptr;
             }
 
@@ -62,6 +78,19 @@ public:
     }
 
 private:
+    // dfu-util prints this as name="..." for the alt setting, so the tag rides
+    // along with the interface name the host already displays.
+    std::string_view alt0_string() const {
+        switch (entry_reason_) {
+        case DfuEntryReason::kUserKey: return "Internal Flash [KEY]";
+        case DfuEntryReason::kHostRequest: return "Internal Flash [REQ]";
+        case DfuEntryReason::kNoValidApp: return "Internal Flash [NOAPP]";
+        case DfuEntryReason::kInterrupted: return "Internal Flash [POR]";
+        case DfuEntryReason::kUnknown: break;
+        }
+        return kAlt0String;
+    }
+
     void update_serial_string() {
         std::array<uint32_t, 3> uid{};
         uid[0] = HAL_GetUIDw0();
@@ -150,6 +179,7 @@ private: // String Descriptor
     static constexpr std::string_view kProductString = "RMCS DFU Bootloader";
     static constexpr std::string_view kAlt0String = "Internal Flash";
     std::array<char, 33> serial_string_{"D4-0000-0000-0000-0000-0000-0000"};
+    DfuEntryReason entry_reason_ = DfuEntryReason::kUnknown;
 
     std::array<uint16_t, 128> descriptor_string_buffer_{};
 };

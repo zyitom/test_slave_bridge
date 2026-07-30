@@ -26,6 +26,12 @@ public:
     bool is_ready()    const { return latest_valid_slot_state_ == DataSlotState::kReady; }
     bool is_flashing() const { return latest_valid_slot_state_ == DataSlotState::kFlashing; }
 
+    // Latched at construction, before any session can overwrite the state: a
+    // flashing marker with no ready record after it means the previous download
+    // lost power between the two writes. is_flashing() cannot answer this on its
+    // own, because begin_flashing() puts the live session into the same state.
+    bool previous_session_interrupted() const { return previous_session_interrupted_; }
+
     uint32_t image_size() const { return latest_valid_slot_->image_size; }
 
     bool begin_flashing() {
@@ -91,7 +97,10 @@ public:
     }
 
 private:
-    Metadata() { scan_latest_valid_slot(); }
+    Metadata() {
+        scan_latest_valid_slot();
+        previous_session_interrupted_ = latest_valid_slot_state_ == DataSlotState::kFlashing;
+    }
 
     static constexpr uintptr_t kMetadataStartAddress = 0x08020000U; // Sector 1
     static constexpr uintptr_t kMetadataEndAddress   = 0x08040000U;
@@ -231,6 +240,7 @@ private:
 
     DataSlot*     latest_valid_slot_       = nullptr;
     DataSlotState latest_valid_slot_state_ = DataSlotState::kFatal;
+    bool          previous_session_interrupted_ = false;
 };
 
 } // namespace librmcs::firmware::flash

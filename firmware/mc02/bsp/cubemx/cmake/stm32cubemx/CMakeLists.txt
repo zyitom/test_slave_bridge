@@ -12,30 +12,24 @@ set(MX_Defines_Syms
 # STM32CubeMX generated include paths
 set(MX_Include_Dirs
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Inc
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../USB_DEVICE/App
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../USB_DEVICE/Target
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Inc
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Inc/Legacy
-    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Middlewares/ST/STM32_USB_Device_Library/Core/Inc
-    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/CMSIS/Device/ST/STM32H7xx/Include
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/CMSIS/Include
 )
 
 # STM32CubeMX generated application sources
 set(MX_Application_Src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../USB_DEVICE/Target/usbd_conf.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../USB_DEVICE/App/usb_device.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../USB_DEVICE/App/usbd_desc.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../USB_DEVICE/App/usbd_cdc_if.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/main.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/gpio.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/bdma.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/dcmi.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/dma.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/fdcan.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/spi.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/tim.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/usart.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/usb_otg.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/stm32h7xx_it.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/stm32h7xx_hal_msp.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/sysmem.c
@@ -46,9 +40,8 @@ set(MX_Application_Src
 # STM32 HAL/LL Drivers
 set(STM32_Drivers_Src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/system_stm32h7xx.c
-    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_pcd.c
-    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_pcd_ex.c
-    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_ll_usb.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_cortex.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_dcmi.c
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_rcc.c
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_rcc_ex.c
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_flash.c
@@ -60,7 +53,6 @@ set(STM32_Drivers_Src
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_mdma.c
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_pwr.c
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_pwr_ex.c
-    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_cortex.c
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal.c
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_i2c.c
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_i2c_ex.c
@@ -72,17 +64,14 @@ set(STM32_Drivers_Src
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_tim_ex.c
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_uart.c
     /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_uart_ex.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_pcd.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_pcd_ex.c
+    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_ll_usb.c
 )
 
 # Drivers Midllewares
 
 
-set(USB_Device_Library_Src
-    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_core.c
-    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ctlreq.c
-    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ioreq.c
-    /home/zyi/STM32Cube/Repository/STM32Cube_FW_H7_V1.13.0/Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Src/usbd_cdc.c
-)
 
 # Link directories setup
 set(MX_LINK_DIRS
@@ -92,7 +81,7 @@ set(MX_LINK_DIRS
 set(MX_LINK_LIBS 
     STM32_Drivers
     ${TOOLCHAIN_LINK_LIBRARIES}
-    USB_Device_Library	
+    
 )
 # Interface library for includes and symbols
 add_library(stm32cubemx INTERFACE)
@@ -104,11 +93,6 @@ add_library(STM32_Drivers OBJECT)
 target_sources(STM32_Drivers PRIVATE ${STM32_Drivers_Src})
 target_link_libraries(STM32_Drivers PUBLIC stm32cubemx)
 
-
-# Create USB_Device_Library static library
-add_library(USB_Device_Library OBJECT)
-target_sources(USB_Device_Library PRIVATE ${USB_Device_Library_Src})
-target_link_libraries(USB_Device_Library PUBLIC stm32cubemx)
 
 # Add STM32CubeMX generated application sources to the project
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${MX_Application_Src})

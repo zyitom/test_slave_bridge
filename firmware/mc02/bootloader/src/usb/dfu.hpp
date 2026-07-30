@@ -78,8 +78,11 @@ public:
 
         const uint64_t downloaded_size_64 =
             static_cast<uint64_t>(downloaded_size_) + static_cast<uint64_t>(length);
+        // ERR_FILE, not ERR_ADDRESS: the transfer is well-formed, the image is
+        // simply larger than the application region. Distinguishing the two lets
+        // the host tell "the protocol went wrong" from "your file does not fit".
         if (downloaded_size_64 > static_cast<uint64_t>(flash::kAppMaxImageSize))
-            return fail(DFU_STATUS_ERR_ADDRESS);
+            return fail(DFU_STATUS_ERR_FILE);
 
         if (data == nullptr)
             return fail(DFU_STATUS_ERR_UNKNOWN);

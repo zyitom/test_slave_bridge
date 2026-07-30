@@ -109,11 +109,20 @@ stock 48 字节 SII 身份,但把相同字节解释成 CAN mailbox;stock stream 
 
 ## USB 协处传输(同固件双接口,数据面互斥)
 
-core0 除了 ESC 还挂着一个 USB 设备(原本只做 DFU 刷机)。因为跨核环
-(`down`/`up`)承载的是**与传输无关的原始协议字节流**,给这个 USB 设备再加一个
-vendor bulk 数据接口、直接对接同一对环,就得到"一个固件、两种传输"——host 用
-EtherCAT 或 USB 都能跟 core1 的 CAN/UART 说话,**但两个 host 数据客户端不能并发**。
-代码全在 core0,core1 一行不动。
+> **先读这一句,以免误判**:core0 的 USB **是完整的数据传输**,不是只做刷机的
+> DFU 接口。承载它的文件 `core0/src/usb_runtime.cpp` 里名字带 "runtime" 指的是
+> **DFU runtime(DFU-RT)接口**,而该文件同时也是 vendor bulk 端点与跨核环之间的
+> 字节摆渡(`pump_vendor_data()`,文件后半部分)。只读文件名或文件头会得到
+> "这只是 DFU" 的错误结论。
+
+core0 除了 ESC 还挂着一个 USB 设备(该设备最初引入时只做 DFU 刷机,**现已扩展为
+完整数据传输**)。因为跨核环(`down`/`up`)承载的是**与传输无关的原始协议字节流**,
+给这个 USB 设备再加一个 vendor bulk 数据接口、直接对接同一对环,就得到"一个固件、
+两种传输"——host 用 EtherCAT 或 USB 都能跟 core1 的 CAN/UART 说话,**但两个 host
+数据客户端不能并发**。代码全在 core0,core1 一行不动。
+
+USB 与 EtherCAT 为什么落在同一个核(而不是各占一核),以及"USB 下放 core1"这一备选
+方案的完整优缺点与重评估触发条件,见 [DESIGN.md](DESIGN.md) 第 3 节与 3.1 节。
 
 ```
               core0
@@ -125,6 +134,10 @@ EtherCAT 或 USB 都能跟 core1 的 CAN/UART 说话,**但两个 host 数据客�
 - **USB 不需要 ARQ**:bulk 本身可靠有序,所以 USB 路径只是把 bulk 字节和环对拷。
   USB ISR 运行 `tud_task()` 保障枚举/DFU;vendor 数据 pump 在 core0 主循环运行,并在
   访问 tinyusb FIFO 时屏蔽 USB IRQ,确保只有一个数据 pump 上下文。
+- **互斥的是数据面,不是 CPU 执行**:USB 取得 ownership 后 `MainLoop()` 仍在 core0
+  主循环中被无条件调用(`ecat_main.c`,无 `usb_active` 守卫),仲裁只让 PDO 钩子变
+  惰性。但此时无主站、从站停在 INIT,`MainLoop()` 退化为几次 ESC 寄存器读加几个
+  立即返回的调用,**不构成 USB 路径的性能负担**。详见 [DESIGN.md](DESIGN.md) 3.2。
 - **仲裁(谁占用用谁,不是同时使用)**:同一对环同一时刻只由一种传输驱动。仅插 USB
   线或仅枚举不会抢占数据面;host 在 vendor OUT 上
   发数据 → `tud_vendor_rx_cb` 置 USB active,ESC 的 PDO 钩子随即变惰性(忽略输出、

@@ -6,8 +6,10 @@
 #include <tusb.h>
 
 #include "firmware/mc02/bootloader/src/flash/layout.hpp"
+#include "firmware/mc02/bootloader/src/flash/metadata.hpp"
 #include "firmware/mc02/bootloader/src/flash/validation.hpp"
 #include "firmware/mc02/bootloader/src/usb/dfu.hpp"
+#include "firmware/mc02/bootloader/src/usb/usb_descriptors.hpp"
 #include "firmware/mc02/bootloader/src/utility/assert.hpp"
 #include "firmware/mc02/bootloader/src/utility/boot_mailbox.hpp"
 #include "firmware/mc02/bootloader/src/utility/jump.hpp"
@@ -50,6 +52,18 @@ int main() {
         if (flash::validate_app_image())
             utility::jump_to_app(flash::kAppStartAddress);
     }
+
+    // Reaching here means DFU. Report why, in the order the decision above made
+    // it: the key overrides everything, then an explicit host request, then a
+    // half-written previous session, and otherwise the image simply is not
+    // usable. Set before tusb_rhport_init() -- string descriptors are read
+    // during enumeration and never refreshed afterwards.
+    usb::get_usb_descriptors().set_entry_reason(
+        force_stay ? usb::DfuEntryReason::kUserKey
+        : force_dfu ? usb::DfuEntryReason::kHostRequest
+        : flash::Metadata::get_instance().previous_session_interrupted()
+            ? usb::DfuEntryReason::kInterrupted
+            : usb::DfuEntryReason::kNoValidApp);
 
     utility::assert_always(tusb_rhport_init(0, nullptr));
 

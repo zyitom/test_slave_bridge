@@ -5,7 +5,27 @@
 #include <main.h>
 
 #include "firmware/mc02/app/src/led/led.hpp"
+#include "firmware/mc02/app/src/utility/boot_mailbox.hpp"
 #include "firmware/mc02/app/src/utility/interrupt_lock.hpp"
+
+// Fault recovery shared by the four fault handlers in the generated
+// stm32h7xx_it.c. Without it a fault parks the CPU in a while(1) that no host
+// can reach: USB stops answering, so the board can only be recovered with a
+// debugger or by holding KEY at reset. Requesting DFU through the boot mailbox
+// and resetting keeps the flashing path alive instead.
+//
+// A debugger, when attached, is more valuable than the automatic recovery: it
+// can inspect the faulting frame and the assert_file/assert_line globals below.
+// So halt in that case and let the outer while(1) hold the state.
+extern "C" void librmcs_fault_recover(void) {
+    if ((CoreDebug->DHCSR & CoreDebug_DHCSR_C_DEBUGEN_Msk) != 0U)
+        return;
+
+    librmcs::firmware::utility::boot_mailbox.request_enter_dfu();
+    __DSB();
+    __ISB();
+    NVIC_SystemReset();
+}
 
 namespace librmcs::core::utility {
 

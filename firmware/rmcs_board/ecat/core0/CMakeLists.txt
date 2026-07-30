@@ -10,7 +10,7 @@
 # bootloader (../../bootloader), exactly like the USB app; a .dfu artifact is
 # produced for bootloader-based flashing.
 
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.21...3.28)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 if("${HPM_BUILD_TYPE}" STREQUAL "")

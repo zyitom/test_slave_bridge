@@ -1,3 +1,25 @@
+// core0 USB device: a FULL DATA TRANSPORT, not just a firmware-update hook.
+//
+// Do not infer this file's scope from its name or from its first ~180 lines.
+// "runtime" here names the DFU RUNTIME (DFU-RT) interface, and the DFU-RT code
+// happens to come first -- but the second half of the file is the byte shuttle
+// between the USB vendor bulk endpoints and the SHARE_RAM cross-core rings
+// (see pump_vendor_data()). Reading only the header has twice produced the
+// wrong conclusion that core0's USB is "DFU only, off the data path".
+//
+// Composite device = vendor (interface 0, bulk 0x01/0x81, HS 512B) + DFU-RT
+// (interface 1). The vendor interface carries the same librmcs protocol byte
+// stream that EtherCAT carries over the PDO, against the same pair of rings;
+// the two host transports are arbitrated (one owner at a time, never
+// concurrent) via rmcs_pd_set_usb_active() in pd_glue.cpp / hybrid_glue.cpp.
+//
+// Why USB shares core0 with the EtherCAT stack instead of living on core1 next
+// to CAN: USB and EtherCAT are mutually exclusive, while USB and CAN are always
+// concurrent (CAN is the far end of the same data path). Co-locating the
+// mutually exclusive pair is what makes core0 contention-free by construction.
+// Full argument, plus the rejected "USB on core1" alternative and the data
+// needed to revisit it, in ../../DESIGN.md sections 3 and 3.1.
+
 #include "usb_runtime.h"
 
 #include <algorithm>

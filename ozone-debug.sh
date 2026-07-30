@@ -5,14 +5,17 @@
 # interface, speed, connect mode and program file.
 #
 # Usage:
-#   ./ozone-debug.sh mc02             # STM32H723VGT6, SWD
-#   ./ozone-debug.sh c_board          # STM32F407IGH6, SWD
-#   ./ozone-debug.sh hpm6e8y          # HPM6E8Y core0 (EtherCAT bridge), JTAG
-#   ./ozone-debug.sh hpm6e8y-core1    # HPM6E8Y core1 (fieldbus), JTAG
+#   ./ozone-debug.sh mc02             # STM32H723VGT6 bootloader, SWD
+#   ./ozone-debug.sh mc02 app         # STM32H723VGT6 application, SWD
+#   ./ozone-debug.sh c_board          # STM32F407IGH6 bootloader, SWD
+#   ./ozone-debug.sh c_board app      # STM32F407IGH6 application, SWD
+#   ./ozone-debug.sh hpm6e8y          # HPM6E8Y core0 bootloader, JTAG
+#   ./ozone-debug.sh hpm6e8y app      # HPM6E8Y core0 EtherCAT application, JTAG
+#   ./ozone-debug.sh hpm6e8y-core1    # HPM6E8Y core1 fieldbus application, JTAG
 #   ./ozone-debug.sh --list
 #
-# Every project connects in "attach & halt" mode: it does NOT program the part.
-# Flash with the flash-*.sh scripts first; the reason is in each .jdebug header.
+# Omit the image selector to use the project default image. Passing "app" creates
+# a temporary attach-mode project for the board application ELF.
 #
 # ch32_board is deliberately absent: it is debugged over WCH-Link, which Ozone
 # does not speak. Use the VS Code "ch32 - Debug V3F boot core" configuration, or
@@ -49,9 +52,88 @@ list_projects() {
     done
 }
 
+usage() {
+    sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^#\s\?//'
+}
+
+resolve_project_path() {
+    local path="$1"
+
+    if [[ "$path" = /* ]]; then
+        printf '%s\n' "$path"
+    else
+        printf '%s\n' "$PROJECT_DIR/$path"
+    fi
+}
+
+app_elf_for_project() {
+    case "$1" in
+    mc02)
+        printf '%s\n' "$SCRIPT_DIR/firmware/mc02/build/app/mc02_app.elf"
+        ;;
+    c_board)
+        printf '%s\n' "$SCRIPT_DIR/firmware/c_board/build/app/c_board_app.elf"
+        ;;
+    hpm6e8y)
+        printf '%s\n' "$SCRIPT_DIR/firmware/rmcs_board/ecat/build/rmcs_ecat_core0/output/demo.elf"
+        ;;
+    hpm6e8y-core1)
+        printf '%s\n' "$SCRIPT_DIR/firmware/rmcs_board/ecat/build/rmcs_ecat_core1/output/demo.elf"
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+}
+
+sed_replacement_escape() {
+    printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'
+}
+
+make_app_project() {
+    local project_name="$1"
+    local source_project="$2"
+    local app_elf="$3"
+    local cache_dir="${TMPDIR:-/tmp}/librmcs-ozone-${UID:-$(id -u)}"
+    local run_project="$cache_dir/$project_name-app.jdebug"
+    local escaped_app_elf
+
+    mkdir -p "$cache_dir"
+    escaped_app_elf="$(sed_replacement_escape "$app_elf")"
+    sed -E \
+        -e 's|Debug\.SetConnectMode *\([^)]*\);|Debug.SetConnectMode (CM_ATTACH_HALT);|' \
+        -e "s|File\.Open *\(\"[^\"]*\"\);|File.Open (\"$escaped_app_elf\");|" \
+        "$source_project" >"$run_project"
+    printf '%s\n' "$run_project"
+}
+
+launch_ozone() {
+    local run_project="$1"
+    local log_file="$2"
+    local pid
+
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "$OZONE" "$run_project" </dev/null >"$log_file" 2>&1 &
+    else
+        "$OZONE" "$run_project" </dev/null >"$log_file" 2>&1 &
+    fi
+
+    pid="$!"
+    disown "$pid" 2>/dev/null || true
+    echo ">> Ozone started in background (pid $pid)"
+    echo ">> log: $log_file"
+}
+
+if (($# > 2)); then
+    echo "error: too many arguments" >&2
+    echo >&2
+    usage >&2
+    exit 1
+fi
+
 case "${1:-}" in
 -h | --help)
-    sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^#\s\?//'
+    usage
     exit 0
     ;;
 --list)
