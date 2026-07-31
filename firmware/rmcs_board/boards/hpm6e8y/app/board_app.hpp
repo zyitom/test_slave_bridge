@@ -75,9 +75,18 @@ constexpr UartPort kUartPorts[] = {
 uint32_t init_uart(UART_Type* ptr);
 void uart_irq_handler(size_t board_uart_index);
 
-// The fieldbus application runs on core1: its machine timer is MCHTMR1
-// (board.c clocks it at the 4 MHz the shared Timer driver expects).
+// Machine timer of whichever core runs this application layer. Each core sees
+// only its own MCHTMR through the same HPM_MCHTMR_BASE window, so the clock name
+// must follow the running core: MCHTMR1 for the current EtherCAT bridge (the
+// app layer lives on core1), MCHTMR0 for the single-core USB image and for the
+// core-swap layout that moves the protocol stack back onto core0. board.c
+// clocks BOTH dividers at the 4 MHz the shared Timer driver asserts, so no
+// clock-tree change is needed when this flips.
+#if defined(BOARD_RUNNING_CORE) && BOARD_RUNNING_CORE == HPM_CORE1
 constexpr clock_name_t kMchtmrClockName = clock_mchtmr1;
+#else
+constexpr clock_name_t kMchtmrClockName = clock_mchtmr0;
+#endif
 
 // DMA ring storage section for the shared UART driver. Core1 has no AHB SRAM
 // section; the AXI SRAM non-cacheable region serves the same purpose (DMA
@@ -86,10 +95,15 @@ constexpr clock_name_t kMchtmrClockName = clock_mchtmr1;
 
 // Main RGB LED, active-LOW (common-anode: drive the pad low to light it). Pads
 // verified by the GPIO LED scan (see GPIO_LED_REVERSE_ENGINEERING.md): red=PE05,
-// green=PE04, blue=PE03. NOTE: these same pads are ESC0_CTR outputs in the
-// EVK-derived board.c EtherCAT bring-up (init_esc_pins); that pinmux does not
-// match this board and is temporary, so once EtherCAT is re-pinned for real
-// hardware this overlap must be resolved.
+// green=PE04, blue=PE03.
+//
+// These three pads DO carry an ESC0_CTR alt function (PE03=CTR_1, PE04=CTR_2,
+// PE05=CTR_3), which the old EVK-derived pinmux used to select. That is no
+// longer the case: board.c init_esc_pins() now uses the HPM6E*Y* on-die PHY
+// mapping and routes the four CTR signals to PA25 (CTR_0), PA28 (CTR_1),
+// PC20 (CTR_2) and PC21 (CTR_3) -- it never writes PE03/PE04/PE05. So the RGB
+// LED is exclusively owned by this app layer, independent of which core runs
+// init_esc_pins() first. Do not re-add ESC0_CTR on these pads.
 constexpr GpioPin kLedRedPin = make_gpio_pin<gpiom_soc_gpio0, 'E', 5, false>();
 constexpr GpioPin kLedGreenPin = make_gpio_pin<gpiom_soc_gpio0, 'E', 4, false>();
 constexpr GpioPin kLedBluePin = make_gpio_pin<gpiom_soc_gpio0, 'E', 3, false>();

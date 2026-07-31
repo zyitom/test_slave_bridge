@@ -421,6 +421,23 @@ v4 诊断固件通过发送这些帧证明了端口映射：
 它同时也暴露出：**持续的诊断 CAN/PHY 访问不适合放进干净的常规桥**。干净的常规构建
 移除了诊断 CAN 任务，也避免了周期性的 PHY 分页写。
 
+### 12. 单核 `app/` 镜像上 CAN 全哑：外设时钟在 core1 的组里 [实测 2026-07-31]
+
+**结论**：`board.c` 的 `board_init_clock()` 把 CAN0..3 与 UART1 放进时钟 **group 1**，
+再把 group 1 连到 **CPU1**。双核 ecat 桥没问题（core1 会被释放），但单核 USB 数据固件
+（`firmware/rmcs_board/app/`）**从不释放 core1**，于是这些外设一直被时钟门控。
+
+现象很有迷惑性：USB 正常枚举、协议会话正常建立、host 侧不报任何错，
+`bridge_can_loopback_latency` 打印 `invalid=0 unexpected=0` 却**一帧都收不回来**——因为
+MCAN 既没发出去也没收进来。看上去像回环接线或 host 版本问题，其实两者都没坏。
+
+**处置**：编译期开关 `BOARD_FIELDBUS_ON_CORE0`（`boards/hpm6e8y/CMakeLists.txt` 里仅在
+`LIBRMCS_BUILDING_FIRMWARE_APP` 时定义）让 `board.c` 把这些外设改挂 group 0。双核 ecat
+镜像不定义该宏，时钟分组逐字不变。
+
+新板子上遇到"外设完全没反应但代码路径明显跑到了"时，先查 `clock_add_to_group` 的组号
+和该组连到哪个 CPU，再查引脚。
+
 ## 症状对照表
 
 | 症状 | 含义 | 处置 |
@@ -431,6 +448,7 @@ v4 诊断固件通过发送这些帧证明了端口映射：
 | 干净常规固件上收不到 `0x77f/0x78x` 帧 | 预期行为 | 常规桥固件里诊断 CAN 是关闭的 |
 | `done: 0 CAN frames` | 没有从外部节点收到 CAN 帧 | 检查 MCAN0/PC00-PC01、1 Mbit 经典模式、ACK，以及外部是否真的在发 |
 | `done: 0 UART bytes` | 没有 UART 环回或应答设备 | 用跳线把 PY07 短到 PY06，或接一个应答设备 |
+| 单核 `app/` 镜像：USB 会话正常但 CAN 零帧、`invalid=0 unexpected=0` | CAN 时钟在 core1 的 group 1 里被门控 | 见陷阱 12，构建时需 `BOARD_FIELDBUS_ON_CORE0` |
 
 ## 已知未决事项
 

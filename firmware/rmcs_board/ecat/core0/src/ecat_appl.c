@@ -23,6 +23,7 @@
 #undef _DIGITAL_IO_
 
 #include "rmcs_pd.h"
+#include "usb_runtime.h"
 
 /* Cross-core uplink doorbell transport (see rmcs_uplink_doorbell_init). */
 #include "board.h"
@@ -109,6 +110,25 @@ void rmcs_uplink_doorbell_isr(void) {
     (void)mbx_retrieve_message(RMCS_UPLINK_MBX, &doorbell);
     (void)doorbell;
     rmcs_input_refresh();
+    /* Same argument, USB side: the doorbell says a reply just landed in the up
+     * ring, and without this the reply would wait for the next main-loop pump
+     * pass. rmcs_input_refresh() above is a two-load no-op while USB owns the
+     * link (no master -> bEcatInputUpdateRunning is FALSE), so the two publish
+     * paths do not fight; it stays unconditional to keep EtherCAT behaviour
+     * bit-identical. The main-loop pump masks this IRQ (see
+     * rmcs_uplink_doorbell_set_enabled), so only one pump runs at a time. */
+    if (rmcs_pd_usb_active())
+        rmcs_usb_runtime_pump();
+}
+
+/* Mask/unmask the doorbell around a thread-context vendor pump, so the pump in
+ * the ISR above cannot preempt it and interleave on the vendor FIFOs / rings.
+ * A doorbell arriving while masked stays pending and fires right after. */
+void rmcs_uplink_doorbell_set_enabled(bool enabled) {
+    if (enabled)
+        intc_m_enable_irq(RMCS_UPLINK_MBX_IRQ);
+    else
+        intc_m_disable_irq(RMCS_UPLINK_MBX_IRQ);
 }
 
 /* MainLoop fallback around the same publish. The doorbell ISR handles the

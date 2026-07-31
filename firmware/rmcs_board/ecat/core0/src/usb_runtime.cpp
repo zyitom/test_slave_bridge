@@ -348,18 +348,26 @@ void rmcs_usb_runtime_init(void) {
     intc_m_enable_irq_with_priority(IRQn_USB0, kUsbIrqPriority);
 }
 
+// The one place the vendor DATA pump is allowed to run, from any context. The
+// USB IRQ is masked around it because tud_task() (which runs in rmcs_usb0_isr,
+// priority 2) fills/drains the same vendor FIFOs; priority persists across the
+// mask. Callers running below the doorbell IRQ must additionally keep that IRQ
+// masked, so the two pump call sites can never interleave -- see
+// rmcs_uplink_doorbell_set_enabled() in ecat_appl.c.
+void rmcs_usb_runtime_pump(void) {
+    intc_m_disable_irq(IRQn_USB0);
+    pump_vendor_data();
+    intc_m_enable_irq(IRQn_USB0);
+}
+
 // tud_task() (enumeration/DFU) still runs entirely in rmcs_usb0_isr so a stalled
 // main loop can never wedge the DFU runtime. This main-loop hook only drives the
 // vendor DATA pump: when the host is waiting for a reply (e.g. SESSION_ACK) it
 // sends no OUT traffic, so the USB ISR may not fire and the uplink would stall.
-// Pumping here too keeps the uplink draining. Mask the USB IRQ around it so this
-// thread-context pump never races tud_task()/the ISR-side pump on the vendor
-// FIFOs (the ISR is the only other toucher; priority persists across the mask).
+// Pumping here too keeps the uplink draining.
 void rmcs_usb_runtime_task(void) {
     poll_dfu_runtime_reboot();
-    intc_m_disable_irq(IRQn_USB0);
-    pump_vendor_data();
-    intc_m_enable_irq(IRQn_USB0);
+    rmcs_usb_runtime_pump();
     poll_dfu_runtime_reboot();
 }
 

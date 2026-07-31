@@ -1,0 +1,14 @@
+# Drop point for build-generated sources compiled into this application.
+#
+# Currently: sec_core_img.c, the EtherCAT core1 image emitted as a C array by
+# the ecat/core1_ecat sub-build (SEC_CORE_IMG_C_ARRAY_OUTPUT) and compiled in
+# when LIBRMCS_APP_RELEASE_CORE1=ON.
+#
+# Kept out of src/ on purpose: app/CMakeLists.txt globs src/ recursively, so a
+# generated file there would be picked up implicitly and would look hand-written.
+#
+# Version control: sec_core_img.c IS committed, matching the existing convention
+# for ecat/core0/src/sec_core_img.c (~500 KB, tracked). Committing it keeps the
+# flashable image reproducible from a checkout without a working RISC-V toolchain
+# for the secondary core, which is the reason the older one is tracked too. Do
+# not add it to .gitignore without changing that convention in both places.

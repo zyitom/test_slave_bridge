@@ -132,8 +132,11 @@ USB 与 EtherCAT 为什么落在同一个核(而不是各占一核),以及"USB �
 ```
 
 - **USB 不需要 ARQ**:bulk 本身可靠有序,所以 USB 路径只是把 bulk 字节和环对拷。
-  USB ISR 运行 `tud_task()` 保障枚举/DFU;vendor 数据 pump 在 core0 主循环运行,并在
-  访问 tinyusb FIFO 时屏蔽 USB IRQ,确保只有一个数据 pump 上下文。
+  USB ISR 运行 `tud_task()` 保障枚举/DFU;vendor 数据 pump 有两个调用点——core0 主循环,
+  以及 USB 持有链路时的上行门铃 ISR(回复一进上行环就直接摆渡,不必等下一趟主循环;
+  实测只改善尾部,p50 不变,见 [DESIGN.md](DESIGN.md) 3.4)。**同一时刻仍只有一个 pump
+  在跑**:门铃 ISR 内屏蔽 USB IRQ,主循环屏蔽门铃 IRQ
+  (`rmcs_uplink_doorbell_set_enabled`),两者不交错。
 - **互斥的是数据面,不是 CPU 执行**:USB 取得 ownership 后 `MainLoop()` 仍在 core0
   主循环中被无条件调用(`ecat_main.c`,无 `usb_active` 守卫),仲裁只让 PDO 钩子变
   惰性。但此时无主站、从站停在 INIT,`MainLoop()` 退化为几次 ESC 寄存器读加几个

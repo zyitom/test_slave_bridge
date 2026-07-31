@@ -102,6 +102,14 @@ void board_init_pmp(void);
 void board_init_usb(void);
 void board_init_ethercat(ESC_Type* ptr);
 
+/* Write one console byte only if the UART TX FIFO has room; returns false when
+ * it does not. The SDK's console_send_byte() busy-waits on THR-empty (~87 us per
+ * byte at 115200 baud), which is unacceptable on a core that also services USB
+ * and CAN -- draining a log burst through it stalls the data path for
+ * milliseconds. Used by the cross-core diagnostic drain (core1 cannot printf;
+ * see ecat/common/xcore_diag.hpp). */
+bool board_console_try_send_byte(uint8_t byte);
+
 /* Drive the ESC NMII_LINK for the two on-die PHYs from software (the on-die PHYs
  * do not feed a LINK pin to an ESC CTR input, so the SDK default leaves the ESC
  * seeing no link). Call AFTER ecat_hardware_init. See the definition in board.c. */

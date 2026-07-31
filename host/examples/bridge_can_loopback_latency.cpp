@@ -38,6 +38,16 @@ namespace {
 
 constexpr uint32_t kCanId = 0x556;
 constexpr size_t kPayloadSize = 8;
+
+// RMCS_CAN_CLASSIC=1 sends classic CAN instead of CAN-FD. The board runs FD at
+// 1 Mbit/s arbitration + 5 Mbit/s data with BRS, so an 8-byte classic frame
+// spends far longer on the wire than the same payload in FD. Running both and
+// differencing the RTTs separates the CAN serialization time from the rest of
+// the loop (USB + cross-core rings + protocol), which no single run can do.
+bool use_fdcan() {
+    const char* classic = std::getenv("RMCS_CAN_CLASSIC");
+    return !(classic && classic[0] == '1');
+}
 constexpr uint32_t kWarmupSamples = 100;
 constexpr auto kEchoTimeout = std::chrono::milliseconds{20};
 
@@ -123,7 +133,7 @@ public:
 private:
     void can1_receive_callback(const librmcs::data::CanDataView& data) override {
         const auto receive_time = Clock::now();
-        if (data.can_id != kCanId || !data.is_fdcan || data.is_extended_can_id
+        if (data.can_id != kCanId || data.is_fdcan != use_fdcan() || data.is_extended_can_id
             || data.is_remote_transmission || data.can_data.size() != kPayloadSize) {
             invalid_.fetch_add(1, std::memory_order_relaxed);
             return;
@@ -193,7 +203,7 @@ int run_latency(Board& board, Receiver& receiver, uint32_t samples, std::string_
 
         receiver.arm(sequence, Receiver::Clock::now());
         board.start_transmit().can0_transmit(
-            {.can_id = kCanId, .can_data = payload, .is_fdcan = true});
+            {.can_id = kCanId, .can_data = payload, .is_fdcan = use_fdcan()});
 
         double rtt_us = 0.0;
         if (!receiver.wait(sequence, rtt_us)) {
@@ -206,7 +216,13 @@ int run_latency(Board& board, Receiver& receiver, uint32_t samples, std::string_
     }
 
     if (rtts_us.empty()) {
-        fprintf(stderr, "no valid loopback frames received\n");
+        fprintf(
+            stderr,
+            "no valid loopback frames received (invalid=%llu unexpected=%llu)\n"
+            "  invalid>0   : frames came back but failed the id/dlc/fd/payload check\n"
+            "  both zero   : nothing reached can1_receive_callback at all\n",
+            static_cast<unsigned long long>(receiver.invalid()),
+            static_cast<unsigned long long>(receiver.unexpected()));
         return 2;
     }
 
@@ -292,7 +308,7 @@ int run_latency_paced(
 
         receiver.arm(sequence, tick_time);
         board.start_transmit().can0_transmit(
-            {.can_id = kCanId, .can_data = payload, .is_fdcan = true});
+            {.can_id = kCanId, .can_data = payload, .is_fdcan = use_fdcan()});
 
         double rtt_us = 0.0;
         if (receiver.wait(sequence, rtt_us)) {
@@ -311,7 +327,13 @@ int run_latency_paced(
     }
 
     if (rtts_us.empty()) {
-        fprintf(stderr, "no valid loopback frames received\n");
+        fprintf(
+            stderr,
+            "no valid loopback frames received (invalid=%llu unexpected=%llu)\n"
+            "  invalid>0   : frames came back but failed the id/dlc/fd/payload check\n"
+            "  both zero   : nothing reached can1_receive_callback at all\n",
+            static_cast<unsigned long long>(receiver.invalid()),
+            static_cast<unsigned long long>(receiver.unexpected()));
         return 2;
     }
 
@@ -390,6 +412,14 @@ int main(int argc, char** argv) {
     auto options = librmcs::board::bind_advanced_options([io_core]() noexcept {
         configure_thread(io_core, 80, "bridge-lat-io");
     });
+
+    // Diagnostic escape hatch: the USB scanner demands an exact firmware/host
+    // build match, which blocks measuring a board that is a few commits behind
+    // the tree. Set RMCS_SKIP_VERSION_CHECK=1 only when the wire protocol is
+    // known to be unchanged across those commits; the tool still validates
+    // every echoed payload, so a real mismatch shows up as invalid frames.
+    if (const char* skip = std::getenv("RMCS_SKIP_VERSION_CHECK"); skip && skip[0] == '1')
+        options.set_dangerously_skip_version_checks(true);
 
     Receiver receiver;
     try {

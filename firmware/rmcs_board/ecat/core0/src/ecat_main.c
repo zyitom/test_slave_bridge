@@ -66,7 +66,11 @@ int main(void) {
     bRunApplication = TRUE;
     uint32_t last_phy_link_poll_ms = HW_GetTimer();
     while (bRunApplication == TRUE) {
+        /* The doorbell ISR also runs the vendor pump while USB owns the link;
+         * mask it so this thread-context pump cannot be preempted mid-pump. */
+        rmcs_uplink_doorbell_set_enabled(false);
         rmcs_usb_runtime_task();
+        rmcs_uplink_doorbell_set_enabled(true);
         MainLoop();
 
         /* The internal PHY link signals reach the ESC through software-driven

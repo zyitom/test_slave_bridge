@@ -6,6 +6,7 @@
 #include <new>
 #include <type_traits>
 
+#include "xcore_diag.hpp"
 #include "xcore_ring.hpp"
 
 namespace librmcs::firmware::ecat {
@@ -20,16 +21,46 @@ namespace librmcs::firmware::ecat {
 // Ownership/handshake: core0 placement-constructs the channel and publishes
 // it by release-storing the magic BEFORE releasing core1; core1 spins in
 // xcore_channel_wait() until the magic appears (acquire), so it can never
-// observe a half-initialized channel.
+// observe a half-initialized channel. core0 remains the boot core and the
+// channel owner after the core swap -- it is the one that embeds and releases
+// the core1 image, so publication direction is unchanged even though the
+// EtherCAT stack moved to core1.
+//
+// Flush rule (holds today, but only becomes useful after the swap): EACH CORE
+// FLUSHES ONLY THE RING IT CONSUMES. core0 drains `down`, core1 drains `up`.
+// Each side advances only its own out_ index, which never races the peer's in_.
+// After the swap that is exactly one ring per core, so a handover can leave
+// both rings clean instead of relying on a session re-handshake to absorb
+// leftover bytes.
 
 inline constexpr std::uint32_t kXcoreChannelMagic = 0x524D5843U; // "RMXC"
-inline constexpr std::uint32_t kXcoreChannelVersion = 2;
+// Version 3 = the core-swap layout: EtherCAT (SSC + ESC + ARQ endpoint) lives
+// on core1, the protocol stack + CAN/UART + USB live on core0. Field semantics
+// changed with it (see owner/owner_ack/ecat_claim below), so the version bump
+// is what makes a mismatched core0/core1 image pair detectable at runtime
+// instead of silently misbehaving.
+// Version 4 adds the flash RPC slot, which shifts every field after `diag`.
+inline constexpr std::uint32_t kXcoreChannelVersion = 4;
 inline constexpr std::size_t kXcoreShareRamSize = 16 * 1024;
 
-// core0 -> core1: host command stream (fed to the protocol deserializer on
-// the fieldbus core in later phases).
-inline constexpr std::size_t kXcoreDownRingSize = 4096;
-// core1 -> core0: telemetry stream towards the host.
+// Ring direction is defined RELATIVE TO THE HOST and does not depend on which
+// core sits at which end -- that is why the names survive the core swap.
+//
+// down = host -> device. Producer core1 (ESC output hook, PDI ISR context),
+// consumer core0 (feeds the protocol deserializer).
+// Sized for the ARQ producer only: at most kPdChunkPayloadSize (44) bytes per
+// EtherCAT cycle with a window of 2, so 1 KiB is ~23 cycles of core0 stall
+// tolerance (1.4-2.9 ms at 62.5-125 us cycles). It no longer has to absorb USB
+// bulk bursts, because USB does not traverse the rings in this layout.
+inline constexpr std::size_t kXcoreDownRingSize = 1024;
+// up = device -> host. Producer core0 (serializer batches), consumer core1
+// (ARQ endpoint feeding the ESC input image).
+//
+// DO NOT SHRINK. XcoreRing::try_push is all-or-nothing and the producer pushes
+// a whole InterruptSafeBuffer batch at a time, so the ring must hold the entire
+// batch pool: kBatchCount (8) * kProtocolBufferSize (1023) = 8184 <= 8192. The
+// consumer now drains only 44 bytes per EtherCAT cycle, which makes the bound
+// tighter than it was, not looser.
 inline constexpr std::size_t kXcoreUpRingSize = 8192;
 
 #if defined(RMCS_ECAT_HYBRID_PD) && RMCS_ECAT_HYBRID_PD
@@ -41,21 +72,117 @@ inline constexpr std::size_t kXcoreMailboxDownRingSize = 512;
 inline constexpr std::size_t kXcoreMailboxUpRingSize = 1024;
 #endif
 
+// Data-plane owner. Only ONE host transport drives the protocol stack at a
+// time; they are mutually exclusive, never concurrent.
+enum class XcoreOwner : std::uint32_t {
+    kEcat = 0,
+    kUsb = 1,
+};
+
+// Cross-core NOR flash RPC (migration step 3).
+//
+// There is one flash on this part (XPI0) and it holds the emulated SII EEPROM.
+// Erase/program stall instruction fetch, and core0 is the XIP core -- so core1,
+// which is a pure RAM image and immune to those stalls, cannot do it itself and
+// delegates here. Reads are NOT delegated: nor_flash_read is a memcpy from the
+// XIP window, not a ROM API call, so core1 does them locally (SII upload is a
+// hot path).
+//
+// Why the whole e2p state machine stays on core1 and only these three primitives
+// cross: e2p_info_table is 32 KB of RAM-resident index state. If core0 performed
+// the writes, core1's index would go stale and the next e2p_read would follow a
+// dead data_addr. There is no workable "core1 reads / core0 writes" split.
+inline constexpr std::size_t kXcoreFlashPayloadSize = 512; // == E2P_FLUSH_BUF_SIZE
+
+enum class XcoreFlashOp : std::uint32_t {
+    kNone = 0,
+    kProgram = 1,     // program `size` bytes of `payload` at `address`
+    kEraseSector = 2, // erase exactly ONE sector at `address`; `size` ignored
+};
+
+enum class XcoreFlashStatus : std::uint32_t {
+    kOk = 0,
+    kUnavailable = 1, // core0 never brought the NOR up
+    kBadOp = 2,
+    kBadRange = 3, // outside the emulated-EEPROM window, or misaligned
+    kFlashError = 4,
+};
+
+// One request slot. core1 fills op/address/size/payload, then release-stores an
+// incremented `request`; core0 executes and echoes it into `response` with
+// `status` valid. Single outstanding request by construction -- core1 busy-waits
+// for the echo before issuing the next.
+//
+// Erase is deliberately ONE sector per request rather than a range: core0 masks
+// interrupts around each ROM call, so per-sector requests hand interrupts back
+// between sectors instead of holding them off for a whole multi-sector erase.
+struct XcoreFlashRpc {
+    std::uint32_t sector_size = 0;  // published by core0 pre-release; 0 == no server
+    std::uint32_t window_start = 0; // inclusive, absolute XIP address
+    std::uint32_t window_end = 0;   // exclusive
+    std::atomic<std::uint32_t> request{0};
+    std::atomic<std::uint32_t> response{0};
+    std::uint32_t op = 0;
+    std::uint32_t address = 0;
+    std::uint32_t size = 0;
+    std::uint32_t status = 0; // valid when response == request
+    alignas(4) unsigned char payload[kXcoreFlashPayloadSize] = {};
+};
+
 struct XcoreChannel {
     std::atomic<std::uint32_t> magic{0};
     std::uint32_t version = 0;
-    // Bumped by core0 on every SAFEOP -> OP transition so the fieldbus core
-    // can observe that the host link (re)started. The ring lifecycle across
-    // OP cycles (flush vs. keep) is deliberately NOT decided here; it belongs
-    // to the protocol session policy (see ../README.md).
+    // Generation counter for cross-core records. Bumped on any transport-level
+    // restart so in-flight hybrid CAN records from a previous ownership
+    // interval can be rejected by tag comparison.
+    //
+    // It no longer doubles as a "restart your session" signal: the session
+    // layer now lives on core0 together with the protocol stack, so core0
+    // restarts it directly instead of announcing it across the rings. Keeping
+    // the two meanings fused would couple core1's epoch bumps (SAFEOP -> OP) to
+    // core0's session lifetime, which is not what either side wants.
     std::atomic<std::uint32_t> link_epoch{0};
-    // Cross-core transport ownership. Core0 updates this together with its USB
-    // arbitration state; hybrid core1 reads it in the CAN RX ISR so USB keeps
-    // receiving CAN feedback through the reliable serializer while it owns the
-    // shared stream rings.
+
+    // --- Arbitration (see ../CORE_SWAP_MIGRATION.md section 3.1) ------------
+    //
+    // core0 is the authority: the USB events that trigger a handover arrive on
+    // core0, and core0 is the ring end that actually decides whether bytes
+    // enter the deserializer. Putting the decision at the execution point means
+    // there is no cross-core window to get wrong.
+    //
+    // Correctness does NOT depend on core1 observing `owner` promptly. core0
+    // switches its own down-ring consumption to discard-mode BEFORE announcing,
+    // so any chunk core1 pushes in the meantime cannot interleave with USB
+    // bytes in the deserializer. Muxing at the consumer is what makes this
+    // safe; gating at the producer would always leave a visibility window.
+    std::atomic<std::uint32_t> owner{static_cast<std::uint32_t>(XcoreOwner::kEcat)};
+    // core1 echoes the owner value it has actually applied, turning "the remote
+    // end has gone quiet" into an observable event rather than a blind wait.
+    std::atomic<std::uint32_t> owner_ack{static_cast<std::uint32_t>(XcoreOwner::kEcat)};
+    // Monotonic counter incremented by core1 when an EtherCAT master enters OP
+    // and wants the link back. This is a REQUEST, not a seizure: core0 decides.
+    // (The old behaviour -- master entering OP unconditionally stealing the
+    // link -- is what let USB keepalive and IgH fight over ownership; see the
+    // arbitration note in ../README.md.)
+    std::atomic<std::uint32_t> ecat_claim{0};
+
+    // TRANSITIONAL, pre-core-swap only. The current (core0 = EtherCAT + USB)
+    // layout broadcasts USB ownership through this field so hybrid core1 can
+    // discard stale CAN records. The core-swap layout expresses the same thing
+    // through `owner` above, written by the core that owns the USB events.
+    //
+    // Kept so the existing bridge firmware keeps building and stays available as
+    // a regression baseline during the migration. Delete it -- and this comment
+    // -- once ecat/core0 and ecat/core1 are retired in favour of the swapped
+    // layout; do NOT add new readers.
     std::atomic<std::uint32_t> usb_active{0};
+
     XcoreRing<kXcoreDownRingSize> down;
     XcoreRing<kXcoreUpRingSize> up;
+    // core1 -> core0 text diagnostics; core1 must not printf (see xcore_diag.hpp).
+    XcoreDiagRing diag;
+    // core1 -> core0 NOR flash delegation for the emulated SII EEPROM.
+    XcoreFlashRpc flash;
 #if defined(RMCS_ECAT_HYBRID_PD) && RMCS_ECAT_HYBRID_PD
     // core0 -> core1: downlink CAN frames to transmit. Hybrid records carry
     // link_epoch low16 so transport handovers invalidate queued commands.

@@ -13,6 +13,7 @@
 #include "core/src/protocol/serializer.hpp"
 #include "firmware/rmcs_board/app/src/link/uplink.hpp"
 #include "firmware/rmcs_board/app/src/utility/boot_mailbox.hpp"
+#include "firmware/rmcs_board/app/src/xcore/pd_link.hpp"
 
 namespace {
 
@@ -29,6 +30,21 @@ uint32_t runtime_ms() {
 
 } // namespace
 
+// Which transport owns the protocol stack. In the single-core image USB is the
+// only one, so it binds the uplink hooks the CAN/UART ISRs serialize through.
+//
+// When the EtherCAT core1 image is present (LIBRMCS_APP_RELEASE_CORE1), the
+// cross-core process-data link owns them instead and defines these in
+// xcore/pd_link.cpp; USB keeps enumeration and DFU-RT but stays off the data
+// plane. Two definitions would be a duplicate symbol, and leaving the USB
+// downlink callback live would be worse than cosmetic: usb::Vendor is a second
+// HostSession with its own deserializer, so a USB host could still open a
+// session and drive CAN while EtherCAT believes it owns the link.
+//
+// Step 4 of the core swap merges both transports into one HostSession with two
+// transmit backends and arbitration, at which point this #if goes away.
+#if !(defined(LIBRMCS_APP_RELEASE_CORE1) && LIBRMCS_APP_RELEASE_CORE1)
+
 namespace librmcs::firmware::link {
 
 // The USB vendor class is the host transport of this application.
@@ -36,6 +52,8 @@ core::protocol::Serializer& uplink_serializer() { return usb::vendor->serializer
 bool uplink_enabled() { return usb::vendor->session_established(); }
 
 } // namespace librmcs::firmware::link
+
+#endif
 
 namespace librmcs::firmware::usb {
 
@@ -66,8 +84,22 @@ void tud_vendor_rx_cb(uint8_t itf, const uint8_t* buffer, uint16_t size) {
         return;
 
     const std::size_t max_packet_size = (tud_speed_get() == TUSB_SPEED_HIGH) ? 512 : 64;
+
+#if defined(LIBRMCS_APP_RELEASE_CORE1) && LIBRMCS_APP_RELEASE_CORE1
+    // Core-swap layout: the shared session lives in xcore::pd_link and USB is one
+    // of its two backends. Traffic on the OUT endpoint is what claims the data
+    // plane, but the handover runs in the main loop (it clears the batch pool,
+    // which must not happen in interrupt context) -- so record the claim, and
+    // only feed the deserializer once ownership has actually transferred.
+    // Otherwise these bytes would interleave with the EtherCAT byte stream.
+    xcore::notify_usb_activity();
+    if (xcore::usb_owns_data_plane())
+        xcore::pd_link->handle_usb_downlink(
+            {reinterpret_cast<const std::byte*>(buffer), size}, size < max_packet_size);
+#else
     usb::vendor->handle_downlink(
         {reinterpret_cast<const std::byte*>(buffer), size}, size < max_packet_size);
+#endif
 }
 
 void tud_dfu_runtime_reboot_to_dfu_cb() {

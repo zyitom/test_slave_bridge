@@ -45,8 +45,14 @@ import sys
 
 PD_CHUNK_SIZE = 48   # bytes per direction; must match rmcs_pd.h
 ENTRY_COUNT = 12     # 12 x UNSIGNED32 = 48 bytes
-REVISION = 3         # bump whenever the SII changes so already-flashed boards
-                     # refresh their emulated EEPROM on next boot
+REVISION = 6         # bump whenever the SII changes so already-flashed boards
+                     # refresh their emulated EEPROM on next boot. Must stay
+                     # ABOVE HYBRID_REVISION: a board that ever booted the
+                     # hybrid image stores 5, and a stock image numbered <= 5
+                     # silently keeps serving the hybrid SII (352-byte SMs)
+                     # while the firmware serves 48 -- see the ROLLBACK TRAP
+                     # note above. Raised 3 -> 6 on 2026-07-31 for exactly that
+                     # reason (this board had run the hybrid variant).
 
 # Hybrid fixed-PDO variant (RMCS_ECAT_HYBRID_PD): 352-byte SMs and a two-object
 # split per direction (mailbox array + stream array), mirroring the hybrid

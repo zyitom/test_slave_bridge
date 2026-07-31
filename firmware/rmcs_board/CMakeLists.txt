@@ -24,6 +24,13 @@ set(RV_ABI "ilp32" CACHE STRING "RISC-V ABI")
 set(BOARD_BOOTLOADER_MODE "auto" CACHE STRING "Bootloader mode (auto / manual)")
 set_property(CACHE BOARD_BOOTLOADER_MODE PROPERTY STRINGS auto manual)
 
+# Core-swap layout (ecat/CORE_SWAP_MIGRATION.md): build the EtherCAT stack as a
+# core1 secondary-core image and have the app load and release it at boot. OFF
+# builds the plain single-core USB firmware, which is what the USB/CAN
+# regressions measure and the only configuration that exists on a tree without
+# the core1 EtherCAT project.
+option(LIBRMCS_RELEASE_CORE1 "Build the EtherCAT core1 image and release CPU1 from the app" OFF)
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "debug")
 endif()
@@ -66,7 +73,42 @@ function(add_rmcs_board_subbuild target_name source_subdir)
     )
 endfunction()
 
-add_rmcs_board_subbuild(rmcs_board_app app)
+# Where the core1 sub-build must deposit its C-array image, and where the app
+# project expects to find it. Single definition so the two cannot drift.
+set(LIBRMCS_SEC_CORE_IMG_OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/app/generated/sec_core_img.c")
+
+if(LIBRMCS_RELEASE_CORE1)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ecat/core1_ecat/CMakeLists.txt")
+        message(FATAL_ERROR
+            "LIBRMCS_RELEASE_CORE1=ON but ecat/core1_ecat does not exist yet.\n"
+            "That project is the EtherCAT-on-core1 image; until it lands, configure with\n"
+            "-DLIBRMCS_RELEASE_CORE1=OFF (the default) to build the single-core USB firmware.\n"
+            "Background: firmware/rmcs_board/ecat/CORE_SWAP_MIGRATION.md section 4, step 0.")
+    endif()
+
+    # SEC_CORE_IMG_C_ARRAY_OUTPUT is the HPM SDK's own variable for the emitted
+    # array; passing it from here keeps the drop point owned by the superbuild
+    # rather than hard-coded on both sides.
+    add_rmcs_board_subbuild(
+        rmcs_board_core1_ecat
+        ecat/core1_ecat
+        -DSEC_CORE_IMG_C_ARRAY_OUTPUT=${LIBRMCS_SEC_CORE_IMG_OUTPUT}
+    )
+endif()
+
+add_rmcs_board_subbuild(
+    rmcs_board_app
+    app
+    -DLIBRMCS_APP_RELEASE_CORE1=${LIBRMCS_RELEASE_CORE1}
+)
+if(LIBRMCS_RELEASE_CORE1)
+    # The app compiles the sec_core_img.c that the core1 project emits, so the
+    # ordering is a hard requirement, not an optimization. Note that the app's
+    # existence check for that file runs at ITS configure time, which this
+    # dependency places after the core1 build.
+    add_dependencies(rmcs_board_app rmcs_board_core1_ecat)
+endif()
+
 add_rmcs_board_subbuild(
     rmcs_board_bootloader
     bootloader
@@ -77,18 +119,27 @@ set(RMCS_BOARD_APP_COMPILE_COMMANDS "${CMAKE_CURRENT_BINARY_DIR}/app/compile_com
 set(RMCS_BOARD_BOOTLOADER_COMPILE_COMMANDS "${CMAKE_CURRENT_BINARY_DIR}/bootloader/compile_commands.json")
 set(RMCS_BOARD_MERGED_COMPILE_COMMANDS "${CMAKE_CURRENT_BINARY_DIR}/compile_commands.json")
 
+set(RMCS_BOARD_COMPILE_COMMANDS_INPUTS
+    "${RMCS_BOARD_APP_COMPILE_COMMANDS}"
+    "${RMCS_BOARD_BOOTLOADER_COMPILE_COMMANDS}"
+)
+set(RMCS_BOARD_COMPILE_COMMANDS_TARGETS rmcs_board_app rmcs_board_bootloader)
+if(LIBRMCS_RELEASE_CORE1)
+    list(APPEND RMCS_BOARD_COMPILE_COMMANDS_INPUTS
+        "${CMAKE_CURRENT_BINARY_DIR}/ecat/core1_ecat/compile_commands.json")
+    list(APPEND RMCS_BOARD_COMPILE_COMMANDS_TARGETS rmcs_board_core1_ecat)
+endif()
+
 add_custom_command(
     OUTPUT "${RMCS_BOARD_MERGED_COMPILE_COMMANDS}"
     COMMAND
     ${CMAKE_COMMAND}
     "-DOUTPUT_FILE=${RMCS_BOARD_MERGED_COMPILE_COMMANDS}"
-    "-DINPUT_FILES=${RMCS_BOARD_APP_COMPILE_COMMANDS};${RMCS_BOARD_BOOTLOADER_COMPILE_COMMANDS}"
+    "-DINPUT_FILES=${RMCS_BOARD_COMPILE_COMMANDS_INPUTS}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/merge_compile_commands.cmake"
     DEPENDS
-    rmcs_board_app
-    rmcs_board_bootloader
-    "${RMCS_BOARD_APP_COMPILE_COMMANDS}"
-    "${RMCS_BOARD_BOOTLOADER_COMPILE_COMMANDS}"
+    ${RMCS_BOARD_COMPILE_COMMANDS_TARGETS}
+    ${RMCS_BOARD_COMPILE_COMMANDS_INPUTS}
     COMMENT "Merging rmcs_board compile commands"
     VERBATIM
 )

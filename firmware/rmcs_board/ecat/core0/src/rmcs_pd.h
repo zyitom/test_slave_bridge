@@ -57,6 +57,11 @@ bool rmcs_pd_uplink_pending(void);
  * ecat_appl.c alongside the handler. */
 void rmcs_uplink_doorbell_init(void);
 
+/* Mask/unmask the doorbell IRQ. Thread-context code that runs the vendor data
+ * pump must wrap the call, so the pump inside the doorbell ISR cannot preempt
+ * it (implemented in ecat_appl.c next to the ISR that owns the IRQ number). */
+void rmcs_uplink_doorbell_set_enabled(bool enabled);
+
 /*
  * USB transport path (usb_runtime.cpp). The same cross-core rings carry the
  * raw protocol byte stream regardless of transport, so USB does not need the

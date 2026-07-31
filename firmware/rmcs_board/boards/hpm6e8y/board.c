@@ -9,6 +9,7 @@
 #include <hpm_common.h>
 #include <hpm_debug_console.h>
 #include <hpm_enet_drv.h>
+#include <hpm_uart_drv.h> /* board_console_try_send_byte: non-blocking TX check */
 #include <hpm_esc_drv.h>
 #include <hpm_gpio_drv.h>
 #include <hpm_gpiom_drv.h>
@@ -77,6 +78,13 @@ void board_init_console(void) {
     if (console_init(&cfg) != status_success) {
         while (1) {}
     }
+}
+
+bool board_console_try_send_byte(uint8_t byte) {
+    if (!uart_check_status(BOARD_CONSOLE_UART_BASE, uart_stat_tx_slot_avail))
+        return false;
+    uart_write_byte(BOARD_CONSOLE_UART_BASE, byte);
+    return true;
 }
 
 static void board_park_leds_off(void) {
@@ -242,20 +250,47 @@ static inline void board_init_clock(void) {
     clock_add_to_group(clock_xdma, 0);
     clock_add_to_group(clock_gpio, 0);
     clock_add_to_group(clock_ptpc, 0);
+    /* A clock group answers "which CPU requests this peripheral to stay on", not
+     * "which CPU may access it" -- both cores reach every peripheral over AXI.
+     * A peripheral is gated when the CPU its group is bound to is not running.
+     * The two switches below are therefore ORTHOGONAL and must stay that way:
+     *
+     *   BOARD_FIELDBUS_ON_CORE0   CAN0..CAN3 + UART1 belong to group 0
+     *   BOARD_SECONDARY_CORE_USED core1 is released, so group 1 is meaningful
+     *
+     * The core-swap layout (EtherCAT on core1, USB+CAN on core0) needs BOTH set:
+     * the fieldbus peripherals must be clocked from the always-running core0
+     * while core1 still needs its CPU clock and machine timer. */
+#if defined(BOARD_FIELDBUS_ON_CORE0) && BOARD_FIELDBUS_ON_CORE0
+    /* Fieldbus peripherals driven from core0. Leaving them in group 1 while
+     * core1 is never released gates them forever -- that was the 2026-07-31
+     * bug where MCAN silently neither transmitted nor received (bring-up notes
+     * pitfall 12). */
+    clock_add_to_group(clock_can0, 0);
+    clock_add_to_group(clock_can1, 0);
+    clock_add_to_group(clock_can2, 0);
+    clock_add_to_group(clock_can3, 0);
+    clock_add_to_group(clock_uart1, 0);
+#endif
     /* Connect Group0 to CPU0 */
     clock_connect_group_to_cpu(0, 0);
 
-    /* Group 1: core1 domain (fieldbus peripherals live with the fieldbus
-     * core: physical CAN0..CAN3 / MCAN0..MCAN3 + UART1 + its machine timer). */
+#if defined(BOARD_SECONDARY_CORE_USED) && BOARD_SECONDARY_CORE_USED
+    /* Group 1: core1 domain. Always carries core1's own CPU clock and machine
+     * timer; the fieldbus peripherals only join when they are not already in
+     * group 0. */
     clock_add_to_group(clock_cpu1, 1);
     clock_add_to_group(clock_mchtmr1, 1);
+#if !defined(BOARD_FIELDBUS_ON_CORE0) || !BOARD_FIELDBUS_ON_CORE0
     clock_add_to_group(clock_can0, 1);
     clock_add_to_group(clock_can1, 1);
     clock_add_to_group(clock_can2, 1);
     clock_add_to_group(clock_can3, 1);
     clock_add_to_group(clock_uart1, 1);
+#endif
     /* Connect Group1 to CPU1 */
     clock_connect_group_to_cpu(1, 1);
+#endif
 
     /* Bump up DCDC voltage to 1275mv */
     pcfg_dcdc_set_voltage(HPM_PCFG, 1275);
@@ -295,7 +330,16 @@ void board_init_usb(void) {
 }
 
 void board_init_ethercat(ESC_Type* ptr) {
+    /* Keep the ESC in the clock group of whichever core owns it, same as
+     * clock_eth0 below. Purely tidiness: a clock group only says which CPU
+     * requests the peripheral to stay on, and core0 is always running in every
+     * layout, so leaving the ESC in group 0 would work even when core1 drives
+     * it. Nothing here is fragile. */
+#if defined(BOARD_RUNNING_CORE) && BOARD_RUNNING_CORE == HPM_CORE1
+    clock_add_to_group(clock_esc0, 1);
+#else
     clock_add_to_group(clock_esc0, 0);
+#endif
     esc_core_enable_clock(ptr, true);
     esc_phy_enable_clock(ptr, true);
     configure_esc_internal_phy_interface(ptr);

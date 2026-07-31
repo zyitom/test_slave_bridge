@@ -17,6 +17,12 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../common/cmake/librmcs_firmware.cmake")
 
 set(HPM_BUILD_TYPE "flash_uf2" CACHE STRING "HPM build type")
 
+# Load the EtherCAT core1 image and release CPU1 at boot (core-swap layout, see
+# ecat/CORE_SWAP_MIGRATION.md). OFF keeps this a self-contained single-core USB
+# firmware, which is the configuration the USB and CAN regression tests run
+# against -- and the only one buildable before the core1 project exists.
+option(LIBRMCS_APP_RELEASE_CORE1 "Load and release the EtherCAT core1 image" OFF)
+
 set(CONFIG_DMA_MGR 1)
 set(CONFIG_TINYUSB 1)
 set(CONFIG_USB_DEVICE 1)
@@ -76,6 +82,65 @@ file(GLOB_RECURSE PROJECT_SOURCE CONFIGURE_DEPENDS
 )
 sdk_app_src(${PROJECT_SOURCE})
 sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/class/dfu/dfu_rt_device.c")
+
+if(LIBRMCS_APP_RELEASE_CORE1)
+    # The generated core1 image lives in generated/, NOT in src/: the GLOB_RECURSE
+    # above would otherwise swallow it, and a ~500 KB machine-generated C array
+    # sitting among the hand-written sources invites someone to edit or review it.
+    set(LIBRMCS_SEC_CORE_IMG "${CMAKE_CURRENT_SOURCE_DIR}/generated/sec_core_img.c")
+    if(NOT EXISTS "${LIBRMCS_SEC_CORE_IMG}")
+        message(FATAL_ERROR
+            "LIBRMCS_APP_RELEASE_CORE1=ON but app/generated/sec_core_img.c is missing.\n"
+            "It is emitted by the EtherCAT core1 sub-build (ecat/core1_ecat), which the\n"
+            "rmcs_board superbuild runs before this project. Either build through the\n"
+            "superbuild (firmware/rmcs_board/CMakeLists.txt) or configure with\n"
+            "-DLIBRMCS_APP_RELEASE_CORE1=OFF for a single-core image.\n"
+            "Background: firmware/rmcs_board/ecat/CORE_SWAP_MIGRATION.md section 4, step 0.")
+    endif()
+
+    sdk_compile_definitions(-DLIBRMCS_APP_RELEASE_CORE1=1)
+
+    # --- Detach the USB data plane (migration step 1) -------------------------
+    #
+    # Step 1 hard-codes "EtherCAT always owns the data plane" so that correctness
+    # and arbitration can be validated separately. The PD stream
+    # (src/xcore/pd_link.cpp) therefore becomes the one live link::HostSession,
+    # and src/usb/vendor.cpp's three data-plane bindings have to go:
+    #
+    #   * link::uplink_serializer / link::uplink_enabled -- strong definitions
+    #     pointing at usb::vendor. pd_link.cpp defines the same two symbols, so
+    #     leaving both in the link is a duplicate-symbol error. Renaming them
+    #     here makes vendor.cpp's pair unreferenced and lets the CAN/UART
+    #     drivers, which know the protocol stack ONLY through these two free
+    #     functions, reach the PD stream with zero source changes.
+    #   * tud_vendor_rx_cb -- the USB bulk OUT hook. Not renaming it would leave
+    #     a real hole rather than a cosmetic one: usb::vendor is a second
+    #     HostSession with its own deserializer, so a USB host could still
+    #     establish a session and drive the CAN buses while EtherCAT believes it
+    #     owns the link. With the strong definition renamed away, TinyUSB's weak
+    #     no-op stub takes over; vendor_device.c re-arms the RX endpoint
+    #     unconditionally right after the callback and CFG_TUD_VENDOR_RX_BUFSIZE
+    #     is 0, so OUT packets are drained and dropped with no stall and no FIFO
+    #     growth.
+    #
+    # What deliberately KEEPS working, because it lives in the same file and is
+    # untouched: tusb_rhport_init + the USB0 ISR (enumeration), the descriptor
+    # callbacks, and tud_dfu_runtime_reboot_to_dfu_cb + poll_dfu_runtime_reboot
+    # (DFU-RT). Breaking those would break the flashing path, which is the whole
+    # reason this migration moves EtherCAT instead of USB.
+    #
+    # vendor.cpp guards those three bindings on LIBRMCS_APP_RELEASE_CORE1
+    # directly. An earlier revision instead renamed the symbols through a
+    # per-source COMPILE_DEFINITIONS list; that also renamed HostSession's inline
+    # uplink_enabled() member inside that one translation unit, which is an ODR
+    # violation the compiler cannot diagnose. Not worth it to avoid an #if.
+    #
+    # The cross-core channel headers (ecat/common) are included through the
+    # project root, which is already on the include path above.
+    sdk_app_inc("$ENV{HPM_SDK_BASE}/samples/multicore/common")
+    sdk_app_src("$ENV{HPM_SDK_BASE}/samples/multicore/common/multicore_common.c")
+    sdk_app_src("${LIBRMCS_SEC_CORE_IMG}")
+endif()
 
 sdk_linker_global_symbols("_uf2_bl_length=0x20000")
 
