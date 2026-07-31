@@ -17,6 +17,9 @@
 # Omit the image selector to use the project default image. Passing "app" creates
 # a temporary attach-mode project for the board application ELF.
 #
+# Ozone is started detached: the shell returns immediately and Ozone survives
+# closing the terminal. Its stdout/stderr go to the log file printed on start.
+#
 # ch32_board is deliberately absent: it is debugged over WCH-Link, which Ozone
 # does not speak. Use the VS Code "ch32 - Debug V3F boot core" configuration, or
 # ./jlink-debug.sh for the command-line route on the J-Link boards.
@@ -25,6 +28,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/ozone"
+CACHE_DIR="${TMPDIR:-/tmp}/librmcs-ozone-${UID:-$(id -u)}"
 
 OZONE="${OZONE:-}"
 if [[ -z "$OZONE" ]]; then
@@ -53,17 +57,7 @@ list_projects() {
 }
 
 usage() {
-    sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^#\s\?//'
-}
-
-resolve_project_path() {
-    local path="$1"
-
-    if [[ "$path" = /* ]]; then
-        printf '%s\n' "$path"
-    else
-        printf '%s\n' "$PROJECT_DIR/$path"
-    fi
+    sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^#\s\?//'
 }
 
 app_elf_for_project() {
@@ -94,11 +88,10 @@ make_app_project() {
     local project_name="$1"
     local source_project="$2"
     local app_elf="$3"
-    local cache_dir="${TMPDIR:-/tmp}/librmcs-ozone-${UID:-$(id -u)}"
-    local run_project="$cache_dir/$project_name-app.jdebug"
+    local run_project="$CACHE_DIR/$project_name-app.jdebug"
     local escaped_app_elf
 
-    mkdir -p "$cache_dir"
+    mkdir -p "$CACHE_DIR"
     escaped_app_elf="$(sed_replacement_escape "$app_elf")"
     sed -E \
         -e 's|Debug\.SetConnectMode *\([^)]*\);|Debug.SetConnectMode (CM_ATTACH_HALT);|' \
@@ -148,7 +141,10 @@ case "${1:-}" in
     ;;
 esac
 
-PROJECT="$PROJECT_DIR/$1.jdebug"
+NAME="$1"
+IMAGE="${2:-default}"
+
+PROJECT="$PROJECT_DIR/$NAME.jdebug"
 [[ -f "$PROJECT" ]] || {
     echo "error: no such project: $PROJECT" >&2
     echo >&2
@@ -161,13 +157,34 @@ PROJECT="$PROJECT_DIR/$1.jdebug"
     exit 1
 }
 
+case "$IMAGE" in
+default)
+    RUN_PROJECT="$PROJECT"
+    # Project-relative, as written in the .jdebug.
+    ELF="$PROJECT_DIR/$(sed -n 's/.*File\.Open *("\([^"]*\)").*/\1/p' "$PROJECT" | head -1)"
+    ;;
+app)
+    ELF="$(app_elf_for_project "$NAME")" || {
+        echo "error: no application ELF known for project: $NAME" >&2
+        exit 1
+    }
+    RUN_PROJECT="$(make_app_project "$NAME" "$PROJECT" "$ELF")"
+    ;;
+*)
+    echo "error: unknown image selector: $IMAGE (expected \"app\", or nothing)" >&2
+    echo >&2
+    usage >&2
+    exit 1
+    ;;
+esac
+
 # Warn instead of failing: Ozone can still open with a stale or missing image,
 # and sometimes that is what you want (e.g. inspecting a board you did not build
 # for on this machine).
-ELF_REL="$(sed -n 's/.*File\.Open *("\([^"]*\)").*/\1/p' "$PROJECT" | head -1)"
-if [[ -n "$ELF_REL" && ! -f "$PROJECT_DIR/$ELF_REL" ]]; then
-    echo "warning: program file not built yet: $PROJECT_DIR/$ELF_REL" >&2
+if [[ ! -f "$ELF" ]]; then
+    echo "warning: program file not built yet: $ELF" >&2
 fi
 
-echo ">> $OZONE $PROJECT"
-exec "$OZONE" "$PROJECT"
+mkdir -p "$CACHE_DIR"
+echo ">> $OZONE $RUN_PROJECT"
+launch_ozone "$RUN_PROJECT" "$CACHE_DIR/$NAME-$IMAGE.log"

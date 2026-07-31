@@ -11,3 +11,4 @@ compile_commands.json
 # ignore personal local overrides.
 .claude/settings.local.json
 .claude/worktrees/
+*.jdebug.user

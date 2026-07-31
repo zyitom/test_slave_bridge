@@ -28,9 +28,13 @@ set(CMAKE_ASM_FLAGS "${CMAKE_C_FLAGS} -x assembler-with-cpp -MMD -MP")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -fdata-sections -ffunction-sections")
 
 set(CMAKE_C_FLAGS_DEBUG "-Og -g3")
-set(CMAKE_C_FLAGS_RELEASE "-O3 -g0")
+# -g, not -g0: DWARF costs nothing at run time. The debug sections are not
+# PT_LOAD, so the flashed bytes stay byte-identical to a -g0 build -- only the
+# host-side ELF grows. Keeping it makes the optimized image debuggable in Ozone
+# (./ozone-debug.sh mc02 app) and lets a crash dump be symbolized after the fact.
+set(CMAKE_C_FLAGS_RELEASE "-O3 -g")
 set(CMAKE_CXX_FLAGS_DEBUG "-Og -g3")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -g0")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -g")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -fno-rtti -fno-exceptions -fno-threadsafe-statics")
 
