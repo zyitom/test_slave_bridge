@@ -770,12 +770,35 @@ private:
     void cycle_loop() {
         using Clock = std::chrono::steady_clock;
 
+        // Diagnostic-only pacing. Free-running (0) is the production behaviour;
+        // setting RMCS_ECAT_CYCLE_US spaces the exchanges out so that the round
+        // trip can be measured against several cycle periods. Fitting
+        // RTT = N * T_cycle + C over those points separates the part that scales
+        // with the poll rate (N cycles of pipeline and phase) from the fixed
+        // part (CAN wire time plus board and host processing) -- a single
+        // measurement cannot, because it has two unknowns.
+        //
+        // Busy-wait rather than sleep: a sleep would hand the core back and
+        // reintroduce wakeup jitter and C-state exit into the very number being
+        // measured.
+        std::chrono::nanoseconds pace{0};
+        if (const char* pace_env = std::getenv("RMCS_ECAT_CYCLE_US")) {
+            const long value = std::strtol(pace_env, nullptr, 10);
+            if (value > 0)
+                pace = std::chrono::microseconds{value};
+        }
+        Clock::time_point next_cycle = Clock::now();
+
         uint32_t wc_error_streak = 0;
         Clock::time_point window_start = Clock::now();
         uint64_t window_cycles = 0;
         uint64_t window_wc_errors = 0;
 
         while (!stop_.load(std::memory_order_relaxed)) {
+            if (pace.count() != 0) {
+                while (Clock::now() < next_cycle) {}
+                next_cycle += pace;
+            }
             if (process_data_discontinuity_) {
                 // Do not present any old generation to a slave that may have
                 // reset during a short SAFEOP round trip. The first complete

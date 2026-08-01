@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace librmcs::firmware::ecat {
 struct XcoreChannel;
 }
@@ -42,10 +44,26 @@ void publish_channel();
 // in ecat/common/xcore_channel.hpp and is not this image's to change.
 ecat::XcoreChannel* channel();
 
-// Call with interrupts ENABLED and after every core0 driver is initialized:
-// core1 may issue a cross-core request in its first microseconds, and a masked
-// core0 would turn that into an unbounded, silent start-up stall.
+// Call with interrupts ENABLED, and BEFORE USB and the CAN/UART drivers are
+// brought up (but after the flash RPC server is armed).
+//
+// Interrupts must be on because core1 issues a cross-core request within
+// microseconds of release and a masked core0 would turn that into an unbounded,
+// silent start-up stall. USB and the CAN controllers must be off because the
+// first request can be a full SII rewrite, and servicing one costs core0 tens of
+// milliseconds of masked interrupts per erased sector -- long enough to NAK an
+// enumerated USB host out of its session and to overrun a live MCAN receiver.
+// Pair it with wait_for_core1_eeprom() below, which is what makes the ordering
+// mean anything.
 void release_core1();
+
+// Block until core1 reports that its boot-path EEPROM work is done, or until
+// `timeout_ms` elapses. Returns false on timeout, in which case start-up
+// continues anyway: a core1 that never answers must not brick the USB firmware,
+// and the only cost of proceeding is the disturbance this ordering avoids.
+//
+// A no-op returning true in single-core builds.
+bool wait_for_core1_eeprom(std::uint32_t timeout_ms);
 
 // Drains core1's diagnostic ring to the core0 console. core1 must never printf
 // (the reasoning is in ecat/common/xcore_diag.hpp); this is its only log path,
@@ -73,6 +91,7 @@ void ring_uplink_doorbell();
 
 inline void publish_channel() {}
 inline void release_core1() {}
+inline bool wait_for_core1_eeprom(std::uint32_t) { return true; }
 inline void poll_diagnostics() {}
 inline void ring_uplink_doorbell() {}
 inline ecat::XcoreChannel* channel() { return nullptr; }

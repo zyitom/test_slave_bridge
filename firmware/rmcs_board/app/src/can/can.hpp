@@ -41,9 +41,26 @@ public:
     static constexpr uint32_t kArbitrationBaudrate = 1'000'000;
     static constexpr uint32_t kCanFdDataBaudrate = 5'000'000;
 
+    // The IE mask this driver arms, and the same mask the ISR re-tests against
+    // IR before returning. One constant for both: the ISR loop is only correct
+    // while it covers exactly the sources that can hold the interrupt line
+    // high, so these two must not be able to drift apart (see irq_handler).
+    static constexpr uint32_t kEnabledInterrupts =
+#if defined(RMCS_ECAT_NATIVE_CAN) && RMCS_ECAT_NATIVE_CAN
+        // Native variant polls RX FIFO0 from the core1 loop (read_native), so
+        // the RX-new-message interrupt is left disabled -- its ISR path reaches
+        // host_link, which the native build does not construct.
+        0U
+#else
+        MCAN_INT_RXFIFO0_NEW_MSG
+#endif
+        | MCAN_INT_BUS_OFF_STATUS | MCAN_INT_WARNING_STATUS | MCAN_INT_ERROR_PASSIVE
+        | MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE | MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE;
+
     explicit Can(data::DataId data_id, CanPort port, size_t board_can_index)
         : data_id_(data_id)
         , can_base_(reinterpret_cast<MCAN_Type*>(port.base))
+        , irq_num_(port.irq_num)
         , canfd_(port.mode == CanMode::kCanFd) {
 
         // Message RAM placement is board business: SoCs differ in where MCAN
@@ -134,21 +151,9 @@ public:
         ptpc_set_timer_output(HPM_PTPC, mcan_get_instance_from_base(can_base_), false);
 
         mcan_init(can_base_, &config, can_source_clock_freq);
-        mcan_enable_interrupts(
-            can_base_,
-#if defined(RMCS_ECAT_NATIVE_CAN) && RMCS_ECAT_NATIVE_CAN
-            // Native variant polls RX FIFO0 from the core1 loop (read_native),
-            // so the RX-new-message interrupt is left disabled -- its ISR path
-            // reaches host_link, which the native build does not construct.
-            MCAN_INT_BUS_OFF_STATUS | MCAN_INT_WARNING_STATUS | MCAN_INT_ERROR_PASSIVE
-                | MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE | MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE);
-#else
-            MCAN_INT_RXFIFO0_NEW_MSG | MCAN_INT_BUS_OFF_STATUS | MCAN_INT_WARNING_STATUS
-                | MCAN_INT_ERROR_PASSIVE | MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE
-                | MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE);
-#endif
+        mcan_enable_interrupts(can_base_, kEnabledInterrupts);
         // CAN RX is the forwarding-critical path (motor feedback -> host).
-        // Priority 3: above USB (2) and UART (1) — ensures CAN frames are
+        // Priority 3: above USB (2) and UART (1) -- ensures CAN frames are
         // never delayed by bulk USB transfers or DMA callbacks.
         intc_m_enable_irq_with_priority(port.irq_num, 3);
     }
@@ -163,6 +168,16 @@ public:
     void handle_downlink(const data::CanDataView& data);
     bool handle_uplink(core::protocol::FieldId field_id, core::protocol::Serializer& serializer);
     void irq_handler();
+
+    // Main-loop watchdog for an interrupt request that was accepted by the PLIC
+    // but never delivered. Two register reads on the healthy path; see can.cpp
+    // for the failure it repairs and the evidence behind it.
+    void poll();
+
+    // One pass of the interrupt handler: acknowledge `flags` and act on them.
+    // Split out of irq_handler so the latter can re-test IR and repeat; see the
+    // comment there for why returning after a single pass loses the interrupt.
+    void handle_interrupt_flags(uint32_t flags);
 
     // Native variant (RMCS_ECAT_NATIVE_CAN): read one frame straight out of RX
     // FIFO0 into `out`, copying its data bytes into caller-owned `storage[8]`.
@@ -191,6 +206,13 @@ public:
     }
 
 private:
+    // Position of this controller in board::kCanPorts. The data ids are
+    // contiguous by construction (kCanDataIds below), so this needs no extra
+    // member; it exists for the diagnostic counters, which are per board index.
+    std::size_t can_index() const {
+        return static_cast<std::size_t>(data_id_) - static_cast<std::size_t>(data::DataId::kCan0);
+    }
+
     // Read and normalize one RX FIFO frame. `true` means an element was
     // consumed; `valid` distinguishes a representable frame from an FD payload
     // that the configured 8-byte RX element had to truncate.
@@ -230,7 +252,16 @@ private:
 
     const data::DataId data_id_;
     MCAN_Type* can_base_;
+    const uint32_t irq_num_;
     const bool canfd_;
+
+    // Interrupt bookkeeping for poll(). irq_count_ is written only by the ISR
+    // and read only by the main loop, so a plain 32-bit counter is enough --
+    // aligned loads and stores are atomic on RV32 and only the change matters,
+    // not the exact value.
+    uint32_t irq_count_ = 0;
+    uint32_t watchdog_irq_count_ = 0;
+    bool watchdog_armed_ = false;
 };
 
 // Everything below is built from the board's CAN port table (board::kCanPorts),

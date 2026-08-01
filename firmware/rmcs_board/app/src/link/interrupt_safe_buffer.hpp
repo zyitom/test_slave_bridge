@@ -12,6 +12,7 @@
 #include "core/src/protocol/serializer.hpp"
 #include "core/src/utility/assert.hpp"
 #include "core/src/utility/immovable.hpp"
+#include "firmware/rmcs_board/app/src/diag/can_diag.hpp"
 #include "firmware/rmcs_board/app/src/led/led.hpp"
 
 namespace librmcs::firmware::link {
@@ -50,6 +51,7 @@ public:
             auto writeable = kBatchCount - readable - 1;
             if (!writeable) {
                 led::led->uplink_buffer_full();
+                diag::note_alloc_fail();
                 return {};
             }
 

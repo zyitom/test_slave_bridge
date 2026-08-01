@@ -201,7 +201,17 @@ EtherCAT core0 应用现在会枚举一个 TinyUSB 的 DFU-runtime 接口，VID:
 烧完 app 之后，`lsusb` 里应该仍能看到板子处于 runtime 模式。从 runtime 发起的 DFU
 detach 请求会写入与常规 app 相同的 boot mailbox，然后复位进入 bootloader 的 DFU 模式。
 
-### 已知问题（待修）：DFU-runtime 的 detach 在板子跑一段时间后会失效
+### 已知问题（复核后降级为"未复现"）：DFU-runtime 的 detach 在板子跑一段时间后会失效
+
+> **2026-08-01 复核**：本节末尾提出的"把 ESC bring-up 关掉之后应该就可靠了，但仍需
+> 验证与加固"——**验证做了，本次未复现**。当天在核对调布局与单核镜像之间来回刷了
+> 十余次，每次都是 app runtime 状态下 `dfu-util` 自动 detach + 重枚举成功，没有出现
+> 一次 `Failed to retrieve language identifiers`；期间还夹着 900 秒 16 kHz 满载压测和
+> 多次 EtherCAT/USB 会话。
+>
+> 但**不宣布已修复**：原因分析（core0 停止调用 `tud_task()`）指向的是"主循环被卡住"
+> 这一类故障，而本次的所有镜像里主循环都是健康的，等于没有制造出触发条件。
+> 结论应表述为"在当前固件下未观察到"，而不是"已解决"。下面的原文与恢复办法保留。
 
 板子运行一段时间后，`dfu-util -d a11c:a904` 有时会失败，报 `Failed to retrieve language
 identifiers` / `Cannot set alternate interface zero: LIBUSB_ERROR_OTHER`。设备仍然能被

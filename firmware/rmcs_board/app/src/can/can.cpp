@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "core/src/utility/assert.hpp"
+#include "firmware/rmcs_board/app/src/diag/can_diag.hpp"
 
 // The CAN forwarding hot path is defined out-of-line here, in the ILM (.fast)
 // section, rather than inline in can.hpp. ILM is zero-wait-state and never
@@ -46,8 +47,10 @@ void Can::handle_downlink(const data::CanDataView& data) {
         std::memcpy(frame.data_8, data.can_data.data(), data.can_data.size());
 
     const hpm_stat_t status = mcan_transmit_via_txfifo_nonblocking(can_base_, &frame, nullptr);
-    if (status != status_success)
+    if (status != status_success) {
         led::led->downlink_buffer_full();
+        diag::note_tx_fail(can_index());
+    }
 }
 
 ATTR_PLACE_AT(".fast")
@@ -133,24 +136,110 @@ bool Can::handle_uplink(core::protocol::FieldId field_id, core::protocol::Serial
     bool valid = false;
     if (!read_uplink(data, storage, valid))
         return false;
-    if (valid)
+    if (valid) {
         serialize_uplink(field_id, data, serializer);
+        diag::note_frame(can_index());
+    }
 
     return true;
 }
 
 ATTR_PLACE_AT(".fast")
 void Can::irq_handler() {
-    const uint32_t flags = mcan_get_interrupt_flags(can_base_);
+    // Counted before the flag read so a delivered-but-empty interrupt still
+    // shows up: a frozen entry count is the signal that separates "the
+    // interrupt stopped arriving" from "the controller stopped receiving".
+    diag::note_isr_entry(can_index());
+    irq_count_++;
+
+    uint32_t flags = mcan_get_interrupt_flags(can_base_);
 
     if (!flags) [[unlikely]]
         return;
 
-    // Clear the flags before draining: IR is write-1-to-clear, and RF0N set by
-    // a frame arriving mid-handler would be wiped by a clear at the end while
-    // the frame stays in the FIFO -- stranded until the next frame happens to
-    // arrive. Cleared up front, such a frame re-pends the interrupt and the
-    // ISR simply runs again.
+    // Handle, then re-read, and only return once IR shows no enabled source
+    // left. The re-read is what makes this correct, and it is not an
+    // optimization -- without it the controller goes permanently deaf:
+    //
+    // The M_CAN drives its interrupt line from the level of (IR & IE), but the
+    // PLIC gateway latches it as an EDGE: a new request is registered only when
+    // that expression goes from zero to non-zero. Clearing IR once on entry and
+    // then draining leaves a window in which a frame arriving mid-drain sets
+    // RF0N again. Nothing clears it afterwards, so the line stays high, no
+    // further edge is ever produced, and the interrupt is never delivered
+    // again. The FIFO then fills and stays full while the bus is perfectly
+    // healthy. Measured in exactly that state at 16 kHz per stream:
+    //   IR = 0x0001000f (RF0N|RF0W|RF0F|RF0L set), RXF0S fill = 32, F0F = 1,
+    //   RF0L = 1, PSR clean (no bus-off, no error-passive, act = rx),
+    //   PLIC pending bit for the source clear, ISR entry count frozen.
+    // Only a reset recovered it, which is what made this look like a lost PLIC
+    // claim rather than a missed edge.
+    //
+    // With the loop, anything set during handling is handled and cleared in
+    // this same invocation, so the ISR returns only after observing IR with no
+    // enabled bit -- i.e. with the line genuinely low, so the next frame does
+    // produce an edge. The loop terminates because one pass drains the whole
+    // FIFO in far less time than a CAN-FD frame takes on the wire.
+    do {
+        handle_interrupt_flags(flags);
+        flags = mcan_get_interrupt_flags(can_base_);
+    } while ((flags & kEnabledInterrupts) != 0);
+}
+
+// Main-loop repair for an interrupt request the PLIC accepted but never
+// delivered again.
+//
+// Measured failure state, read out of the running board at 16 kHz per stream
+// (host/examples/can_stall_probe.cpp):
+//   IR = 0x0001000f -> RF0N set and IE has it enabled, so the M_CAN interrupt
+//                      line is HIGH
+//   RXF0S fill = 32, F0F = 1, RF0L = 1  -> the FIFO filled and started dropping
+//   PSR clean (no bus-off, no error-passive, act = rx) -> the bus is fine
+//   PLIC trigger type for the source = 0 -> LEVEL triggered, not edge
+//   PLIC pending bit for the source = 0
+//   ISR entry count frozen, forever, until reset
+//
+// A level-triggered gateway with the line high must keep the request asserted;
+// the only state in which it does not is "already claimed, never completed", so
+// the completion for this source was lost. That is consistent with the nested
+// interrupt wrapper the SDK generates around every ISR, which re-enables
+// mstatus.MIE for the duration of the handler and writes the PLIC completion
+// only after it returns.
+//
+// Rather than depend on where exactly the completion went missing, this makes
+// the condition self-correcting: a completion write is defined to be ignored
+// for a source the target is not servicing, so issuing one here is a no-op
+// unless the gateway really is stuck -- in which case it releases it and the
+// line, still high, immediately re-raises the interrupt.
+//
+// Cost on the healthy path is one MMIO read plus a compare, and it triggers
+// only when the line has been high across two consecutive main-loop passes
+// with no ISR entry in between. That cannot happen normally: with interrupts
+// enabled and a level-sensitive source, the ISR is entered before the main loop
+// gets to look twice.
+void Can::poll() {
+    const uint32_t flags = mcan_get_interrupt_flags(can_base_);
+    if ((flags & kEnabledInterrupts) == 0) [[likely]] {
+        watchdog_armed_ = false;
+        return;
+    }
+
+    const uint32_t count = irq_count_;
+    if (!watchdog_armed_ || count != watchdog_irq_count_) {
+        // First sighting, or the ISR has run since the previous one. The line
+        // being high here only means an interrupt is on its way.
+        watchdog_armed_ = true;
+        watchdog_irq_count_ = count;
+        return;
+    }
+
+    watchdog_armed_ = false;
+    diag::note_irq_recovered(can_index());
+    intc_m_complete_irq(irq_num_);
+}
+
+ATTR_PLACE_AT(".fast")
+void Can::handle_interrupt_flags(uint32_t flags) {
     mcan_clear_interrupt_flags(can_base_, flags);
 
 #if !(defined(RMCS_ECAT_NATIVE_CAN) && RMCS_ECAT_NATIVE_CAN)

@@ -22,6 +22,7 @@ librmcs 是 [无下位机控制系统 RMCS（RoboMaster Control System）](https
 | 日常更新固件 | [烧录 App（USB DFU）](#烧录-appusb-dfu) |
 | 认板子 / 查 PID | [各板 USB 标识](#各板-usb-标识) |
 | 找某块板的深入文档 | [各板文档索引](#各板文档索引) |
+| **调低 USB / EtherCAT 延迟** | **[HOST_TUNING.md](HOST_TUNING.md)**（主机侧设置，每次重启要重做） |
 
 ## LibRMCS v3
 

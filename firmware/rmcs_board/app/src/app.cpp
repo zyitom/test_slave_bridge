@@ -8,6 +8,7 @@
 #include <hpm_l1c_drv.h>
 
 #include "firmware/rmcs_board/app/src/can/can.hpp"
+#include "firmware/rmcs_board/app/src/diag/can_diag.hpp"
 #include "firmware/rmcs_board/app/src/led/led.hpp"
 #include "firmware/rmcs_board/app/src/timer/timer.hpp"
 #include "firmware/rmcs_board/app/src/uart/uart.hpp"
@@ -56,6 +57,34 @@ App::App() {
 
         led::led.init();
         timer::timer.init();
+    }
+
+    // Start core1 with interrupts already restored, and BEFORE USB and the
+    // CAN/UART drivers exist.
+    //
+    // Interrupts must be on: core1 issues a cross-core request within
+    // microseconds of release, and a masked core0 would turn that into a
+    // nondeterministic start-up stall. Everything core1 waits on (channel magic,
+    // MBX0 clock, flash geometry) was published inside the locked section above.
+    //
+    // Nothing else may be running yet, because core1's first act is
+    // ecat_flash_eeprom_init(), which on a revision bump rewrites the emulated
+    // SII -- and each sector erase costs this core tens of milliseconds with
+    // interrupts masked. With USB enumerated that is long enough to NAK the host
+    // out of its session; with the CAN controllers armed it overruns their RX
+    // FIFOs. Spending the whole window here, where there is nothing to disturb,
+    // is CORE_SWAP_MIGRATION.md section 3.2's requirement, which step 3 shipped
+    // without.
+    xcore::release_core1();
+
+    // Generous: the worst case is a full SII rewrite, tens of sectors at tens of
+    // milliseconds each. Timing out is not fatal -- start-up continues and the
+    // only thing lost is the isolation above -- because a core1 that never
+    // answers must not take the USB firmware, and with it the DFU path, down.
+    xcore::wait_for_core1_eeprom(5000);
+
+    {
+        const utility::InterruptLockGuard guard;
 
         // Before the CAN and UART init() calls below: those arm driver ISRs that
         // serialize straight into the protocol stack, so the stack instance has
@@ -76,14 +105,6 @@ App::App() {
         for (auto& board_uart : uart::uart_array)
             board_uart.init();
     }
-
-    // Start core1 with interrupts already restored. core1 can issue a cross-core
-    // request within microseconds of release, and holding core0's interrupts
-    // masked across that would add a nondeterministic start-up stall for no
-    // benefit -- nothing in the release path needs atomicity against core0's own
-    // ISRs. Everything core1 waits on (channel magic, MBX0 clock) was published
-    // inside the locked section above.
-    xcore::release_core1();
 }
 
 namespace {
@@ -107,6 +128,7 @@ bool host_session_established() {
 [[noreturn]] void App::run() {
     uint32_t last_tick = 0;
     while (true) {
+        diag::note_main_loop();
         tud_task();
         usb::poll_dfu_runtime_reboot();
 
@@ -122,7 +144,18 @@ bool host_session_established() {
             last_tick = tick;
             led::led->set_host_connected(host_session_established());
             led::led->update(tick);
+
+            // CAN forwarding telemetry (LIBRMCS_APP_CAN_DIAG builds only).
+            // Paced off the same 1 kHz tick and emitted before the transport
+            // pump below, so a record produced this tick leaves on this pass.
+            diag::poll(tick);
         }
+
+        // CAN interrupt-delivery watchdog. Must run every pass, not off the
+        // 1 kHz tick: RX FIFO0 holds 32 elements, which at the rates this board
+        // forwards is under two milliseconds of slack before frames are lost.
+        for (auto& can : can::can_array)
+            can->poll();
 
         // Host transport pump.
         //

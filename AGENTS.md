@@ -43,13 +43,21 @@
 
 - 这些是**上一台开发机上真实可用的安装位置**，不是示例、不是占位符。原样保留是为了
   让换机器的人有一份"确实跑通过"的配置可以照抄。
-- **当前机器上的实际安装情况（2026-07-27 实测，本节此前写的"尚未安装"已过时）**：
+- **当前机器上的实际安装情况（2026-08-01 逐条 `ls` 复核，取代 2026-07-27 那份，
+  后者对本机已不准确）**：
 
   | 路径 | 本机 | 说明 |
   |---|---|---|
-  | `~/3rd_party/hpm` | **已装** | HPM RISC-V 工具链 + hpm_sdk + openocd + Manufacturing Tool。已实测编出 `rmcs_board/ecat` 全部目标 |
-  | `~/3rd_party/MRS_Toolchain_Linux_X64_V240` | **已装** | MounRiver，ch32_board 用；内含 OpenOCD |
-  | `~/3rd_party/wch-openocd` | 不存在 | 已被 MRS 包内自带的 OpenOCD 取代，见 `firmware/ch32_board/AGENTS.md` |
+  | `~/3rd_party/rv32imac_zicsr_zifencei_multilib_b_ext-linux` | **已装** | **RISC-V 工具链的真实位置**（gcc 13.2.0）。已实测编出 `rmcs_board` 单核 / 核对调 / `ecat` 全部目标 |
+  | `~/3rd_party/hpm` | 部分 | **只有 `HPMicro_Manufacturing_Tool_v0.6.0`**。此前记的"工具链 + hpm_sdk + openocd 都在这里"对本机不成立 |
+  | OpenOCD | **未装** | 全机没有。HPM 板的日常烧录走 USB DFU（`dfu-util`），不需要它；只有给空片烧 bootloader 才需要 |
+  | `~/3rd_party/MRS_Toolchain_Linux_X64_V240` | **不存在** | 本机没有 MounRiver，`ch32_board` 在本机编不了 |
+  | `~/3rd_party/wch-openocd` | 不存在 | 见 `firmware/ch32_board/AGENTS.md` |
+
+  由此，本机可用的构建/烧录组合是：**host SDK + `rmcs_board` 全部固件 + DFU 烧录**；
+  `ch32_board` 缺工具链，板级调试缺 JTAG。**缺 JTAG 不等于看不到现场**——
+  `rmcs_board` 已有两条走 USB 的带内诊断通道，见
+  `firmware/rmcs_board/AGENTS.md`「板上没有调试器时怎么看现场」。
 
 - **不要凭本节旧措辞断言"本机没有工具链"——先 `ls` 确认。** 路径不存在时也不要删改
   文档里的路径，按下一条重新指向即可。

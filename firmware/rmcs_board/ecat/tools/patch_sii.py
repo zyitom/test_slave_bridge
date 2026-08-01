@@ -45,7 +45,7 @@ import sys
 
 PD_CHUNK_SIZE = 48   # bytes per direction; must match rmcs_pd.h
 ENTRY_COUNT = 12     # 12 x UNSIGNED32 = 48 bytes
-REVISION = 6         # bump whenever the SII changes so already-flashed boards
+REVISION = 7         # bump whenever the SII changes so already-flashed boards
                      # refresh their emulated EEPROM on next boot. Must stay
                      # ABOVE HYBRID_REVISION: a board that ever booted the
                      # hybrid image stores 5, and a stock image numbered <= 5

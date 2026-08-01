@@ -7,6 +7,17 @@
 
 ## 摘要
 
+> **先确认你在看哪一套布局。** 本目录（`ecat/`）构建的是**旧布局**：
+> core0 = SSC + USB，core1 = CAN/UART + 协议栈，烧录用 `./flash-ecat.sh`。
+> **现行主线是核对调布局**：core0 = USB + CAN/UART + 协议栈，core1 = EtherCAT，
+> 由 `firmware/rmcs_board` 加 `-DLIBRMCS_RELEASE_CORE1=ON` 构建，烧录用
+> `./flash-ecat-swap.sh`，见 [CORE_SWAP_MIGRATION.md](CORE_SWAP_MIGRATION.md)。
+>
+> 两者是独立镜像，同一时刻只能刷一个。本目录保留为**迁移前的对照基线**；
+> 下面「架构」「周期控制推荐模式」「USB 协处传输」三节描述的都是旧布局，
+> 跨核环方向、门铃方向、仲裁归属在新布局里全部相反，不要把这些图直接套上去。
+> hybrid（352 字节固定 PDO）目前**只有旧布局有**，新布局第一阶段只做 stock stream。
+
 本文件讲 EtherCAT 桥固件的**架构、构建、验证与烧录**：双核怎么分工、过程数据怎么承载
 librmcs 字节流、怎么跑 P1 回环验证、怎么烧到板子上。
 
@@ -180,9 +191,14 @@ USB 与 EtherCAT 为什么落在同一个核(而不是各占一核),以及"USB �
      ```
    - 项目特有内容全部在版本库内(`core0/ssc_overrides/digital_ioObjects.h`、
      `tools/patch_sii.py`),重新生成 SSC 时无需再改 SSC Tool 工程;
-   - SII 中 stream Revision 为 3,hybrid Revision 为 5;从旧 stream 升级到 hybrid
-     时会自动刷新仿真 EEPROM。从 hybrid 回退到 stock/native 时,较低的 revision
-     不会自动覆盖已存的 revision 5,必须先提高 stock revision 并重新生成 SII。
+   - **SII revision 的当前值以 `tools/patch_sii.py` 为准**（2026-08-01：stock
+     `REVISION = 7`，`HYBRID_REVISION = 5`）。仿真 EEPROM 的刷新规则是
+     **只在"内置 revision > 已存 revision"时才重写**,所以:
+     - 提高 stock revision 会在下次上电自动刷新,已实测走通(见
+       [CORE_SWAP_MIGRATION.md](CORE_SWAP_MIGRATION.md) 步骤 3);
+     - **降级或平级不会自动覆盖**。要从当前的 stock rev 7 切到 hybrid,必须先把
+       `HYBRID_REVISION` 提到 8 以上再重新生成 SII,否则主站会按已存的 48 字节
+       SM 配置枚举,而固件映射 352 字节 -> `CheckSmSettings` 失败 -> 卡在 SAFEOP。
      开发期沿用 HPMicro 示例 Vendor ID;产品化需申请 ETG Vendor ID。
 
 ## 构建(先 core1 后 core0)

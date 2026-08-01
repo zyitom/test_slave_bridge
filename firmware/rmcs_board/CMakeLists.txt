@@ -31,6 +31,15 @@ set_property(CACHE BOARD_BOOTLOADER_MODE PROPERTY STRINGS auto manual)
 # the core1 EtherCAT project.
 option(LIBRMCS_RELEASE_CORE1 "Build the EtherCAT core1 image and release CPU1 from the app" OFF)
 
+# Forwarded to the app sub-build as LIBRMCS_APP_CAN_DIAG; see app/CMakeLists.txt.
+option(LIBRMCS_CAN_DIAG "Emit CAN forwarding telemetry on the UART0 uplink" OFF)
+
+# Forwarded to the app sub-build as LIBRMCS_APP_DIAG_OVER_USB.
+option(LIBRMCS_DIAG_OVER_USB "Relay core1 diagnostics to the host over USB" OFF)
+
+# Forwarded to the app sub-build as LIBRMCS_APP_ILM_HOT_PATH.
+option(LIBRMCS_ILM_HOT_PATH "Run the CAN driver from ILM (custom linker script)" OFF)
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "debug")
 endif()
@@ -100,6 +109,9 @@ add_rmcs_board_subbuild(
     rmcs_board_app
     app
     -DLIBRMCS_APP_RELEASE_CORE1=${LIBRMCS_RELEASE_CORE1}
+    -DLIBRMCS_APP_CAN_DIAG=${LIBRMCS_CAN_DIAG}
+    -DLIBRMCS_APP_DIAG_OVER_USB=${LIBRMCS_DIAG_OVER_USB}
+    -DLIBRMCS_APP_ILM_HOT_PATH=${LIBRMCS_ILM_HOT_PATH}
 )
 if(LIBRMCS_RELEASE_CORE1)
     # The app compiles the sec_core_img.c that the core1 project emits, so the

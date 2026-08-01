@@ -48,6 +48,15 @@ extern "C" bool ecat_xcore_init(void) {
 
 extern "C" std::uint32_t ecat_xcore_channel_version(void) { return g_version; }
 
+extern "C" void ecat_xcore_signal_eeprom_ready(void) {
+    if (g_channel == nullptr)
+        return;
+    // Release: core0 reads this to decide that no further flash RPC will
+    // arrive, so everything this core wrote through the RPC slot must be
+    // visible to it first.
+    g_channel->flash.eeprom_ready.store(1, std::memory_order::release);
+}
+
 XcoreChannel* ecat_xcore_channel(void) { return g_channel; }
 
 extern "C" void ecat_diag_write(const char* text, std::size_t size) {

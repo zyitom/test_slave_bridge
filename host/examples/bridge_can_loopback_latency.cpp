@@ -32,6 +32,7 @@
 
 #include <librmcs/board/common.hpp>
 #include <librmcs/board/rmcs_board_ecat_bridge.hpp>
+#include <librmcs/board/rmcs_board_hpm5321_dual_can.hpp>
 #include <librmcs/board/rmcs_board_hpm6e8y.hpp>
 
 namespace {
@@ -100,9 +101,13 @@ double percentile(const std::vector<double>& sorted, double fraction) {
     return sorted[index];
 }
 
+// Three board classes so the SAME measurement code (warm-up, queue-free
+// discipline, percentile math) serves every transport. Comparing boards with
+// two different tools would not be a comparison.
 class Receiver final
     : public librmcs::board::RmcsBoardEcatBridge::Callback
-    , public librmcs::board::RmcsBoardHpm6e8y::Callback {
+    , public librmcs::board::RmcsBoardHpm6e8y::Callback
+    , public librmcs::board::RmcsBoardHpm5321DualCan::Callback {
 public:
     using Clock = std::chrono::steady_clock;
 
@@ -366,17 +371,19 @@ int main(int argc, char** argv) {
         fprintf(
             stderr,
             "usage: %s usb [samples] [io_core] [main_core]\n"
+            "       %s usb-5321 [samples] [io_core] [main_core]\n"
             "       %s usb-paced [hz] [samples] [io_core] [main_core]\n"
             "       %s ecat <interface> [samples] [io_core] [main_core]\n",
-            argv[0], argv[0], argv[0]);
+            argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
 
     const std::string_view mode = argv[1];
     const bool use_ecat = mode == "ecat";
     const bool paced = mode == "usb-paced";
-    if (!use_ecat && !paced && mode != "usb") {
-        fprintf(stderr, "transport must be usb, usb-paced, or ecat\n");
+    const bool use_5321 = mode == "usb-5321";
+    if (!use_ecat && !paced && !use_5321 && mode != "usb") {
+        fprintf(stderr, "transport must be usb, usb-5321, usb-paced, or ecat\n");
         return 1;
     }
     if (use_ecat && argc < 3) {
@@ -431,6 +438,15 @@ int main(int argc, char** argv) {
             configure_thread(main_core, 70, "bridge-lat-main");
             return run_latency(
                 board, receiver, static_cast<uint32_t>(sample_value), "EtherCAT");
+        }
+
+        if (use_5321) {
+            // HPM5321 DualCan (PID 0xA902): CAN0 -> CAN1, same wiring shape as
+            // the 6E8Y's first pair, so the two numbers are directly comparable.
+            librmcs::board::RmcsBoardHpm5321DualCan board{receiver, {}, options};
+            configure_thread(main_core, 70, "bridge-lat-main");
+            return run_latency(
+                board, receiver, static_cast<uint32_t>(sample_value), "USB/HPM5321");
         }
 
         librmcs::board::RmcsBoardHpm6e8y board{receiver, {}, options};

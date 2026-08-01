@@ -40,7 +40,9 @@ inline constexpr std::uint32_t kXcoreChannelMagic = 0x524D5843U; // "RMXC"
 // is what makes a mismatched core0/core1 image pair detectable at runtime
 // instead of silently misbehaving.
 // Version 4 adds the flash RPC slot, which shifts every field after `diag`.
-inline constexpr std::uint32_t kXcoreChannelVersion = 4;
+// Version 5 adds XcoreFlashRpc::eeprom_ready, which shifts `payload` and
+// everything after `flash`.
+inline constexpr std::uint32_t kXcoreChannelVersion = 5;
 inline constexpr std::size_t kXcoreShareRamSize = 16 * 1024;
 
 // Ring direction is defined RELATIVE TO THE HOST and does not depend on which
@@ -126,6 +128,18 @@ struct XcoreFlashRpc {
     std::uint32_t address = 0;
     std::uint32_t size = 0;
     std::uint32_t status = 0; // valid when response == request
+    // core1 -> core0: set once, after ecat_hardware_init() returns, to say that
+    // no further EEPROM flash traffic is coming from the boot path (whether it
+    // rewrote the SII or found it already current).
+    //
+    // core0 releases core1 BEFORE it brings USB and the CAN controllers up, and
+    // waits on this. A first-boot SII rewrite masks core0's interrupts for tens
+    // of milliseconds per sector, which is enough to make an enumerated USB host
+    // NAK out of its session and to overrun a running MCAN receiver -- so the
+    // window has to close before there is anything to disturb. This is the
+    // "put the first-boot EEPROM window before USB/CAN" requirement of
+    // ../CORE_SWAP_MIGRATION.md section 3.2, which step 3 left unimplemented.
+    std::atomic<std::uint32_t> eeprom_ready{0};
     alignas(4) unsigned char payload[kXcoreFlashPayloadSize] = {};
 };
 

@@ -33,6 +33,13 @@ bool ecat_xcore_init(void);
 /* Observed channel version, for the boot banner. Zero before ecat_xcore_init. */
 uint32_t ecat_xcore_channel_version(void);
 
+/* Announce that the boot-path EEPROM work is finished, so core0 may bring USB
+ * and the CAN controllers up. Call exactly once, right after
+ * ecat_hardware_init() returns -- on the failure path too, otherwise core0
+ * waits out its whole timeout for a rewrite that is never coming. See
+ * XcoreFlashRpc::eeprom_ready in ../../common/xcore_channel.hpp. */
+void ecat_xcore_signal_eeprom_ready(void);
+
 #ifdef __cplusplus
 /* The bound channel, for the process-data plane (ecat_pd.cpp). C++ only: the
  * pure-C translation units here have no XcoreChannel declaration and must go

@@ -20,6 +20,11 @@ extern "C" {
 #include <multicore_common.h>
 }
 
+#include "core/include/librmcs/data/datas.hpp"
+#include "core/src/protocol/protocol.hpp"
+#include "core/src/protocol/serializer.hpp"
+#include "firmware/rmcs_board/app/src/link/uplink.hpp"
+#include "firmware/rmcs_board/app/src/timer/timer.hpp"
 #include "firmware/rmcs_board/ecat/common/xcore_channel.hpp"
 #include "firmware/rmcs_board/ecat/common/xcore_diag.hpp"
 
@@ -76,7 +81,68 @@ void release_core1() {
     multicore_release_cpu(HPM_CORE1, SEC_CORE_IMG_START);
 }
 
+bool wait_for_core1_eeprom(std::uint32_t timeout_ms) {
+    if (g_channel == nullptr)
+        return true;
+
+    // Busy-wait rather than sleep: this runs once, during start-up, with
+    // nothing else to do -- USB and the CAN/UART drivers do not exist yet, and
+    // the only work that must proceed is the flash RPC, which is serviced from
+    // the MBX1A interrupt and therefore preempts this loop. Diagnostics are
+    // drained as we go so core1's boot log is not stuck behind the wait.
+    const std::uint64_t deadline =
+        timer::Timer::timestamp64_quarter_us()
+        + static_cast<std::uint64_t>(timeout_ms) * (timer::Timer::kTimerFrequencyHz / 1000U);
+
+    while (g_channel->flash.eeprom_ready.load(std::memory_order::acquire) == 0) {
+        if (timer::Timer::timestamp64_quarter_us() >= deadline)
+            return false;
+        poll_diagnostics();
+    }
+    return true;
+}
+
+#if defined(LIBRMCS_APP_DIAG_OVER_USB) && LIBRMCS_APP_DIAG_OVER_USB
+
+// Relay core1's diagnostic text to the host as UART0 uplink frames.
+//
+// core1's only log path is the SHARE_RAM ring, and the only sink for it is the
+// board console -- a UART on the FT2232 debug header. Boards that are wired for
+// EtherCAT and USB alone (which is every board this has been brought up on) have
+// nothing attached there, so core1's boot log, including everything the emulated
+// EEPROM has to say about a first-boot SII rewrite, is simply unreachable.
+//
+// Opt-in, because DataId::kUart0 is a real data port on this board (UART1) and a
+// host using it must not find log text mixed into its byte stream.
+void relay_diagnostics_over_usb() {
+    // Checked BEFORE draining. The interesting part of core1's log is written
+    // during boot, seconds before a host can possibly have a session up --
+    // draining first and discarding for want of a carrier would throw away
+    // exactly the lines worth reading. Left in the ring, they are still there
+    // when the host arrives; if none ever does, the ring fills and core1's
+    // writes are dropped at the producer, which is its documented contract.
+    if (!link::uplink_enabled())
+        return;
+
+    // One frame per pass, bounded, so a chatty core1 cannot monopolize the loop
+    // or the batch pool. Text is forwarded verbatim; the host prints it.
+    char text[120];
+    const std::size_t size = ecat::xcore_diag_drain(g_channel->diag, text, sizeof(text));
+    if (size == 0)
+        return;
+
+    (void)link::uplink_serializer().write_uart(
+        static_cast<core::protocol::FieldId>(data::DataId::kUart0),
+        {.uart_data = {reinterpret_cast<const std::byte*>(text), size}, .idle_delimited = true});
+}
+
+#endif
+
 void poll_diagnostics() {
+#if defined(LIBRMCS_APP_DIAG_OVER_USB) && LIBRMCS_APP_DIAG_OVER_USB
+    relay_diagnostics_over_usb();
+    return;
+#else
     // Never block the main loop for a log byte. console_send_byte() busy-waits
     // on THR-empty (~87 us per byte at 115200 baud), so draining a burst of
     // core1 boot messages through it would stall tud_task() and the CAN/UART
@@ -95,6 +161,7 @@ void poll_diagnostics() {
             return;
         }
     }
+#endif
 }
 
 } // namespace librmcs::firmware::xcore

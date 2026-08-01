@@ -30,6 +30,18 @@ target_link_libraries(can_frame_type_test PRIVATE librmcs-sdk)
 add_executable(usb_canfd_stress usb_canfd_stress.cpp)
 target_link_libraries(usb_canfd_stress PRIVATE librmcs-sdk)
 
+# Same flood as usb_canfd_stress, plus a decoder for the UART0 telemetry a
+# LIBRMCS_CAN_DIAG firmware emits. Prints the MCAN and PLIC state around the
+# moment forwarding stops (see firmware/rmcs_board/app/src/diag/can_diag.hpp).
+add_executable(can_stall_probe can_stall_probe.cpp)
+target_link_libraries(can_stall_probe PRIVATE librmcs-sdk)
+
+# Prints core1's diagnostic ring, relayed as UART0 uplink frames by a firmware
+# built with LIBRMCS_DIAG_OVER_USB=ON. The board's console UART sits on an
+# unpopulated debug header, so this is the only way to read that log here.
+add_executable(core1_log core1_log.cpp)
+target_link_libraries(core1_log PRIVATE librmcs-sdk)
+
 if(LIBRMCS_ENABLE_SOEM OR LIBRMCS_ENABLE_IGH)
     add_executable(ecat_stream_latency ecat_stream_latency.cpp)
     target_link_libraries(ecat_stream_latency PRIVATE librmcs-sdk)

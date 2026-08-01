@@ -74,6 +74,15 @@ int main(void) {
     board_init_ethercat(HPM_ESC);
 
     stat = ecat_hardware_init(HPM_ESC);
+
+    /* Every erase and program this image will ever ask core0 for happens inside
+     * ecat_hardware_init() -> ecat_flash_eeprom_init(), whose boot window closes
+     * before it returns. Releasing core0 here -- on the failure path as well, or
+     * it would wait out its whole timeout for a rewrite that is not coming --
+     * is what keeps a first-boot SII rewrite from stalling an enumerated USB
+     * host or overrunning a live MCAN receiver. */
+    ecat_xcore_signal_eeprom_ready();
+
     if (stat != status_success) {
         printf("Init ESC peripheral and related devices (EEPROM/PHY) failed!\n");
         return 0;

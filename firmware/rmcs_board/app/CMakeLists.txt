@@ -17,11 +17,43 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../common/cmake/librmcs_firmware.cmake")
 
 set(HPM_BUILD_TYPE "flash_uf2" CACHE STRING "HPM build type")
 
+# Run the CAN forwarding leaf calls from ILM instead of FLASH XIP. Our own glue
+# is already in .fast via ATTR_PLACE_AT, but the SDK's MCAN driver -- called on
+# every single frame -- is not, so the hot path still takes XIP fetches.
+#
+# Worth it on the EtherCAT path and not on USB: both transports quantize the
+# round trip, but EtherCAT's quantum is the 25.75 us cycle while USB's is the
+# 125 us microframe, so a microsecond saved here has ~5x the chance of dropping
+# a whole quantum. Evidence: HOST_TUNING.md section 4.2 and
+# ecat/DESIGN.md section 4.3.
+#
+# OFF keeps the stock SDK script, which is the configuration every measurement
+# before 2026-08-01 was taken on.
+option(LIBRMCS_APP_ILM_HOT_PATH "Run the CAN driver from ILM (custom linker script)" OFF)
+if(LIBRMCS_APP_ILM_HOT_PATH)
+    set(CUSTOM_GCC_LINKER_FILE "${CMAKE_CURRENT_SOURCE_DIR}/hpm6e80_flash_uf2_ilm_hot.ld")
+endif()
+
 # Load the EtherCAT core1 image and release CPU1 at boot (core-swap layout, see
 # ecat/CORE_SWAP_MIGRATION.md). OFF keeps this a self-contained single-core USB
 # firmware, which is the configuration the USB and CAN regression tests run
 # against -- and the only one buildable before the core1 project exists.
 option(LIBRMCS_APP_RELEASE_CORE1 "Load and release the EtherCAT core1 image" OFF)
+
+# CAN forwarding telemetry (src/diag/can_diag.*): ISR entry counts, MCAN status
+# registers and the PLIC pending/enable arrays, sampled from the main loop and
+# shipped out as UART0 uplink frames. Used to diagnose the high-load forwarding
+# stall of ecat/CORE_SWAP_MIGRATION.md section 6 on a board with no JTAG or
+# serial console attached. OFF keeps the CAN hot path free of the counters.
+option(LIBRMCS_APP_CAN_DIAG "Emit CAN forwarding telemetry on the UART0 uplink" OFF)
+
+# Relay core1's diagnostic ring to the host as UART0 uplink frames instead of to
+# the board console. The console is a UART on the FT2232 debug header, which is
+# not populated on the boards this runs on, so without this core1's boot log --
+# including everything the emulated EEPROM reports about a first-boot SII
+# rewrite -- has no reachable sink. OFF by default because DataId::kUart0 is a
+# real data port here (UART1) and must not carry log text behind a host's back.
+option(LIBRMCS_APP_DIAG_OVER_USB "Relay core1 diagnostics to the host over USB" OFF)
 
 set(CONFIG_DMA_MGR 1)
 set(CONFIG_TINYUSB 1)
@@ -64,6 +96,13 @@ endif()
 
 if(CMAKE_BUILD_TYPE STREQUAL "debug")
     sdk_compile_options(-Og)
+endif()
+
+if(LIBRMCS_APP_CAN_DIAG)
+    sdk_compile_definitions(-DLIBRMCS_APP_CAN_DIAG=1)
+endif()
+if(LIBRMCS_APP_DIAG_OVER_USB)
+    sdk_compile_definitions(-DLIBRMCS_APP_DIAG_OVER_USB=1)
 endif()
 
 sdk_compile_definitions(-DLIBRMCS_PROJECT_VERSION_STRING="${LIBRMCS_PROJECT_VERSION}")

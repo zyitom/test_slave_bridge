@@ -2,7 +2,8 @@
 
 > **文档类型**：背景说明（方案论证）+ 过程记录（实施计划）
 > **适用范围**：`firmware/rmcs_board/`（app 与 ecat 两套镜像），HPM6E8Y 双核
-> **状态**：现行有效（步骤 0-4 已实施并上板验证；步骤 5 部分完成，hybrid 变体未做）
+> **状态**：现行有效（步骤 0-4 已实施并上板验证；步骤 5 部分完成，hybrid 变体未做；
+> 第 6 节的前置阻塞项已于 2026-08-01 定位并修复）
 > **相关文档**：[DESIGN.md](DESIGN.md) 第 3 节与 3.1、3.4 · [README.md](README.md) · [../boards/hpm6e8y/ECAT_BRIDGE_BRINGUP_NOTES.md](../boards/hpm6e8y/ECAT_BRIDGE_BRINGUP_NOTES.md)
 
 ## 摘要
@@ -21,18 +22,21 @@
    **不是**"USB 过跨核环"，所以任何双核布局都拿不到它。若 USB 是主力传输，
    最快的仍是单核 `app/` 镜像。详见步骤 4 的结果小节与 DESIGN.md 3.4 的修正块。
    迁移剩下的价值是**工程收益**：一个镜像同时支持两种传输，且 DFU 不用搬。
-2. **前置阻塞项仍未解决**，见第 6 节（单核布局的 CAN 闩死，需要 JTAG）。步骤 4 把
-   USB 数据面接回来之后，它重新变得可触发。
+2. ~~**前置阻塞项仍未解决**，见第 6 节（单核布局的 CAN 闩死，需要 JTAG）。~~
+   **已解除 [2026-08-01]**：根因是 MCAN ISR 的中断标志确认顺序，不是 PLIC；
+   修复后 19000 f/s 双流（合计 38000 f/s，超过原失效点 36%）连续 90 秒干净。
+   全过程没有用调试器，见 6.1。
 
 ## 本文导航
 
 - 第 1 节：目标布局与它相对 (d) 的差异
 - 第 2 节：可行性依据（硬件 + 体积，全部已核实）
-- 第 3 节：三个必须重新设计的子系统
+- 第 3 节：三个必须重新设计的子系统（含 **3.1.1 仲裁的实际行为**：USB 与 EtherCAT
+  谁抢得走数据面、并发时会看到什么）
 - 第 4 节：按风险排序的实施步骤与上板判据（每步都带实测结果）
-- **第 4.6 节：被实测推翻的五条假设 + 一条方法论错误——想省时间就先读这节**
+- **第 4.6 节：被实测推翻的六条假设 + 一条方法论错误——想省时间就先读这节**
 - 第 5 节：风险清单
-- 第 6 节：前置阻塞项
+- 第 6 节：前置阻塞项（CAN 闩死，**已于 2026-08-01 定位并修复**，根因与验证见 6.1）
 
 ---
 
@@ -164,6 +168,56 @@ core0 敲 `MBX0A` -> core1 吃 `IRQn_MBX0B`。语义一字不变（"up 环里有
 建议 **flash RPC 单独占 MBX1**，不要和热路径门铃挤同一个单字邮箱（`mbx_send_message`
 在有 pending 时会失败）。
 
+### 3.1.1 仲裁的实际行为（不是"先连上的赢"）
+
+**先纠正一个常见误解：不存在"谁先建立连接谁独占、另一个从此不能用"。** 规则是
+**后来者夺取**，而且两边的触发条件是**不对称**的：
+
+| 传输 | 靠什么夺取数据面 | 触发频率 |
+|---|---|---|
+| USB | **任何一个 vendor OUT 包**（`tud_vendor_rx_cb` -> `notify_usb_activity()`），包括会话 keepalive | 只要 host 程序在跑，就持续在发 |
+| EtherCAT | **主站 SAFEOP -> OP 这一次状态跃迁**（core1 `ecat_claim.fetch_add`） | 一次；主站待在 OP 里不会再发 |
+
+夺取时做的事（`app/src/xcore/pd_link.cpp` `pump_data_plane()`）：写 `channel.owner`
+-> `handle_link_restart()`（复位会话、清批次池）-> bump `link_epoch`；EtherCAT 夺回时
+还会额外冲刷 `down` 环。所以**被夺走的一方是掉会话，不是被永久拉黑**——它重新握手就
+能再抢回来。
+
+**并发时到底会发生什么 [实测 2026-08-01]**：让 IgH 主站在 OP 里跑 `ecat_canfd_stress`，
+第 8 秒起并发启动 `usb_canfd_stress`，观察到的完整序列是：
+
+```
+[ 9s] 01  tx=18001  rx=18000            <- EtherCAT 正常
+[10s] 01  tx=20001  rx=18501  missing=1500   <- USB 夺走数据面，转发停止
+[librmcs] [info] EtherCAT (IgH) cycle rate: 39.0 kHz (0 wc errors in the last 5 s)
+[librmcs] [error] Failed to refresh session: Timed out waiting for SESSION_KEEPALIVE_ACK. Terminating...
+terminate called after throwing an instance of 'std::runtime_error'
+```
+
+同一时刻 USB 那侧 `result: PASS (no loss, no corruption)`。三条结论：
+
+1. **USB 确实持续赢**：它的 keepalive 每次都算一次夺取，而主站进 OP 之后不再 bump
+   `ecat_claim`，所以 EtherCAT 拿不回来。
+2. **失败是响的，不是哑的**：输的一方拿不到 keepalive ack，`protocol::Handler` 的
+   `refresh_session()` 抛异常并 `std::terminate()`，host 程序**直接 abort（退出码 134）**
+   并打印上面那行。不会出现"以为在跑其实没数据"的静默劣化。
+3. **但 EtherCAT 链路层看起来完全正常**：`39.0 kHz，0 wc errors`，主站仍在 OP。
+   所以**别在 IgH 层面找问题**——总线是好的，丢的是 librmcs 会话。
+
+实际使用规则：
+
+- 两个 host 程序**不要同时跑**；切换传输时先退出旧的，再起新的。
+- 恢复方式：重启 EtherCAT 侧的 host 程序即可。它会重新配置从站、再走一遍
+  SAFEOP -> OP，于是重新 bump `ecat_claim` 把数据面拿回来（已实测：USB 压测退出后
+  再跑 `ecat_canfd_stress`，60000/60000 PASS、0 WKC error）。
+- 这一条对旧布局同样成立（[README.md](README.md)「USB 协处传输」一节），
+  迁移没有改变它。
+
+为什么不做成"先到先得+锁定"：数据面只有一个 `HostSession`（一个 deserializer、
+一个批次池），两个传输**在字节层面本来就不能并存**；而把所有权做成粘性会带来更糟的
+失败模式——插着 USB 线的调试机会让现场的 EtherCAT 主站永远抢不回来。当前设计里
+"主站进 OP"是一个明确的人为意图，所以它被授予；USB 只是发了包，所以它容易被顶掉。
+
 ### 3.2 flash 写委托（本次迁移唯一的新设计题）
 
 全片只有一条 NOR flash（XPI0）。仿真 SII EEPROM 存在里面，而 flash 擦写期间不能同时
@@ -231,7 +285,8 @@ flash 写委托隔离在外**。
 
 > **前置条件（做之前先确认，否则步骤 0 会假失败）**：探针镜像的 EEPROM 走只读，靠的是
 > flash 里**已经有一份有效的 SII**。当前板上状态已核实自洽 [实测 2026-08-01]：
-> stock `eeprom.h` 的 revision = **6** > hybrid 的 5，vendor `0x1a81` / product `0x1` 两者一致，
+> stock `eeprom.h` 的 revision = **6**（2026-08-01 起为 **7**，为验证写路径而提升）
+> > hybrid 的 5，vendor `0x1a81` / product `0x1` 两者一致，
 > 所以现有 ecat 镜像上电时会把仿真 EEPROM 刷成正确的 48 字节 stream SII。
 > **必须先用现有双核 ecat 镜像启动一次、让它把 SII 固化下来，再刷探针镜像。**
 > 否则探针镜像的只读 EEPROM 会读到 hybrid 的 352 字节 SM 配置（或空白 flash），
@@ -275,9 +330,18 @@ newlib 浮点格式化 + libgcc 软双精度）：
 `_dtoa` / `_strtod` / `_mprec` / `vfprintf` **一个符号都没有**。core0 侧的 USB+CAN 回环
 正常也是间接证据——若 core1 真的写到了低地址，core0 的向量表早就坏了。
 
-**尚未验证**：`ecat_time_ms` 是否在涨（core1 的诊断环输出需要 FT2232 的串口侧，本机
-未枚举出 `/dev/ttyUSB*`）。PREOP 能达成说明 SSC 状态机在跑，但 GPTMR0 时基是否正常
-仍缺直接证据；进 OP 需要数据面，那是步骤 1 的事。
+~~**尚未验证**：`ecat_time_ms` 是否在涨~~ **已验证 [实测 2026-08-01]**。本机确实
+没有 FT2232 串口，改为把 core1 的诊断环经 core0 从 USB vendor 端点送出
+（`-DLIBRMCS_DIAG_OVER_USB=ON`，主机侧 `host/examples/core1_log.cpp`），直接读到心跳：
+
+```
+core1 alive: t=3075 ms, al_status=0x1
+core1 alive: t=4075 ms, al_status=0x1
+core1 alive: t=5075 ms, al_status=0x1
+```
+
+**严格 1000 ms 步进，GPTMR0 时基正常**（`al_status=0x1` = INIT，当时没有主站在跑）。
+教训同 6.1：拿不到串口不等于拿不到现场，带内通道往往就够。
 
 ### 步骤 1：拆 `pd_glue.cpp`
 
@@ -370,7 +434,8 @@ USB 侧行为符合设计：**枚举与 DFU-RT 正常**（本轮三次刷写都�
 
 #### 步骤 3 结果：**已实现，写路径未触发验证** [实测 2026-08-01]
 
-`XcoreFlashRpc` 已进契约（**version 3 -> 4**，字段偏移变了）。SHARE_RAM 10840/16384
+`XcoreFlashRpc` 已进契约（**version 3 -> 4**，字段偏移变了；2026-08-01 又因
+`eeprom_ready` 升到 **5**，见步骤 3 未验证项 2）。SHARE_RAM 10840/16384
 （hybrid 12392），余量 34%。core1 ILM 20.9%。
 
 上板结果：core1 正常启动、**SII 读回正确（revision 6）**、进 PREOP、EtherCAT 与 USB
@@ -391,14 +456,32 @@ USB 侧行为符合设计：**枚举与 DFU-RT 正常**（本轮三次刷写都�
 
 **未验证 / 已知偏差（重要）**：
 
-1. **写路径从未被触发**。当前 SII revision 已是 6、与内置值相同，所以启动时不会刷写。
-   要验证必须人为制造 revision 不匹配（改 `patch_sii.py` 的 `REVISION` 再重刷），
-   **这一步没做**。判据"1024 次写全部成功"因此仍是开的。
-2. **3.2 那条"首启刷 EEPROM 窗口放在起 USB/CAN 之前"没有做到**。`release_core1()` 按设计
-   在所有驱动初始化完、中断打开之后才调用，所以首启 SII 刷写会与 USB/CAN 并发：那段时间
-   USB 可能 NAK 甚至掉会话、MCAN 可能溢出。只在 revision bump 那一次发生。要真正兑现，
-   需要把 `flash_server_init()` + `release_core1()` 提前到 USB/CAN 之前——MBX ISR 方案不
-   依赖主循环，技术上可行。
+1. ~~**写路径从未被触发**~~ **已验证 [实测 2026-08-01]**。把 `patch_sii.py` 的
+   `REVISION` 从 6 提到 7、重新生成 `core0/SSC/Src/eeprom.h` 并重刷，制造出
+   revision 不匹配，core1 日志给出完整的一次首启刷写：
+
+   ```
+   RMCS EtherCAT probe (core1), channel version 5
+   Stored SII product 0x1 revision 6 (built-in 0x1 / 7).
+   Init EEPROM content.
+   Init EEPROM content successful.
+   EEPROM loading successful, no checksum error.
+   SSC up, pd in/out 48/48 bytes
+   ```
+
+   **写路径跑通并且立刻读回校验通过**（"no checksum error"），判据关闭。
+   紧接着的第二次启动打印 `revision 7 (built-in 7)` -> `No need to init EEPROM
+   content.`，**幂等**。之后主站枚举正常：`0  13330:0  PREOP  +  rmcs_stream`。
+2. ~~**3.2 那条"首启刷 EEPROM 窗口放在起 USB/CAN 之前"没有做到**。~~
+   **已实现 [2026-08-01]**。`App::App()` 现在分三段：先在关中断段里做
+   `board_init` / `publish_channel` / `flash_server_init` / led / timer；再**开中断、
+   立刻 `release_core1()`**；然后 `wait_for_core1_eeprom(5000)` 等 core1 报告 EEPROM
+   收工；最后才在第二个关中断段里起 pd_link / USB / CAN / UART。
+   握手用新加的 `XcoreFlashRpc::eeprom_ready`（**channel version 4 -> 5**，字段偏移
+   再次变化，core0/core1 必须同时重建），由 core1 在 `ecat_hardware_init()` 返回后
+   （成功与失败两条路径都要）置位——失败路径也置位，否则 core0 会为一次根本不会发生的
+   刷写白等满 5 秒。超时不致命：继续启动，只是丢掉这层隔离，因为一个不应答的 core1
+   不能把 USB 固件连同 DFU 通路一起拖死。
 3. 扇区擦除真实耗时未实测（按 4KB/~40ms 经验值设计）；RPC 超时 5s 后**永久停用客户端**
    （避免新参数覆盖在途请求），代价是一次瞬时抖动会让本次启动的 EEPROM 变只读到复位。
 
@@ -465,9 +548,32 @@ deserializer 时，这是最容易踩的坑。
 否则同时翻转两套环 + 两套 epoch 语义的调试面太大）；同步重写 README.md 架构图与
 DESIGN.md 第 3 节。
 
+#### 步骤 5 进展 [2026-08-01]
+
+| 项 | 状态 |
+|---|---|
+| `down` 环缩到 1024 | **已完成**（`common/xcore_channel.hpp` 的 `kXcoreDownRingSize`） |
+| README.md / DESIGN.md 第 3 节与 3.4 | **已完成**：两份文档开头都加了"你在看哪一套布局"的提示块，DESIGN.md 3.4 补了归因修正 |
+| 烧录脚本 | **已完成**：`./flash-ecat-swap.sh`（`CORE1=0` 出单核 USB 镜像，`CAN_DIAG=1` 带 CAN 遥测） |
+| hybrid / native 变体对调 | **未做**，仍是本次迁移唯一的功能缺口。生产周期控制推荐的 352 字节固定 PDO 目前只有旧 `ecat/` 布局有 |
+
+**核对调布局的回归结论 [实测 2026-08-01]**，全部在同一镜像、同一次启动上取得：
+
+| 项 | 结果 |
+|---|---|
+| 首启 SII 刷写（rev 6 -> 7） | 成功，读回无校验错；第二次启动幂等不刷 |
+| 刷写窗口位置 | USB 枚举比复位晚约 13 秒，确认刷写发生在 USB/CAN 之前 |
+| 主站枚举 | `0  13330:0  PREOP  +  rmcs_stream` |
+| EtherCAT 数据面（IgH，双流 4000 f/s × 15 s） | 60000/60000 × 2，0 损坏，**577973 周期 0 WKC error**；p50 166.1 / 166.2 us（两条 CAN 总线同时满载，与单总线 queue-free 的 130us 不可直接比） |
+| USB 数据面（同镜像，EtherCAT 之后） | 59996/59996 × 2，0 损坏，仲裁切换正常 |
+| CAN 转发压测（16000 f/s 双流 × 90 s） | 1439882/1439883 × 2，0 丢帧、0 停摆、`recovered=0` |
+
+最后一行尤其重要：它是在**核对调布局**下跑的，也就是第 6 节担心的"USB + CAN 同核"
+那一列真正进了生产数据通路之后的结果。
+
 ## 4.6 被实测推翻的假设（勿重走）
 
-这次迁移里有五条看似合理、实际错误的判断。**它们的价值不亚于成功的部分**——每一条
+这次迁移里有六条看似合理、实际错误的判断。**它们的价值不亚于成功的部分**——每一条
 都曾指向一个方向的工作，写在这里是为了让后来者（包括未来的自己）不必再花一遍代价。
 
 | # | 曾经的判断 | 实测结果 | 教训 |
@@ -477,6 +583,8 @@ DESIGN.md 第 3 节。
 | 3 | 反转门铃能压低 EtherCAT 延迟（迁移后） | p50 零收益。对调后 core1 只跑 EtherCAT，主循环极紧，"下一次 MainLoop"本来就快 | 优化的前提（"主循环慢"）会被架构改动本身消灭。**换了架构要重新检查优化还成不成立** |
 | 4 | 合并后 USB 变慢是因为主循环每轮读非缓存 SHARE_RAM 环 | 改成 USB 持链时完全不碰环，p50 纹丝不动 | — |
 | 5 | `clock_gptmr0` 不在任何时钟组，是与 CAN 同类的 bug | SDK 的 ECAT port 层自己做了分组（`hpm_ecat_hw.c:213`），现有固件没这个 bug | agent 的结论要复核到行号 |
+
+| 6 | 单核镜像的 CAN 闩死是 PLIC claim/complete 在中断嵌套下漏了一次，**需要 JTAG 才能定死** | **两处都错。** 该 PLIC 源是 level 触发（`trigger[2]=0`），level 网关加线为高不可能静默，这直接证伪了"漏 claim"；真凶是 MCAN ISR 只在进入时清一次 `IR`。而"需要 JTAG"也不成立——现场是靠 USB 带内通道读出来的，全程没用调试器 | 硬件机制的推断，**必须落到寄存器读数上再下结论**；"读不到现场"常常只是还没想到带内通道 |
 
 还有一条**方法论错误**，比上面任何一条都更该记住：
 
@@ -515,7 +623,59 @@ IOC pad。PC20/PC21 被 ESC 接管是**设计意图**（EtherCAT RUN/ERROR 灯�
   group0；因为 group0 绑的 CPU0 恒在运行，**仍然有效**，改成 group1 是整洁性问题而非
   阻塞项。
 
-## 6. 前置阻塞项：单核镜像的 CAN 闩死
+## 6. 前置阻塞项：单核镜像的 CAN 闩死 —— **已定位并修复 [实测 2026-08-01]**
+
+> **状态：解除。** 根因不是 PLIC claim/complete 漏掉，而是 **MCAN ISR 的中断标志确认
+> 顺序**：`IR` 在进入时清一次、随后排空 FIFO，排空期间到达的帧会把 `RF0N` 重新置上，
+> 而此后**没有任何代码再清它**。于是中断线一直高、控制器一直"有请求"，接收却永远
+> 停摆。修复见下面 6.1；6.2 起是原始记录，保留备查。
+
+### 6.1 根因、修复与验证 [实测 2026-08-01]
+
+**闩死现场**（`host/examples/can_stall_probe.cpp` 从运行中的板子读出，16000 f/s 双流）：
+
+| 观测 | 值 | 含义 |
+|---|---|---|
+| `IR` | `0x0001000f` | `RF0N` 置位，且 `IE` 使能它 → MCAN 中断线**是高的** |
+| `RXF0S` | fill=32, `F0F`=1, `RF0L`=1 | RX FIFO0 满并开始丢帧 |
+| `PSR` | busoff=0, ep=0, ew=0, act=rx | **控制器和总线完全正常**，帧还在进来 |
+| PLIC trigger type | `0` | 该中断源是 **level 触发**，不是 edge |
+| PLIC pending | `0` | 网关没有挂起请求 |
+| ISR 进入计数 | 冻结，直到复位 | 中断再也没有被送达 |
+
+线是高的、网关是 level 的，pending 却是 0——这个组合排除了"控制器坏了""总线断了"
+"批次池满了"（`alloc_fail` 全程 0，且主机 keepalive ack 一直正常返回，说明上行通路
+健康），只剩下确认顺序。
+
+**修复**（`app/src/can/can.cpp`）：ISR 改成"处理 → 重读 `IR` → 只要还有使能位就再来
+一轮"的循环，保证**只在观察到 `IR` 无使能位时才返回**，即返回时线一定是低的。
+`kEnabledInterrupts` 提为一个常量，同时供 `mcan_enable_interrupts()` 和循环条件使用，
+两者不可能再漂移。
+
+**残余窗口与兜底**：只加循环时，16 kHz 下仍在约 600 秒内复现过一次
+（原来是 10 秒内必现，约 60 倍改善）。剩下的窗口在"ISR 最后一次读 `IR`"与"SDK 包装层
+写 PLIC completion"之间。因此 `Can::poll()` 作为主循环看门狗保留：健康路径上只是一次
+MMIO 读加一次比较，只有当**连续两次主循环观察到线是高的且期间 ISR 没有进入过**时才
+补一次 `intc_m_complete_irq()`——PLIC 规定对未在服务的源写 completion 是空操作，
+所以误判无害。
+
+**验证**（两对回环全接，`can_stall_probe`，每档 90 秒，中间不复位）：
+
+| 每流帧率 | 14000 | 16000 | 18000 | 19000 |
+|---|---|---|---|---|
+| 结果 | 干净 | 干净 | 干净 | 干净 |
+| 每流累计 | 1.26 M | 1.44 M | 1.62 M | 1.70 M |
+
+丢帧 0、损坏 0、`alloc_fail` 0、`recovered` 0。**19000 f/s 双流 = 合计 38000 f/s，
+已经超过当初 28000 的失效点约 36%。** 另有 900 秒 16 kHz 长跑，见本节末尾。
+
+诊断手段本身已入库，可复用：固件侧 `app/src/diag/can_diag.*`
+（`-DLIBRMCS_CAN_DIAG=ON` 开启，把 ISR 计数、MCAN 状态寄存器、PLIC pending/enable/
+trigger 打成一条 UART0 上行帧），主机侧 `host/examples/can_stall_probe.cpp` 解码并在
+转发停摆的瞬间打印前后快照。**本板没有接 FT2232、也没装 OpenOCD，整个定位过程没有用
+到任何调试器**——原文"需要 JTAG 停在现场读 PLIC 才能定死"这一判断不成立。
+
+### 6.2 原始记录（保留备查）
 
 **新布局的 core0 = USB + CAN 同核，正是下表中会闩死的那一列。迁移会把这个故障从一个
 没人用的实验镜像搬到生产数据通路上。**
@@ -535,10 +695,18 @@ IOC pad。PC20/PC21 被 ESC 接管是**设计意图**（EtherCAT RUN/ERROR 灯�
   `while (handle_uplink(...)) {}` 无条件抽干 RX FIFO0——上行缓冲满时帧被丢弃，但 FIFO
   条目照样消费掉了。
 
+  > **这一条恰恰指着真凶，却把它排除了 [2026-08-01 修正]**。"进门就 write-1-to-clear"
+  > 被当成了安全性的论据，实际上它正是 bug 本身：清完之后的排空期间再置上的 `RF0N`
+  > 无人清理。当时看的是"FIFO 有没有被排空"（有），没看"标志有没有被清干净"（没有）。
+  > 排除法的每一条都要检查它排除的到底是不是同一件事。
+
 剩下最可能的：**PLIC 的 claim/complete 在中断嵌套下漏了一次**。单核镜像上
 USB(2)/CAN(3)/UART(1) 全挤在同一个 PLIC 上互相抢占，双核镜像的 core1 只有 CAN/UART/timer
 几乎不嵌套；这种故障的特征全中（只哑一个中断源、永久、复位才好）。**需要 JTAG 停在
 现场读 PLIC 才能定死**，无法从主机侧证明。[推断，待验证]
 
-**结论：这一项必须先定位并修掉，迁移后的固件才能上车。** 它不是迁移引入的，但迁移会
-把它放到关键路径上。
+~~**结论：这一项必须先定位并修掉，迁移后的固件才能上车。**~~ 已于 2026-08-01 定位并
+修复，见 6.1。当时"剩下最可能的是 PLIC claim/complete 漏了一次"这条推断**方向错了**：
+PLIC 侧确实有一个残余窗口（6.1 的看门狗就是为它留的），但真正让接收永久停摆的是
+MCAN ISR 的中断标志确认顺序。教训与 4.6 节同类——**推断出的机制要用现场寄存器验证过
+才能当结论**，而"读不到现场"往往只是还没想到用带内通道把现场送出来。
