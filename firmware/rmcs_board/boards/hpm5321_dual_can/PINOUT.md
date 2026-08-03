@@ -64,11 +64,15 @@ SoC 是 **HPM5361**（`HPM5361xEGx`，QFN48），名字里的 `hpm5321` 是沿�
 | USB0 DM | PA24 | 模拟 |
 | USB0 DP | PA25 | 模拟 |
 
-## 按键 / 调试
+## Bootloader 强制常驻引脚 / 调试
+
+> **本板没有任何实体按键** [实测 2026-08-03]。`board.c` 里那个函数名叫
+> `..._force_stay_button_pin()`，但它采的是一个**与 JTAG_TMS 复用的引脚**，不是键。
+> 有实体键的是 `hpm6e8y`（`/* User key KEYA = PB24 */`），别把两块板搞混。
 
 | 功能 | 引脚 | 说明 |
 | ----------------- | ---- | ------------------------------------------------------------ |
-| Bootloader 按键 | PA07 | 与 JTAG_TMS 复用；由 `board.c` 的 `board_check_bootloader_force_stay_requested()` 采样，之后恢复为 JTAG_TMS |
+| Bootloader 强制常驻 | PA07 | **与 JTAG_TMS 复用，板上无按键**。复位后由 `board.c` 的 `board_check_bootloader_force_stay_requested()` 采样：内部上拉，**需外部拉到 GND 才算触发**；窗口只有 4×250us≈1ms，之后恢复为 JTAG_TMS |
 | JTAG TCK | PA04 | 默认 JTAG 功能，app 不做复用 |
 | JTAG TDO | PA05 | 默认 JTAG 功能，app 不做复用 |
 | JTAG TDI | PA06 | 默认 JTAG 功能，app 不做复用 |

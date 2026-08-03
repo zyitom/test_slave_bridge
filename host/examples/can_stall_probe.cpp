@@ -47,7 +47,7 @@ constexpr size_t kPayloadBytes = 8;
 
 // Must match firmware/rmcs_board/app/src/diag/can_diag.hpp.
 constexpr uint8_t kRecordMagic = 0xD1U;
-constexpr uint8_t kRecordVersion = 4U;
+constexpr uint8_t kRecordVersion = 5U;
 constexpr size_t kPlicWordCount = 6;
 constexpr size_t kMaxCan = 4;
 
@@ -98,6 +98,11 @@ struct CanTelemetry {
     uint32_t psr = 0;
     uint32_t ecr = 0;
     uint32_t txfqs = 0;
+    // Bit-timing registers as actually programmed. Worth printing because the
+    // SDK derives them from a requested baudrate plus a sample-point window, so
+    // what the controller runs is not obvious from the source.
+    uint32_t nbtp = 0;
+    uint32_t dbtp = 0;
 };
 
 struct Telemetry {
@@ -167,6 +172,10 @@ bool decode(std::span<const std::byte> payload, Telemetry& out) {
         cursor += 4;
         can.txfqs = get_u32_le(cursor);
         cursor += 4;
+        can.nbtp = get_u32_le(cursor);
+        cursor += 4;
+        can.dbtp = get_u32_le(cursor);
+        cursor += 4;
     }
 
     out.valid = true;
@@ -232,6 +241,20 @@ void print_telemetry(const Telemetry& t) {
             last_error_name((c.psr >> 8) & 0x7U), static_cast<unsigned>(bus_off),
             static_cast<unsigned>(err_passive), static_cast<unsigned>(warning), c.ecr & 0xffU,
             (c.ecr >> 8) & 0x7fU, c.txfqs);
+        // Decoded bit timing. A data-phase sample point that differs from the
+        // peer's is invisible in every other counter here but breaks CAN-FD
+        // outright (see the 75% vs 87.5% case fixed in can.hpp).
+        const uint32_t nbrp = ((c.nbtp >> 16) & 0x1ffU) + 1U;
+        const uint32_t ntseg1 = ((c.nbtp >> 8) & 0xffU) + 1U;
+        const uint32_t ntseg2 = (c.nbtp & 0x7fU) + 1U;
+        const uint32_t dbrp = ((c.dbtp >> 16) & 0x1fU) + 1U;
+        const uint32_t dtseg1 = ((c.dbtp >> 8) & 0x1fU) + 1U;
+        const uint32_t dtseg2 = ((c.dbtp >> 4) & 0xfU) + 1U;
+        printf(
+            "      timing: nominal brp=%u tseg1=%u tseg2=%u sp=%.1f%% | data brp=%u tseg1=%u "
+            "tseg2=%u sp=%.1f%% tdc=%u\n",
+            nbrp, ntseg1, ntseg2, 100.0 * (1 + ntseg1) / (1 + ntseg1 + ntseg2), dbrp, dtseg1,
+            dtseg2, 100.0 * (1 + dtseg1) / (1 + dtseg1 + dtseg2), (c.dbtp >> 23) & 1U);
     }
 }
 

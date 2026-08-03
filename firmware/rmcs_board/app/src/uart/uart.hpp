@@ -57,13 +57,41 @@ public:
             return false;
 
         // Bytes already handed to the DMA would be shifted out at the new rate.
+        //
+        // This must happen before uart_set_baudrate(), and not only to keep the
+        // in-flight bytes from being clocked out wrong: DLL aliases THR at
+        // offset 0x20 and DLM aliases IER at 0x24, selected by LCR.DLAB. While
+        // DLAB is set -- which is exactly what uart_set_baudrate() does to reach
+        // the latch -- a TX DMA write aimed at THR lands in the divisor latch
+        // instead. The DMA must be provably stopped across the whole window, not
+        // merely expected to be idle.
         TxBuffer::abort_transmit();
 
-        uart_set_baudrate(uart_base_, *data.baudrate, uart_clock_hz_);
-        // uart_set_baudrate leaves DLAB set to reach the divisor latch; clear it
-        // so subsequent register access hits RBR/THR instead of the latch.
+        const hpm_stat_t status =
+            uart_set_baudrate(uart_base_, *data.baudrate, uart_clock_hz_);
+        // Unconditionally, and before anything else touches the port:
+        // uart_set_baudrate() sets DLAB up front but returns early WITHOUT
+        // clearing it when its solver rejects the baudrate, so on that path the
+        // SDK hands the port back with 0x20 still aliased to the divisor latch.
+        // Clearing it here covers both outcomes.
         uart_base_->LCR &= ~UART_LCR_DLAB_MASK;
-        return true;
+
+        // The FIFO still holds whatever the aborted DMA had already pushed.
+        // Those bytes predate the new divisor, so shifting them out now would
+        // put a burst of corrupt characters on the line at the new rate; the
+        // peer would resynchronise eventually, but the first frame after every
+        // switch would be garbage.
+        uart_reset_tx_fifo(uart_base_);
+
+        snapshot_divisor();
+
+        // Report the solver's verdict rather than "the request was well-formed".
+        // 80 MHz cannot represent every rate within the SDK's 3% tolerance, and
+        // on rejection the divisor is unchanged -- the port keeps running at the
+        // old rate. Returning true there told the host a switch had happened
+        // when it had not, which is the one failure mode that makes a peer
+        // mismatch look like a wiring or hardware fault.
+        return status == status_success;
     }
 
     void handle_downlink(const data::UartDataView& data) {
@@ -80,7 +108,31 @@ public:
         }
     }
 
+    // Kernel clock the baudrate divisor was computed from, and the divisor as it
+    // was actually programmed. Exposed for the diagnostic record: a divisor is
+    // only interpretable next to its clock.
+    //
+    // The divisor is served from a snapshot rather than read back on demand
+    // because reading it requires setting LCR.DLAB, and DLAB re-points the
+    // address the TX DMA writes to (THR at 0x20 becomes DLL) -- a diagnostic
+    // read racing a live TX would overwrite the divisor with a data byte and
+    // silently kill the port. Cheap and correct: nothing changes the divisor
+    // except init and handle_config, and both snapshot it while TX is stopped.
+    [[nodiscard]] uint32_t clock_hz() const { return uart_clock_hz_; }
+    [[nodiscard]] uint32_t divisor() const { return uart_divisor_; }
+    [[nodiscard]] uint32_t oscr() const { return uart_base_->OSCR; }
+    [[nodiscard]] UART_Type* base() const { return uart_base_; }
+
 private:
+    // Caller must guarantee the TX DMA is stopped: this sets LCR.DLAB, during
+    // which any DMA write intended for THR would hit the divisor latch instead.
+    void snapshot_divisor() {
+        const uint32_t lcr = uart_base_->LCR;
+        uart_base_->LCR = lcr | UART_LCR_DLAB_MASK;
+        uart_divisor_ = ((uart_base_->DLM & 0xFFU) << 8) | (uart_base_->DLL & 0xFFU);
+        uart_base_->LCR = lcr & ~UART_LCR_DLAB_MASK;
+    }
+
     [[nodiscard]] uint32_t init_uart(uint32_t irq_num, uint32_t baudrate, parity_setting_t parity) {
         const uint32_t uart_clock = board::init_uart(uart_base_);
 
@@ -129,6 +181,9 @@ private:
     // Source clock captured at init: uart_set_baudrate needs it to recompute the
     // divisor on a runtime baudrate switch.
     uint32_t uart_clock_hz_;
+    // Divisor as programmed, sampled by snapshot_divisor() at init and after each
+    // switch. See the accessor above for why it is not read back on demand.
+    uint32_t uart_divisor_ = 0;
 
 public:
     // DMA buffer storage in a board-chosen non-cached region (AHB SRAM on
@@ -163,7 +218,11 @@ inline Uart::Uart(UartPort port, size_t storage_index)
     , data_id_(port.data_id)
     , config_data_id_(port.config_data_id)
     , uart_base_(reinterpret_cast<UART_Type*>(port.base))
-    , uart_clock_hz_(init_uart(port.irq_num, port.baudrate, port.parity)) {}
+    , uart_clock_hz_(init_uart(port.irq_num, port.baudrate, port.parity)) {
+    // Safe here for the same reason handle_config's call is: no TX has been
+    // queued yet, so nothing can be writing THR while DLAB is set.
+    snapshot_divisor();
+}
 
 namespace internal {
 

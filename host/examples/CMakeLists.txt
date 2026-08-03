@@ -16,6 +16,18 @@ target_link_libraries(rx_monitor PRIVATE librmcs-sdk)
 add_executable(motor_pid_sine motor_pid_sine.cpp)
 target_link_libraries(motor_pid_sine PRIVATE librmcs-sdk)
 
+# Two-board suite: a pair of hpm5321_dual_can boards wired CAN0<->CAN0,
+# CAN1<->CAN1 and UART0<->UART0. Unlike the single-board loopback tools, every
+# frame crosses a real bus between two independent CAN controllers.
+add_executable(dual_board_test dual_board_test.cpp)
+target_link_libraries(dual_board_test PRIVATE librmcs-sdk)
+
+# Heterogeneous pair (built for mc02 <-> hpm5321_dual_can): goes through the
+# board-agnostic BoardSession, discovers the wiring, and separates USB packet
+# rate from CAN frame rate -- the two ends run at different USB speeds.
+add_executable(mixed_board_test mixed_board_test.cpp)
+target_link_libraries(mixed_board_test PRIVATE librmcs-sdk)
+
 add_executable(can_error_test can_error_test.cpp)
 target_link_libraries(can_error_test PRIVATE librmcs-sdk)
 

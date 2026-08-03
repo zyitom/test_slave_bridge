@@ -100,13 +100,39 @@ public:
         return true;
     }
 
-    // Stop an in-flight TX DMA immediately. Used before a baudrate switch: the
-    // bytes still in the FIFO would otherwise be clocked out at the new rate and
-    // arrive as garbage. The queued data itself is left alone -- try_dequeue()
-    // re-triggers from the current out_ position on the next poll.
+    // Stop an in-flight TX DMA immediately. Used before a baudrate switch, for
+    // two reasons: bytes still queued would otherwise be clocked out at the new
+    // rate and arrive as garbage, and -- because DLL aliases THR while LCR.DLAB
+    // is set -- a DMA write landing inside the switch window would overwrite the
+    // divisor latch itself. The caller relies on TX being provably stopped, not
+    // merely likely to be idle.
+    //
+    // The queued data itself is left alone: out_ does not move, so try_dequeue()
+    // re-triggers from the same position on the next poll. Bytes the DMA had
+    // already pushed into the FIFO are re-sent rather than dropped, which can
+    // duplicate a partially shifted-out character across the switch. That is
+    // within the documented contract for handle_config -- the host is expected to
+    // quiesce the link first -- and is the safer of the two failure modes.
     void abort_transmit() {
+        // CHABORT before disabling: its register documentation states writes are
+        // ignored for channels that are not currently enabled, so clearing
+        // CTRL.ENABLE first would silently skip the abort and leave the channel's
+        // handshake with the UART half-completed. Aborting also raises
+        // INTABORTSTS, cleared below so the next transfer starts from clean
+        // status flags.
+        if (dma_channel_is_enable(dma_.base, dma_.channel))
+            dma_abort_channel(dma_.base, 1U << dma_.channel);
         core::utility::assert_always(dma_mgr_disable_channel(&dma_) == status_success);
+        dma_clear_transfer_status(dma_.base, dma_.channel);
         tx_triggered_ = false;
+        // Aborting discards the bytes the channel was mid-way through, so the
+        // pending count must go with it. Leaving it set let the next
+        // try_dequeue() advance out_ past data the DMA never actually sent,
+        // permanently desynchronising the ring so that every subsequent byte came
+        // from the wrong offset. Independent of the divisor-latch corruption that
+        // caused the silent-TX symptom -- this one only ever fired after a
+        // baudrate switch, and corrupted the stream rather than stopping it.
+        in_flight_ = 0;
     }
 
     bool try_dequeue() {
@@ -174,7 +200,13 @@ private:
         config.dst_addr_ctrl = DMA_MGR_ADDRESS_CONTROL_FIXED;
         config.src_mode = DMA_MGR_HANDSHAKE_MODE_NORMAL;
         config.dst_mode = DMA_MGR_HANDSHAKE_MODE_HANDSHAKE;
-        config.src_burst_size = DMA_MGR_NUM_TRANSFER_PER_BURST_8T;
+        // Same constraint as the RX side: the TX request fires at
+        // uart_tx_fifo_trg_not_full, which guarantees exactly one free slot, so
+        // a burst of 8 could push 8 bytes at a FIFO with room for one and drop
+        // the remainder. The RX corruption this mirrors was observed directly;
+        // this side is corrected by the same rule rather than left to depend on
+        // the FIFO happening to drain faster than the DMA fills it.
+        config.src_burst_size = DMA_MGR_NUM_TRANSFER_PER_BURST_1T;
 
         core::utility::assert_always(
             dma_mgr_request_resource(&dma_) == status_success

@@ -139,6 +139,150 @@ DIAG_USB=1 ./flash-ecat-swap.sh   # core1 日志经 USB 送出，配 host/exampl
 ./flash-ecat.sh                   # EtherCAT 桥旧布局（对照基线）
 ```
 
+## CAN 采样点：必须对齐总线，不是对齐推荐表 [实测 2026-08-03]
+
+**结论先行：`can.hpp` 把仲裁域和数据域的采样点都钉死在 87.5%，不要改回 SDK 默认，
+也不要照厂商推荐表改。** 改动是 `Can` 构造函数里这四行：
+
+```cpp
+config.can20_samplepoint_min = 875U;   config.can20_samplepoint_max = 875U;
+config.canfd_samplepoint_min = 875U;   config.canfd_samplepoint_max = 875U;
+```
+
+### 为什么必须显式设
+
+HPM SDK 的默认窗口是 `[750, 875]`（千分比），而它的求解器**爬过下界就停**：
+
+```c
+while ((num_seg1 * 1000U) / num_tq < samplepoint_min) { ++num_seg1; --num_seg2; }
+```
+
+所以结果**永远是 75.0%**，那个 `max = 875` 是死代码。`bsp/hpm_sdk/samples/drivers/mcan/`
+里一处都没设过这两个字段，**HPM 全部官方示例都跑 75%**。
+
+### 症状与判据
+
+CubeMX 板（mc02、c_board）两个域都是 `tseg1/tseg2 = 13/2 = 87.5%`。5321 在 75% 时：
+
+| | 结果 |
+|---|---|
+| classic CAN 双向 | **正常**（1 Mbit 容差有 12.5 个百分点余量） |
+| `mc02 -> 5321` FD | **正常** |
+| `5321 -> mc02` FD | **一帧不到**，`PSR.DLEC = ACK error`，TEC 爬到 136 进 error-passive |
+
+5 Mbit 一个位只有 200 ns，75% 与 87.5% 差 25 ns，接收方取到的已是下一位。
+**这种"classic 通、FD 单向不通"就是采样点不一致的特征签名。**
+
+### 关键陷阱：不要照推荐表改回去
+
+厂商推荐表（">800 kbps 用 75%"、"仲裁域与数据域不要求一致"）会让你认为 1 Mbit
+仲裁域应该是 75%。**照着做会坏。** 实测：仲裁域留 75%、只钉数据域 87.5% →
+`PSR.DLEC = bit1 error`，双总线 **0/40000**。
+
+原因是 mc02 的仲裁域**不是** 75%：
+
+| | 仲裁域配置 | TQ 数 | 波特率 | 采样点 |
+|---|---|---|---|---|
+| 典型参考驱动 `CAN_BR_1M` | brp=1, seg1=59, seg2=20 | 80 | 1 Mbit | 75.0% |
+| **mc02 实际（CubeMX）** | brp=5, seg1=13, seg2=2 | 16 | 1 Mbit | **87.5%** |
+
+两者都是 1 Mbit，采样点差 12.5 个百分点。**推荐表是"没有其他约束时选什么"，
+一旦总线上已有节点，"所有节点采样点一致"这条压倒一切。**
+
+### 影响范围
+
+`can.hpp` 由**全部 rmcs_board 镜像共用**（hpm5321 / hpm5321_dual_can / hpm6e8y，
+含两套 EtherCAT 固件）。此前"FD 没问题"的印象来自只测 rmcs_board 对 rmcs_board——
+两端错得一样所以互通。**真实电机（DJI、达妙 MIT、瓴控）全是 87.5%**，所以这个修复
+是让 5321 能跟电机跑 CAN-FD，不只是为了跟 mc02 说话。
+
+### 怎么自查
+
+`-DLIBRMCS_CAN_DIAG=ON` 的遥测（记录版本 5）现在带 `NBTP`/`DBTP`，
+`host/examples/can_stall_probe` 会直接打印解码后的采样点：
+
+```
+timing: nominal brp=1 tseg1=69 tseg2=10 sp=87.5% | data brp=1 tseg1=13 tseg2=2 sp=87.5% tdc=0
+```
+
+## UART 运行时改波特率：DLAB 会把 THR 变成除数锁存器 [实测 2026-08-05]
+
+**结论先行：读 `DLL`/`DLM` 必须在 TX DMA 停稳之后，否则读的动作本身会毁掉波特率。**
+`DLL` 与 `THR` 共用偏移 `0x20`、`DLM` 与 `IER` 共用 `0x24`，由 `LCR.DLAB` 选择
+（`soc/HPM5300/ip/hpm_uart_regs.h`）。而 TX DMA 的目的地址在 init 时就固定成
+`&uart_base_->THR`，**它不认识 DLAB**。所以只要 DLAB=1 期间 DMA 送出一个字节，
+那个字节就写进了除数锁存器，波特率当场被数据覆盖，端口从此不出声。
+
+### 症状签名（很反直觉，值得记住）
+
+| 现象 | 说明 |
+|---|---|
+| 遥测报告除数**完全正确** | `DLM` 在 `DLL` 被覆盖**之前**读到，所以快照是好的 |
+| 但那个口**一个字节都不发** | 硬件里的除数已经被数据字节改掉 |
+| 与波特率精度**无关** | 1000000 / 2000000 除数精确（div=10 / div=5）照样失败 |
+| 重刷两块板也没用 | 不是状态污染，每次 100 ms 遥测都会重新踩一次 |
+
+**"算对了、写对了、然后不发"= 观测者把被观测对象改坏了。** 这次的观测者就是
+`-DLIBRMCS_CAN_DIAG=ON` 里那段读除数的遥测代码，它跑在主循环、和 TX DMA 并发。
+
+### 修法
+
+- `Uart::snapshot_divisor()` 只在 **init** 和 **`handle_config()` 里 `abort_transmit()` 之后**
+  采样一次，存进 `uart_divisor_`；遥测从快照读，**永不按需读寄存器**。
+- `abort_transmit()` 先 `dma_abort_channel()` 再 `dma_mgr_disable_channel()`：
+  `CHABORT` 的寄存器手册明确写"写入对未使能的通道会被忽略"[RM]，顺序颠倒等于没中止。
+- 切换后补 `uart_reset_tx_fifo()`，丢掉旧波特率下已经进 FIFO 的字节。
+
+### 上游怎么做的（对照过 SDK）
+
+HPM SDK **全库没有任何读回 `DLL`/`DLM` 的代码**，也没有 `uart_get_baudrate()`。
+唯一改运行时波特率的样例（`samples/drivers/uart/uart_lin/slave_baudrate_adaptive`）
+是纯"只写不读"：`uart_set_baudrate()` 之后 `uart_reset_rx_fifo()` 再重开 RX。
+**上游根本不回读，所以它碰不到这个坑。** 我们要回读是为了遥测，那就必须用快照。
+
+另外 `uart_set_baudrate()` 自己有个缺陷值得知道：它**先**置 DLAB，求解失败时
+**带着 DLAB=1 直接 return**，不清标志位（`drivers/src/hpm_uart_drv.c:222-227`）。
+所以调用方必须无条件自己清一次 DLAB，不能只在成功分支清。
+
+### 已知缺口：配置被拒绝，主机看不到
+
+`handle_config()` 现在返回求解器的真实结果（80 MHz 表示不出的波特率会被拒，
+此时**分频器保持不动、端口继续用旧波特率**，不会损坏）。但
+`link/host_session.hpp` 的 `uart_config_deserialized_callback` 丢弃了这个返回值并
+无条件 `return true`——因为该回调的 `bool` 在协议层的含义是"这个 field 认不认识"，
+不是"操作成不成功"，不能拿来传失败。**要让主机知道切换被拒，需要协议层加一条
+config ack**，这是独立的功能缺口，尚未实现。
+
+实测：请求 6000000（求解器无解）板端正确拒绝、寄存器未变、随后 115200 仍 PASS；
+但主机侧不会打印 rejected。而 3000000 **会被接受**（`osc=26 div=1 -> 3076923`，
+误差 2.56%，在 SDK 的 3% 容差内），别以为它非法。
+
+### 顺带修掉的独立 bug
+
+`abort_transmit()` 漏清 `in_flight_`，导致下一次 `try_dequeue()` 把 `out_` 推过
+DMA 实际没发出的字节，环缓冲永久错位。**这个与上面的除数覆盖无关**：它只在切换
+之后发作，且表现为"数据错乱"而不是"完全不发"。
+
+## 教训：自环测试对"共模错误"是瞎的 [实测 2026-08-05]
+
+**结论先行：同一块板两个口互接的自环测试，无法证明波特率切换真的生效。**
+排查上面那个 bug 时，mc02 的 `UART7 <-> UART10` 自环在 115200 到 2000000 全部 PASS，
+于是"mc02 被洗清、问题在 5321"——**这个推论是错的**。
+
+自环会把两端**同时**设成目标波特率。如果配置代码根本没生效，两端就**一起**留在
+115200，波特率相同、通信照样正常、测试照样 PASS。**自环只能验证两端一致，不能验证
+两端等于你要的值。** 共模错误对它完全不可见。
+
+实际上 mc02 这边还藏着第二个独立 bug：`HAL_RCCEx_GetPeriphCLKFreq()` 在本版 HAL 里
+的 if/else 链只覆盖 SAI/SPI/ADC/SDMMC/FDCAN，**两个 UART 组一个分支都没有**，
+直接掉到末尾 `else { frequency = 0; }` 返回 **0**（`stm32h7xx_hal_rcc_ex.c`）。
+于是 `handle_config()` 撞上自己的 `kernel_clock_hz == 0` 提前返回，**`BRR` 一次都没写过**，
+mc02 永远停在 CubeMX 的 115200。修法是照 `UART_SetConfig()` 自己 switch
+`__HAL_RCC_GET_USART16_SOURCE()`，不要信那个函数。
+
+**判据**：要证明"切换生效"，必须让**一端切、另一端不切**，然后确认通信**变坏**；
+或者跨板对打，两端各自独立配置。只看自环 PASS 等于没测。
+
 ## 硬件中断与数据路径归属（6E8Y / 5321 共用同一份 app 代码）
 
 问"硬件 ISR 都用上了吗"的答案：**延迟相关的事件全部是中断驱动的，没有该用中断却在轮询的地方。**

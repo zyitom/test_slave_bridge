@@ -46,10 +46,51 @@ void Can::handle_downlink(const data::CanDataView& data) {
     if (!data.can_data.empty())
         std::memcpy(frame.data_8, data.can_data.data(), data.can_data.size());
 
-    const hpm_stat_t status = mcan_transmit_via_txfifo_nonblocking(can_base_, &frame, nullptr);
-    if (status != status_success) {
+    // Straight to the controller while it has room, and only queue behind a
+    // full TX FIFO. The FIFO is 32 elements, but the host does not deliver at
+    // the rate the bus drains: USB hands over whatever accumulated since the
+    // last (micro)frame, so a burst can exceed 32 even when the average rate is
+    // well under bus capacity. Writing directly and giving up -- what this did
+    // before -- dropped those bursts outright, and the only sign was a cyan LED.
+    //
+    // The queue must not be bypassed once it is non-empty, or a later frame
+    // would overtake an earlier one. Checking it here is safe despite
+    // RingBuffer's consumer-only warning on peek_front(): producer
+    // (handle_downlink, reached from tud_task) and consumer (try_transmit) both
+    // run in the main loop, on the same thread.
+    //
+    // Queueing only on overflow keeps the common path free of any added work.
+    if (transmit_buffer_.peek_front() == nullptr
+        && mcan_transmit_via_txfifo_nonblocking(can_base_, &frame, nullptr) == status_success)
+        return;
+
+    // Compress into the queue element: T0/T1 plus the (at most 8) data bytes.
+    // mcan_tx_frame_t's leading words are exactly T0/T1, so they copy straight
+    // across; the static_assert below pins that layout assumption.
+    static_assert(offsetof(mcan_tx_frame_t, data_8) == 8);
+    QueuedFrame queued;
+    std::memcpy(queued.header, &frame, sizeof(queued.header));
+    std::memcpy(queued.data, frame.data_8, sizeof(queued.data));
+
+    if (!transmit_buffer_.emplace_back(queued)) {
         led::led->downlink_buffer_full();
         diag::note_tx_fail(can_index());
+    }
+}
+
+ATTR_PLACE_AT(".fast")
+void Can::try_transmit() {
+    while (const QueuedFrame* queued = transmit_buffer_.peek_front()) {
+        // Rebuild the SDK frame from the compressed record. Zero-initialized so
+        // the data words above the 8 bytes this protocol can carry are defined,
+        // whatever DLC the header asks for.
+        mcan_tx_frame_t frame{};
+        std::memcpy(&frame, queued->header, sizeof(queued->header));
+        std::memcpy(frame.data_8, queued->data, sizeof(queued->data));
+
+        if (mcan_transmit_via_txfifo_nonblocking(can_base_, &frame, nullptr) != status_success)
+            return; // FIFO full; the rest stays queued for the next pass
+        transmit_buffer_.pop_front([](QueuedFrame&&) noexcept {});
     }
 }
 

@@ -56,7 +56,17 @@ PRESET=debug ./flash-dual.sh   # 改烧可调试的 -O0 镜像
 
 **前提是芯片上已经有共享的 RMCS DFU bootloader**（一次性操作，需要调试器：
 `./flash-dual-bootloader.sh`）。正在运行的 app 会暴露 DFU 运行时接口，所以 `dfu-util`
-能自动让它 detach；若要强制 bootloader 常驻，复位时按住 PA07 按键。
+理论上能自动让它 detach。
+
+> **注意：app 与 bootloader 的 mailbox 版本不一致时，这条自动路径会静默失效**
+> [实测 2026-08-03]。`dfu-util -D` 报 `Lost device after RESET?`，板子带着旧 app 回来。
+> 起因是 `ff56b97` 把 mailbox 从 `SYSCTL CPU0 GPR[12,13]`（热复位）换到
+> `BGPR/PDGO GPR[2,3]`（冷复位），app 和 bootloader 两侧同时改、没留兼容路径；
+> bootloader 是"刷一次用很久"的独立镜像，于是新 app 配旧 bootloader 就对不上。
+>
+> **本板没有实体按键**，强制 bootloader 常驻只能把 **PA07（JTAG_TMS）拉到 GND** 再上电，
+> 见 [PINOUT.md](PINOUT.md)。协议里也没有任何 flash 擦写命令，所以这种状态下
+> **USB 侧无法自恢复**，只剩拉低 PA07 或上 JTAG 两条路。
 
 ## 主状态灯（RGB）
 

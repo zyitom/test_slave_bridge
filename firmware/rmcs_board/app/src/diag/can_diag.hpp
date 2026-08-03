@@ -37,7 +37,7 @@ inline constexpr bool kEnabled = true;
 // Wire format of the UART0 uplink payload. Little endian, fixed layout so the
 // host decoder needs no length negotiation.
 inline constexpr std::uint8_t kRecordMagic = 0xD1U;
-inline constexpr std::uint8_t kRecordVersion = 4U;
+inline constexpr std::uint8_t kRecordVersion = 5U;
 
 // Hot-path notifications. All are a single relaxed atomic add; the CAN ISR calls
 // the first two per interrupt and per forwarded frame respectively.

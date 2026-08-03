@@ -19,7 +19,36 @@
 //    outputs, send process data, wait for the frame to return, feed the ARQ
 //    endpoint. Poll pacing is pure busy-spin for the lowest latency (pair it
 //    with options.thread_setup pinning the thread to an isolated core).
-//  * Stream reliability comes from the stop-and-wait ARQ in
+//  * The exchange can run over several independent process-data channels
+//    (RMCS_ECAT_PIPELINE, default 1 = stop-and-wait). One channel == at most
+//    one frame in flight, because IgH refuses to queue a datagram that is
+//    already queued (it only bumps skip_count), so depth has to come from
+//    several domains, and each domain costs the slave one FMMU per sync
+//    manager.
+//
+//    WHETHER DEPTH HELPS DEPENDS ON THE TRAFFIC (measured, ecat/DESIGN.md 4.5).
+//    Request/response, where the reply's timing is correlated with the frame
+//    that carried the request, gets no phase saving and only pays the cost:
+//
+//        depth 1: 38.0 kHz, rtt p50 133.4 us   <- best here
+//        depth 2: 77.8 kHz, rtt p50 139.4 us
+//        depth 4: 84.3 kHz, rtt p50 155.5 us   (wire saturated at 99.8 Mbit/s)
+//
+//    Continuous uplink flood, where CAN frames arrive at a phase unrelated to
+//    the frames, is the opposite -- and it is the shape of the real workload:
+//
+//        depth 1: rtt p50 159.7, p90 177.6, max 0.41-0.44 ms
+//        depth 2: rtt p50 150.9, p90 161.9, max 2.5-9.7 ms   <- p50 -8.6 us
+//
+//    THE DEFAULT STAYS 1 BECAUSE OF THAT TAIL, not because depth is useless:
+//    9.7 ms is ten missed cycles of a 1 kHz control loop. The tail has the
+//    shape of go-back-N replay, but PdStreamEndpoint has no counter on that
+//    path, so it is unproven -- instrument it before raising the default.
+//
+//    Depth is additionally capped by the ARQ window (kPdWindow == 2): beyond
+//    two frames in flight the endpoint has no credit left to stage new chunks
+//    and the extra channels can only repaint the newest one.
+//  * Stream reliability comes from the go-back-N ARQ in
 //    librmcs::ecat::PdStreamEndpoint (shared with the firmware, roles are
 //    symmetric), exactly as in the SOEM backend.
 //  * transmit() only copies the frame into a byte ring; the cycle thread
@@ -292,6 +321,27 @@ constexpr std::size_t kCyclicBankCount = 3;
 static_assert(kCyclicBankCount <= kCyclicBankIndexMask + 1U);
 static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
 
+// One pipelined process-data channel: its own domain, hence its own datagrams,
+// its own process-data memory and its own FMMU pair on the slave (IgH allocates
+// a new FMMU per domain+sync-manager, so N channels cost 2N of the slave's
+// FMMUs -- check `ethercat slaves -v` before raising the depth).
+struct PdChannel {
+    ec_domain_t* domain = nullptr;
+    uint8_t* process_data = nullptr;
+    std::byte* outputs = nullptr;
+    std::byte* inputs = nullptr;
+    std::byte* stream_outputs = nullptr;
+    std::byte* stream_inputs = nullptr;
+};
+
+// Upper bound on frames in flight. Depth buys frame RATE; whether that also
+// buys latency depends on the traffic -- see the file header for both cases.
+//
+// 4 is also the hardware ceiling, not an arbitrary limit: the slave's ESC
+// reports 8 FMMUs (register 0x0004, read back on the board) and every channel
+// consumes one per sync manager, so depth 4 uses all 8.
+constexpr unsigned kMaxPipelineDepth = 4;
+
 class Igh final : public Transport {
 public:
     Igh(std::string_view interface_name, const ConnectionOptions& options)
@@ -311,6 +361,18 @@ public:
                 "unknown RMCS_ECAT_MODE (expected stream or hybrid)"};
         }
 
+        // Frames in flight. 1 is stop-and-wait and stays the default because
+        // depth 2 blows the worst-case tail out to milliseconds under load,
+        // even though it wins the body of the distribution (file header).
+        if (const char* depth_env = std::getenv("RMCS_ECAT_PIPELINE")) {
+            const long value = std::strtol(depth_env, nullptr, 10);
+            if (value < 1 || value > static_cast<long>(kMaxPipelineDepth))
+                throw std::runtime_error{std::format(
+                    "RMCS_ECAT_PIPELINE={} out of range (expected 1..{})", depth_env,
+                    kMaxPipelineDepth)};
+            pipeline_depth_ = static_cast<unsigned>(value);
+        }
+
         master_ = ecrt_request_master(0);
         if (!master_)
             throw std::runtime_error{
@@ -321,9 +383,12 @@ public:
             master_ = nullptr;
         }};
 
-        domain_ = ecrt_master_create_domain(master_);
-        if (!domain_)
-            throw std::runtime_error{"ecrt_master_create_domain failed"};
+        for (unsigned i = 0; i < pipeline_depth_; ++i) {
+            channels_[i].domain = ecrt_master_create_domain(master_);
+            if (!channels_[i].domain)
+                throw std::runtime_error{
+                    std::format("ecrt_master_create_domain failed for channel {}", i)};
+        }
 
         slave_config_ = ecrt_master_slave_config(master_, 0, 0, kVendorId, kProductCode);
         if (!slave_config_)
@@ -384,15 +449,24 @@ public:
             hybrid_mode_ ? kHybridOutputFixedIndex : kOutputEntryIndex;
         const uint16_t input_base_index =
             hybrid_mode_ ? kHybridInputFixedIndex : kInputEntryIndex;
-        const int off_out = ecrt_slave_config_reg_pdo_entry(
-            slave_config_, output_base_index, 1, domain_, nullptr);
-        const int off_in = ecrt_slave_config_reg_pdo_entry(
-            slave_config_, input_base_index, 1, domain_, nullptr);
-        if (off_out < 0 || off_in < 0)
-            throw std::runtime_error{std::format(
-                "ecrt_slave_config_reg_pdo_entry failed (out={} in={})", off_out, off_in)};
-        off_out_ = static_cast<std::size_t>(off_out);
-        off_in_ = static_cast<std::size_t>(off_in);
+        // Registering the same PDO entry in a second domain is what allocates
+        // the second FMMU pair: ec_slave_config_prepare_fmmu() only reuses an
+        // FMMU when domain AND sync manager match. Offsets are per-domain.
+        std::array<std::size_t, kMaxPipelineDepth> off_out{};
+        std::array<std::size_t, kMaxPipelineDepth> off_in{};
+        for (unsigned i = 0; i < pipeline_depth_; ++i) {
+            const int out = ecrt_slave_config_reg_pdo_entry(
+                slave_config_, output_base_index, 1, channels_[i].domain, nullptr);
+            const int in = ecrt_slave_config_reg_pdo_entry(
+                slave_config_, input_base_index, 1, channels_[i].domain, nullptr);
+            if (out < 0 || in < 0)
+                throw std::runtime_error{std::format(
+                    "ecrt_slave_config_reg_pdo_entry failed for channel {} (out={} in={}); "
+                    "pipeline depth {} needs {} FMMUs on the slave",
+                    i, out, in, pipeline_depth_, 2 * pipeline_depth_)};
+            off_out[i] = static_cast<std::size_t>(out);
+            off_in[i] = static_cast<std::size_t>(in);
+        }
 
         if (ecrt_master_activate(master_))
             throw std::runtime_error{"ecrt_master_activate failed"};
@@ -400,28 +474,35 @@ public:
         utility::FinalAction deactivate_on_failure{
             [this]() noexcept { ecrt_master_deactivate(master_); }};
 
-        process_data_ = ecrt_domain_data(domain_);
-        if (!process_data_)
-            throw std::runtime_error{"ecrt_domain_data returned null after activate"};
-        outputs_ = reinterpret_cast<std::byte*>(process_data_ + off_out_);
-        inputs_ = reinterpret_cast<std::byte*>(process_data_ + off_in_);
-        stream_outputs_ = outputs_ + (hybrid_mode_ ? ecat::kHybridStreamRegionOffset : 0);
-        stream_inputs_ = inputs_ + (hybrid_mode_ ? ecat::kHybridStreamRegionOffset : 0);
+        for (unsigned i = 0; i < pipeline_depth_; ++i) {
+            PdChannel& channel = channels_[i];
+            channel.process_data = ecrt_domain_data(channel.domain);
+            if (!channel.process_data)
+                throw std::runtime_error{std::format(
+                    "ecrt_domain_data returned null after activate for channel {}", i)};
+            channel.outputs = reinterpret_cast<std::byte*>(channel.process_data + off_out[i]);
+            channel.inputs = reinterpret_cast<std::byte*>(channel.process_data + off_in[i]);
+            channel.stream_outputs =
+                channel.outputs + (hybrid_mode_ ? ecat::kHybridStreamRegionOffset : 0);
+            channel.stream_inputs =
+                channel.inputs + (hybrid_mode_ ? ecat::kHybridStreamRegionOffset : 0);
+        }
 
         // Both sides restart from seq/ack 0 on every OP (re)entry: the slave
         // resets in APPL_StartOutputHandler(), we reset here, before driving
         // the master FSM up to OP.
         reset_endpoint();
-        std::memset(outputs_, 0, process_data_size());
+        for (unsigned i = 0; i < pipeline_depth_; ++i)
+            std::memset(channels_[i].outputs, 0, process_data_size());
 
         drive_to_operational();
 
         expected_wc_ = EC_WC_COMPLETE;
         logger_.info(
             R"(EtherCAT (IgH) {} link up (interface hint "{}"): {}B PDO, {}B stream chunk, )"
-            R"(vendor 0x{:08X} product 0x{:08X})",
+            R"(pipeline depth {}, vendor 0x{:08X} product 0x{:08X})",
             hybrid_mode_ ? "hybrid" : "stream", ifname, process_data_size(),
-            stream_chunk_size(), kVendorId, kProductCode);
+            stream_chunk_size(), pipeline_depth_, kVendorId, kProductCode);
 
         if (options.thread_setup) {
             std::atomic<bool> thread_setup_done{false};
@@ -537,18 +618,23 @@ private:
             endpoint_.reset();
     }
 
-    void build_stream_output() noexcept {
+    // The ARQ endpoint is shared by all channels and stays correct because the
+    // loop keeps on_peer_chunk() and build_own_chunk() paired one-to-one per
+    // frame: the pd_stream window credit is "one new chunk per received frame",
+    // and each channel's image is rebuilt immediately before its own send, so
+    // wire order equals build order.
+    void build_stream_output(const PdChannel& channel) noexcept {
         if (hybrid_mode_)
-            hybrid_endpoint_.build_own_chunk(stream_outputs_, transmit_ring_);
+            hybrid_endpoint_.build_own_chunk(channel.stream_outputs, transmit_ring_);
         else
-            endpoint_.build_own_chunk(stream_outputs_, transmit_ring_);
+            endpoint_.build_own_chunk(channel.stream_outputs, transmit_ring_);
     }
 
-    void consume_stream_input(CallbackSink& sink) noexcept {
+    void consume_stream_input(const PdChannel& channel, CallbackSink& sink) noexcept {
         if (hybrid_mode_)
-            hybrid_endpoint_.on_peer_chunk(stream_inputs_, sink);
+            hybrid_endpoint_.on_peer_chunk(channel.stream_inputs, sink);
         else
-            endpoint_.on_peer_chunk(stream_inputs_, sink);
+            endpoint_.on_peer_chunk(channel.stream_inputs, sink);
     }
 
     void commit_cyclic_can(const IghBuffer& buffer) noexcept {
@@ -609,11 +695,14 @@ private:
         }
     }
 
-    void publish_cyclic_outputs() noexcept {
+    void publish_cyclic_outputs(const PdChannel& channel) noexcept {
         if (!hybrid_mode_)
             return;
+        // Latest-wins: a channel that finds no newly published snapshot simply
+        // re-paints the live image, so the fixed region is identical on every
+        // frame of the pipeline regardless of which one consumed the batch.
         apply_pending_cyclic_output();
-        std::memcpy(outputs_, cyclic_output_image_.data(), cyclic_output_image_.size());
+        std::memcpy(channel.outputs, cyclic_output_image_.data(), cyclic_output_image_.size());
     }
 
     void clear_cyclic_outputs(bool reset_sequences) noexcept {
@@ -646,7 +735,7 @@ private:
         return ids[bus];
     }
 
-    void deliver_cyclic_inputs() {
+    void deliver_cyclic_inputs(const PdChannel& channel) {
         if (!hybrid_mode_
             || !cyclic_receive_callback_registered_.load(std::memory_order_acquire)) {
             return;
@@ -655,7 +744,7 @@ private:
         for (std::size_t mailbox_index = 0; mailbox_index < ecat::kHybridMailboxCount;
              ++mailbox_index) {
             const std::byte* mailbox =
-                inputs_ + mailbox_index * ecat::kNativeMailboxSize;
+                channel.inputs + mailbox_index * ecat::kNativeMailboxSize;
             const std::uint8_t seq =
                 static_cast<std::uint8_t>(mailbox[ecat::kNativeSeqOffset]);
             if (seq == 0 || seq == cyclic_input_seq_[mailbox_index])
@@ -693,32 +782,71 @@ private:
             buffer_pool_.push_back(std::move(buffer));
     }
 
-    // Feed one process-data cycle to the master. Returns the domain
-    // working-counter state observed after the frame came back (or after the
-    // response deadline elapsed). Shared by the warm-up and the hot loop so
-    // the ecrt call order stays in exactly one place.
-    ec_domain_state_t exchange_once() noexcept {
-        // No DC trio here: the constructor selects no reference clock, so the
-        // frame carries only the process data datagram (see the file header).
-        ecrt_domain_queue(domain_);
+    // Build one channel's output image and put THAT channel on the wire.
+    //
+    // Queueing several domains before a single ecrt_master_send() would let IgH
+    // pack them into one frame (two 48B domains fit far below the MTU), which is
+    // the exact opposite of a pipeline -- so each channel gets its own send.
+    // No DC trio here: the constructor selects no reference clock, so the frame
+    // carries only the process data datagrams (see the file header).
+    void send_channel(unsigned index) noexcept {
+        const PdChannel& channel = channels_[index];
+        // Remember whether THIS frame is a zero-image probe. At depth > 1 the
+        // frames already in flight when the discontinuity was detected still
+        // carry pre-error data, and only a frame that actually went out zeroed
+        // is allowed to end the discontinuity (see cycle_loop()).
+        channel_zero_probe_[index] = process_data_discontinuity_;
+        if (process_data_discontinuity_) {
+            // Do not present any old generation to a slave that may have reset
+            // during a short SAFEOP round trip. The first complete exchange is a
+            // zero-image probe; normal publication resumes only after its peer
+            // state has been classified in cycle_loop().
+            if (hybrid_mode_)
+                std::memset(channel.outputs, 0, ecat::kHybridMailboxRegionSize);
+            std::memset(channel.stream_outputs, 0, stream_chunk_size());
+        } else {
+            publish_cyclic_outputs(channel);
+            build_stream_output(channel);
+        }
+        ecrt_domain_queue(channel.domain);
         ecrt_master_send(master_);
+    }
 
-        // ecrt_master_receive() is non-blocking (it drains whatever arrived),
-        // so poll it until this cycle's frame returns -- stop-and-wait, one
-        // frame in flight, same semantics as SOEM's blocking ec_receive.
+    // Poll until this channel's frame returns. Returns the domain
+    // working-counter state observed then (or after the response deadline
+    // elapsed).
+    //
+    // ecrt_master_receive() is non-blocking and global: it drains whatever
+    // arrived, including the other channels' frames, whose datagrams are then
+    // marked received and dispatched into their own domain memory. Only the
+    // requested domain is evaluated here; the others are evaluated when their
+    // turn comes. A domain whose datagram has been re-queued but not yet
+    // received sums to working counter 0, i.e. EC_WC_ZERO -- that is what makes
+    // this poll terminate on the right frame.
+    ec_domain_state_t wait_for_channel(unsigned index) noexcept {
         const std::chrono::steady_clock::time_point deadline =
             std::chrono::steady_clock::now() + kResponseTimeout;
         ec_domain_state_t ds{};
         for (;;) {
             ecrt_master_receive(master_);
-            ecrt_domain_process(domain_);
-            ecrt_domain_state(domain_, &ds);
+            ecrt_domain_process(channels_[index].domain);
+            ecrt_domain_state(channels_[index].domain, &ds);
             if (ds.wc_state == EC_WC_COMPLETE)
                 break;
             if (std::chrono::steady_clock::now() >= deadline)
                 break; // dropped cycle; caller counts it as a wc error
         }
         return ds;
+    }
+
+    // Stop-and-wait exchange of whatever the caller has placed in the channel's
+    // output image. Used by the warm-up, which drives a zero image: the master
+    // FSM walks the AL states over many cycles and gains nothing from a
+    // pipeline, so priming the pipeline is left to cycle_loop().
+    ec_domain_state_t exchange_once(unsigned index) noexcept {
+        ecrt_domain_queue(channels_[index].domain);
+        ecrt_master_send(master_);
+        return wait_for_channel(index);
     }
 
     // Warm-up: drive the master's internal FSM until the slave reports OP.
@@ -729,8 +857,8 @@ private:
         const std::chrono::steady_clock::time_point deadline =
             std::chrono::steady_clock::now() + kOperationalTimeout;
         for (;;) {
-            std::memset(outputs_, 0, process_data_size());
-            exchange_once();
+            std::memset(channels_[0].outputs, 0, process_data_size());
+            exchange_once(0);
 
             ec_master_state_t ms{};
             ecrt_master_state(master_, &ms);
@@ -743,14 +871,16 @@ private:
                 ec_domain_state_t domain_state{};
                 ecrt_master_state(master_, &last);
                 ecrt_slave_config_state(slave_config_, &slave_state);
-                ecrt_domain_state(domain_, &domain_state);
+                ecrt_domain_state(channels_[0].domain, &domain_state);
                 throw std::runtime_error{std::format(
                     "EtherCAT slave did not reach OPERATIONAL within {} s "
                     "(link_up={} slaves_responding={} master_al_states=0x{:02X} "
                     "slave_online={} slave_operational={} slave_al_state=0x{:X}/{} "
                     "domain_wc_state={} domain_wc={}; verify the live SII/PDO mapping is "
                     "{} bytes / {} entries per direction and check `ethercat slaves -v` or dmesg "
-                    "for the AL status code)",
+                    "for the AL status code. Pipeline depth is {}, which needs {} FMMUs on the "
+                    "slave -- if raising it caused this, the slave ran out of FMMUs and the "
+                    "config FSM stalls before SAFEOP)",
                     std::chrono::duration_cast<std::chrono::seconds>(kOperationalTimeout).count(),
                     static_cast<unsigned>(last.link_up),
                     static_cast<unsigned>(last.slaves_responding),
@@ -761,7 +891,8 @@ private:
                     al_state_name(slave_state.al_state),
                     static_cast<unsigned>(domain_state.wc_state),
                     static_cast<unsigned>(domain_state.working_counter), process_data_size(),
-                    hybrid_mode_ ? kHybridPdoEntryCount : kPdoEntryCount)};
+                    hybrid_mode_ ? kHybridPdoEntryCount : kPdoEntryCount, pipeline_depth_,
+                    2 * pipeline_depth_)};
             }
             std::this_thread::sleep_for(std::chrono::milliseconds{1});
         }
@@ -794,42 +925,45 @@ private:
         uint64_t window_cycles = 0;
         uint64_t window_wc_errors = 0;
 
+        // Prime the pipeline. Every channel has to be on the wire before the
+        // loop starts waiting for the oldest one, or it would wait out the
+        // response timeout for a frame that was never sent.
+        for (unsigned i = 0; i < pipeline_depth_; ++i)
+            send_channel(i);
+
+        unsigned index = 0;
         while (!stop_.load(std::memory_order_relaxed)) {
-            if (pace.count() != 0) {
-                while (Clock::now() < next_cycle) {}
-                next_cycle += pace;
-            }
-            if (process_data_discontinuity_) {
-                // Do not present any old generation to a slave that may have
-                // reset during a short SAFEOP round trip. The first complete
-                // exchange is a zero-image probe; normal publication resumes
-                // only after its peer state has been classified below.
-                if (hybrid_mode_)
-                    std::memset(outputs_, 0, ecat::kHybridMailboxRegionSize);
-                std::memset(stream_outputs_, 0, stream_chunk_size());
-            } else {
-                publish_cyclic_outputs();
-                build_stream_output();
-            }
-            const ec_domain_state_t ds = exchange_once();
+            // A point-to-point link preserves order and the slave forwards in
+            // order, so the channel sent longest ago is the one that returns
+            // first: round-robin is the correct completion order.
+            const PdChannel& channel = channels_[index];
+            const ec_domain_state_t ds = wait_for_channel(index);
             total_cycles_++;
             window_cycles++;
 
             bool delivered = false;
             if (ds.wc_state == expected_wc_) {
                 wc_error_streak = 0;
-                if (process_data_discontinuity_) {
+                if (process_data_discontinuity_ && !channel_zero_probe_[index]) {
+                    // In flight since before the discontinuity: its outputs are
+                    // a pre-error generation, so it settles nothing. Withhold
+                    // delivery (the ARQ simply keeps the ack, and the slave
+                    // re-presents the chunk) and let the reissued zero probe
+                    // classify the peer.
+                } else if (process_data_discontinuity_) {
                     // Sequence zero is reserved by pd_stream. Once a session
                     // has been established, peer ack=0 after an incomplete WKC
                     // is therefore a reset signature even if the cached AL
                     // state changed SAFEOP -> OP too quickly to observe.
-                    const bool peer_reset = slave_left_op_
-                                         || static_cast<std::uint8_t>(stream_inputs_[1]) == 0;
+                    const bool peer_reset =
+                        slave_left_op_
+                        || static_cast<std::uint8_t>(channel.stream_inputs[1]) == 0;
                     if (peer_reset) {
                         reset_endpoint();
                         transmit_ring_.clear();
                         clear_cyclic_outputs(true);
-                        std::memset(outputs_, 0, process_data_size());
+                        for (unsigned i = 0; i < pipeline_depth_; ++i)
+                            std::memset(channels_[i].outputs, 0, process_data_size());
                         cyclic_input_seq_.fill(0);
                         slave_left_op_ = false;
                         notify_link_restart();
@@ -842,10 +976,10 @@ private:
                     // fresh SESSION_START.
                     process_data_discontinuity_ = false;
                 } else {
-                    deliver_cyclic_inputs();
+                    deliver_cyclic_inputs(channel);
                     if (receive_callback_registered_.load(std::memory_order_acquire)) {
                         CallbackSink sink{.callback = receive_callback_, .delivered = delivered};
-                        consume_stream_input(sink);
+                        consume_stream_input(channel, sink);
                     }
                 }
             } else {
@@ -859,7 +993,12 @@ private:
                 if (!process_data_discontinuity_) {
                     if (hybrid_mode_) {
                         clear_cyclic_outputs(false);
-                        std::memset(outputs_, 0, ecat::kHybridMailboxRegionSize);
+                        // Every channel, not just this one: the others are
+                        // already in flight or about to be, and a stale fixed
+                        // region must not survive the discontinuity on any of
+                        // them.
+                        for (unsigned i = 0; i < pipeline_depth_; ++i)
+                            std::memset(channels_[i].outputs, 0, ecat::kHybridMailboxRegionSize);
                     }
                 }
                 process_data_discontinuity_ = true;
@@ -889,18 +1028,34 @@ private:
                 while (transmit_ring_.empty() && Clock::now() < response_deadline) {}
             }
 
-            // Achieved poll rate is THE latency diagnostic (frame RTT is a
-            // small multiple of the cycle period). The clock is only sampled
-            // every 1024 cycles to keep the hot loop clean.
+            // Diagnostic pacing spaces out the SENDS, so it lands here rather
+            // than at the top of the loop. With a pipeline it paces each frame
+            // individually (the interval is `pace`, not `pace / depth`), which
+            // is why the quantization sweep in ecat/DESIGN.md 4.3 is only
+            // meaningful at depth 1.
+            if (pace.count() != 0) {
+                while (Clock::now() < next_cycle) {}
+                next_cycle += pace;
+            }
+
+            // Put this channel straight back on the wire and move on to the one
+            // that has been out longest.
+            send_channel(index);
+            index = index + 1 == pipeline_depth_ ? 0 : index + 1;
+
+            // Achieved frame rate is THE latency diagnostic (end-to-end RTT is a
+            // small multiple of the frame interval). The clock is only sampled
+            // every 1024 frames to keep the hot loop clean.
             if ((window_cycles & 0x3FFU) == 0) {
                 const Clock::time_point now = Clock::now();
                 const auto elapsed =
                     std::chrono::duration_cast<std::chrono::milliseconds>(now - window_start);
                 if (elapsed >= kStatsInterval) {
                     logger_.info(
-                        "EtherCAT (IgH) cycle rate: {:.1f} kHz ({} wc errors in the last {} s)",
+                        "EtherCAT (IgH) frame rate: {:.1f} kHz at pipeline depth {} ({} wc errors "
+                        "in the last {} s)",
                         static_cast<double>(window_cycles) / static_cast<double>(elapsed.count()),
-                        window_wc_errors, elapsed.count() / 1000);
+                        pipeline_depth_, window_wc_errors, elapsed.count() / 1000);
                     window_start = now;
                     window_cycles = 0;
                     window_wc_errors = 0;
@@ -962,14 +1117,8 @@ private:
 
     ec_master_t* master_ = nullptr;
     ec_slave_config_t* slave_config_ = nullptr;
-    ec_domain_t* domain_ = nullptr;
-    uint8_t* process_data_ = nullptr;
-    std::size_t off_out_ = 0;
-    std::size_t off_in_ = 0;
-    std::byte* outputs_ = nullptr;
-    std::byte* inputs_ = nullptr;
-    std::byte* stream_outputs_ = nullptr;
-    std::byte* stream_inputs_ = nullptr;
+    std::array<PdChannel, kMaxPipelineDepth> channels_{};
+    unsigned pipeline_depth_ = 1;
     uint8_t expected_wc_ = EC_WC_COMPLETE;
     bool hybrid_mode_ = false;
 
@@ -994,6 +1143,7 @@ private:
     uint64_t total_wc_errors_ = 0;
     bool slave_left_op_ = false;
     bool process_data_discontinuity_ = false;
+    std::array<bool, kMaxPipelineDepth> channel_zero_probe_{};
 
     std::mutex buffer_pool_mutex_;
     std::vector<std::unique_ptr<TransportBuffer>> buffer_pool_;

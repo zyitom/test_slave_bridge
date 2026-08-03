@@ -34,7 +34,7 @@ extern "C" {
  * releasing core1 and before any other rmcs_pd_* function. */
 void rmcs_pd_init(void);
 
-/* SAFEOP -> OP (re)entry: reset the stop-and-wait ARQ endpoint and bump the
+/* SAFEOP -> OP (re)entry: reset the go-back-N ARQ endpoint and bump the
  * link epoch so the fieldbus core can observe the (re)start. */
 void rmcs_pd_reset(void);
 

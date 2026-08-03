@@ -35,6 +35,29 @@ cmake --build firmware/mc02/build --target mc02_app mc02_bootloader
 - CAN：FDCAN1/2/3 常驻 FD+BRS，逐帧按 host `is_fdcan` 切换，不做 INIT 重配。
 - 热路径 `Can::handle_uplink/handle_downlink/try_transmit` 等放 `.itcm`，启动时从 FLASH 拷入。
 
+## 不要用 HAL_RCCEx_GetPeriphCLKFreq() 取 UART 内核时钟 [实测 2026-08-05]
+
+**结论先行：本版 HAL 的 `HAL_RCCEx_GetPeriphCLKFreq()` 对两个 UART 组都返回 0。**
+它的 if/else 链只覆盖 SAI / SPI / ADC / SDMMC / SPI6 / FDCAN，
+`RCC_PERIPHCLK_USART16910` 和 `RCC_PERIPHCLK_USART234578` **一个分支都没有**，
+直接掉到末尾 `else { frequency = 0; }`（`bsp/stm32h7xx-hal-driver/Src/stm32h7xx_hal_rcc_ex.c`）。
+那两个宏本身是存在的，所以编译期没有任何提示。
+
+后果：`uart.hpp` 的 `handle_config()` 拿到 0 之后撞上自己的
+`kernel_clock_hz == 0` 提前返回，**`BRR` 一次都没写过**，主机发来的运行时波特率
+请求被静默忽略，端口永远停在 CubeMX 的 115200。
+
+**正确做法**（已改成这样）：照 HAL 自己 `UART_SetConfig()` 的写法，switch
+`__HAL_RCC_GET_USART16_SOURCE()` / `__HAL_RCC_GET_USART234578_SOURCE()`，
+逐个分支取 `HAL_RCC_GetPCLK1Freq()` / `PCLK2` / HSI（**要按 `RCC_FLAG_HSIDIV`
+右移**）/ CSI / LSE / PLL2Q / PLL3Q。
+
+**为什么很难发现**：`UART7 <-> UART10` 自环测试在 115200 到 2000000 **全部 PASS**。
+自环把两端同时设成目标值，配置没生效时两端**一起**留在 115200，于是波特率一致、
+通信正常、测试通过。**自环只能验证两端一致，不能验证两端等于你要的值。**
+要验证切换真的生效，必须**一端切、另一端不切**并确认通信变坏，或者跨板对打。
+另见 [rmcs_board/AGENTS.md](../rmcs_board/AGENTS.md) 里同一次排查的 5321 侧 DLAB 坑。
+
 ## CubeMX 纪律（本板适用）
 - 配置改在 CubeMX（`.ioc`），人工 Generate；**禁止**直接改 `bsp/cubemx/Core/` 生成代码。
 - **每次 CubeMX “Generate Code” 后需手工复原**（会被覆盖），清单见 `README.md` 末节，例如删除 `Core/Src/main.c` 里重新生成的 `int main(void)`、把 `static void MPU_Config` 改回 `void MPU_Config`。

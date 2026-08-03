@@ -56,11 +56,15 @@ hpm5321 是沿用板系列名，实际硅片是 HPM5361。
 | USB0 DM | PA24 | 模拟 |
 | USB0 DP | PA25 | 模拟 |
 
-## 按键 / 调试
+## Bootloader 强制常驻引脚 / 调试
+
+> 这里的「触发」不一定是按键：`board.c` 采的是**与 JTAG_TMS 复用的引脚**，函数名里的
+> `button` 只是沿用叫法。同系列的 `hpm5321_dual_can` 已确认板上没有任何实体键
+> [实测 2026-08-03]，本板是否装了键以实物为准 [推断]。
 
 | 功能 | 引脚 | 说明 |
 | ----------------- | ---- | ------------------------------------------------------------ |
-| Bootloader 按键 | PA07 | 与 JTAG_TMS 复用；由 `board.c` 的 `board_check_bootloader_force_stay_requested()` 采样，采样完毕后**恢复为 JTAG_TMS**，以便调试器仍能连接 |
+| Bootloader 强制常驻 | PA07 | 与 JTAG_TMS 复用。复位后由 `board.c` 的 `board_check_bootloader_force_stay_requested()` 采样：内部上拉，**需拉到 GND 才算触发**；窗口只有 4×250us≈1ms，采样完毕后**恢复为 JTAG_TMS**，以便调试器仍能连接 |
 | JTAG TCK | PA04 | 默认 JTAG 功能，app 不做复用 |
 | JTAG TDO | PA05 | 默认 JTAG 功能，app 不做复用 |
 | JTAG TDI | PA06 | 默认 JTAG 功能，app 不做复用 |

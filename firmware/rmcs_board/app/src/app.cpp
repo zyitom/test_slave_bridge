@@ -130,6 +130,14 @@ bool host_session_established() {
     while (true) {
         diag::note_main_loop();
         tud_task();
+
+        // Drain the CAN software transmit queues immediately after tud_task(),
+        // which is where TinyUSB delivers this pass's downlink frames. Placing
+        // it later -- after the 1 kHz LED/telemetry block -- would put that
+        // block's work between a frame arriving and reaching the wire.
+        for (auto& can : can::can_array)
+            can->try_transmit();
+
         usb::poll_dfu_runtime_reboot();
 
         // LED bookkeeping runs here at the 1 kHz tick pace instead of inside the

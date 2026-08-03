@@ -119,9 +119,15 @@ App::App() {
     uart::uart2.init();
     uart::uart3.init();
     uart::uart_dbus.init();
-    spi::bmi088::accelerometer.init();
-    spi::bmi088::gyroscope.init();
-    spi::bmi088::temperature.init();
+    // BMI088 disabled: this board is used as a CAN/UART bridge on a bench rig
+    // where the IMU is not exercised. The matching service calls in run() are
+    // commented out with it -- Lazy::operator-> hands back the address of
+    // storage that was never constructed, so polling an uninitialized sensor is
+    // undefined behaviour rather than a no-op. The EXTI data-ready path in
+    // gpio.cpp needs no change: it already guards on `if (accelerometer)`.
+    // spi::bmi088::accelerometer.init();
+    // spi::bmi088::gyroscope.init();
+    // spi::bmi088::temperature.init();
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
@@ -134,8 +140,11 @@ App::App() {
 
         // Promote a due temperature probe to pending, then service at most one
         // BMI088 SPI read (gyro > accel > temperature) per iteration.
-        spi::bmi088::temperature->poll_pending_probe();
-        spi::bmi088::service_pending_reads();
+        // Disabled together with the BMI088 init() calls in App::init(); both
+        // dereference Lazy objects that are never constructed while the IMU is
+        // off, which is undefined behaviour, not a no-op.
+        // spi::bmi088::temperature->poll_pending_probe();
+        // spi::bmi088::service_pending_reads();
 
         // LED animation; non-blocking unless colour changes (one SPI frame per
         // change, ~330 us at the WS2812 bit rate). Polled here so no ISR context

@@ -88,6 +88,17 @@ public:
 
     virtual BoardTransmitter& can(int bus, const librmcs::data::CanDataView& data) = 0;
     virtual BoardTransmitter& uart(int port, const librmcs::data::UartDataView& data) = 0;
+    // Runtime UART reconfiguration (baudrate). Boards whose UART baud is fixed
+    // at compile time still need this when they are wired to a board configured
+    // differently -- an mc02 UART1 at 115200 talking to an hpm5321 UART0 at
+    // 921600 delivers nothing but framing errors until one side is changed.
+    virtual BoardTransmitter& uart_config(
+        int port, const librmcs::data::UartConfigView& config) {
+        (void)port;
+        (void)config;
+        throw std::logic_error{"this board has no runtime UART configuration"};
+    }
+
     virtual BoardTransmitter& gpio_analog(
         int channel, const librmcs::data::GpioAnalogDataView& data) {
         (void)channel;
@@ -244,6 +255,16 @@ private:
             case 1: builder.can2_transmit(data); break;
             case 2: builder.can3_transmit(data); break;
             default: throw std::out_of_range{"Mc02: CAN bus index out of range (0-2)"};
+            }
+            return *this;
+        }
+        BoardTransmitter& uart_config(
+            int port, const librmcs::data::UartConfigView& config) override {
+            switch (port) {
+            case 0: builder.uart1_config(config); break;
+            case 1: builder.uart2_config(config); break;
+            case 2: builder.uart3_config(config); break;
+            default: throw std::out_of_range{"Mc02: UART port out of range (0-2)"};
             }
             return *this;
         }
@@ -456,6 +477,13 @@ private:
             if (port != 0)
                 throw std::out_of_range{"RmcsBoardHpm5321DualCan: only UART port 0 exists"};
             builder.uart0_transmit(data);
+            return *this;
+        }
+        BoardTransmitter& uart_config(
+            int port, const librmcs::data::UartConfigView& config) override {
+            if (port != 0)
+                throw std::out_of_range{"RmcsBoardHpm5321DualCan: only UART port 0 exists"};
+            builder.uart0_config(config);
             return *this;
         }
     };

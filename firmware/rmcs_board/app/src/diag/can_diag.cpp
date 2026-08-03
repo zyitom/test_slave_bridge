@@ -1,4 +1,5 @@
 #include "firmware/rmcs_board/app/src/diag/can_diag.hpp"
+#include "firmware/rmcs_board/app/src/uart/uart.hpp"
 
 #if defined(LIBRMCS_APP_CAN_DIAG) && LIBRMCS_APP_CAN_DIAG
 
@@ -108,8 +109,10 @@ void poll(std::uint32_t tick) {
     // 8-byte fixed header + 4 + 2 * kPlicWordCount words + threshold + 8 words
     // per CAN controller.
     constexpr std::size_t kFixedSize = 8 + 4 + 4 * (3 * kPlicWordCount) + 4 + 4 + 4;
-    constexpr std::size_t kPerCanSize = 9 * 4;
-    constexpr std::size_t kRecordSize = kFixedSize + kCanCount * kPerCanSize;
+    constexpr std::size_t kPerCanSize = 11 * 4;
+    // Three extra words: UART0 kernel clock, OSCR, and the DLM:DLL divisor.
+    constexpr std::size_t kUartSize = 3 * 4;
+    constexpr std::size_t kRecordSize = kFixedSize + kCanCount * kPerCanSize + kUartSize;
 
     std::byte record[kRecordSize];
     std::byte* cursor = record;
@@ -143,6 +146,29 @@ void poll(std::uint32_t tick) {
         cursor = put_u32(cursor, can->PSR);
         cursor = put_u32(cursor, can->ECR);
         cursor = put_u32(cursor, can->TXFQS);
+        // Actual bit-timing registers, so the host can see what the SDK's
+        // baudrate solver really programmed rather than what was requested.
+        cursor = put_u32(cursor, can->NBTP);
+        cursor = put_u32(cursor, can->DBTP);
+    }
+
+    // UART0 baudrate evidence: the kernel clock the driver was handed, plus the
+    // divisor and oversample rate actually programmed. A baudrate that looks
+    // right in source but wrong on the wire shows up here.
+    //
+    // The divisor comes from Uart's snapshot, NOT from reading DLM/DLL here.
+    // Reading them requires setting LCR.DLAB, and DLAB makes offset 0x20 mean
+    // DLL instead of THR -- which is where the TX DMA writes. This sampler runs
+    // on the main loop while that DMA is live, so the earlier read-back version
+    // of this block let any byte transferred inside the window overwrite the
+    // divisor latch. That destroyed the baudrate it was trying to measure, and
+    // reported the pre-clobber value while doing it: the record showed a correct
+    // divisor for a port that had gone silent. OSCR is a plain register, unaffected
+    // by DLAB, so it is still read directly.
+    {
+        cursor = put_u32(cursor, uart::uart_array[0]->clock_hz());
+        cursor = put_u32(cursor, uart::uart_array[0]->oscr());
+        cursor = put_u32(cursor, uart::uart_array[0]->divisor());
     }
 
     // Best effort by design: if the batch pool is full the record is dropped

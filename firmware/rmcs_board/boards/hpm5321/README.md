@@ -60,8 +60,12 @@ dfu-util -d 0xa11c:0xa901 -a 0 -D firmware/rmcs_board/build/app/output/rmcs_boar
 ```
 
 正在运行的 app 会暴露 DFU 运行时接口，所以 `dfu-util` 能自动让它 detach 并重新枚举进
-DFU 模式。若要强制 bootloader 常驻，复位时按住 PA07 按键（或者在没有有效 app 的状态
-下上电）。
+DFU 模式。若要强制 bootloader 常驻，复位时把 **PA07（与 JTAG_TMS 复用，不一定是按键，
+见 [PINOUT.md](PINOUT.md)）拉到 GND**，或者在没有有效 app 的状态下上电。
+
+> app 与 bootloader 的 mailbox 版本不一致时，上面的自动 detach 会静默失效 —— 现象、
+> 起因和恢复手段见同系列的
+> [hpm5321_dual_can/README.md](../hpm5321_dual_can/README.md) [实测 2026-08-03]。
 
 ## 状态灯语义
 

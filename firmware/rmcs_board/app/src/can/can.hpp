@@ -23,6 +23,7 @@
 #include "core/src/utility/assert.hpp"
 #include "core/src/utility/immovable.hpp"
 #include "firmware/rmcs_board/app/src/can/can_port.hpp"
+#include "firmware/rmcs_board/app/src/utility/ring_buffer.hpp"
 #include "firmware/rmcs_board/app/src/led/led.hpp"
 #include "firmware/rmcs_board/app/src/link/uplink.hpp"
 #include "firmware/rmcs_board/app/src/utility/lazy.hpp"
@@ -79,6 +80,32 @@ public:
         config.enable_canfd = canfd_;
         if (canfd_)
             config.baudrate_fd = kCanFdDataBaudrate;
+
+        // Sample point pinned to 87.5% in BOTH phases, because that is what the
+        // other boards on this bus actually run.
+        //
+        // The overriding rule is that every node on a segment must sample at the
+        // same point (the two phases need not agree with each other -- but here
+        // they happen to). The CubeMX boards (mc02, c_board) are the reference:
+        // both phases use tseg1/tseg2 = 13/2 = 87.5%, the nominal phase at
+        // prescaler 5 (16 TQ) and the data phase at prescaler 1. Note this is
+        // NOT the 75%-above-800-kbit/s guidance a vendor table would give for a
+        // 1 Mbit arbitration phase -- and matching the guidance instead of the
+        // bus was measured to fail: with the nominal phase left at the SDK's
+        // 75% (59/20, 80 TQ) and only the data phase pinned, FD delivery from
+        // this board dropped to 0/40000 with PSR.DLEC = bit1 error.
+        //
+        // The SDK will not arrive here on its own: its window is [750, 875] and
+        // the solver stops as soon as it climbs past the MINIMUM, so it always
+        // lands on 75.0% and the 875 is never reached. A 5 Mbit data bit is
+        // 200 ns, so a 12.5-point disagreement puts the ends 25 ns apart and the
+        // receiver clocks the wrong bit -- originally seen as mc02 never ACKing
+        // an FD frame from this board (PSR.DLEC = ACK error, TEC climbing into
+        // error-passive) while classic CAN and the reverse direction worked.
+        config.can20_samplepoint_min = 875U;
+        config.can20_samplepoint_max = 875U;
+        config.canfd_samplepoint_min = 875U;
+        config.canfd_samplepoint_max = 875U;
         // Keep the default 8-byte element size even for CAN-FD: the frames on this
         // bus never exceed 8 data bytes, so RAM usage stays identical to classic CAN.
         config.ram_config.txbuf_dedicated_txbuf_elem_count = 0;
@@ -174,6 +201,11 @@ public:
     // for the failure it repairs and the evidence behind it.
     void poll();
 
+    // Drain the software transmit queue into the MCAN TX FIFO. Called every
+    // main-loop pass; two loads and a return when the queue is empty. See
+    // handle_downlink in can.cpp for why the queue exists.
+    void try_transmit();
+
     // One pass of the interrupt handler: acknowledge `flags` and act on them.
     // Split out of irq_handler so the latter can re-test IR and repeat; see the
     // comment there for why returning after a single pass loses the interrupt.
@@ -262,6 +294,26 @@ private:
     uint32_t irq_count_ = 0;
     uint32_t watchdog_irq_count_ = 0;
     bool watchdog_armed_ = false;
+
+    // Software transmit queue in front of the 32-element MCAN TX FIFO, so a USB
+    // burst that outruns the bus is buffered instead of discarded. Producer is
+    // handle_downlink, consumer is try_transmit; both run in the main loop
+    // (TinyUSB defers its receive callback to tud_task), so this is a plain
+    // single-producer single-consumer ring with no cross-context hazard.
+    // Queued frame, compressed. mcan_tx_frame_t is 72 bytes because its data
+    // union is sized for a 64-byte CAN-FD payload, but this protocol caps CAN
+    // data at 8 bytes (3-bit DLC, see core/src/protocol/serializer.hpp), so 8
+    // header bytes plus 8 data bytes is all that can ever be needed. Storing the
+    // SDK type verbatim would spend 72 B per slot for 16 B of live data, so at
+    // equal RAM this buys 4x the queue depth -- which is exactly what the burst
+    // measurements were short of.
+    struct QueuedFrame {
+        uint32_t header[2]; // mcan_tx_frame_t words T0/T1
+        uint8_t data[8];
+    };
+    static_assert(sizeof(QueuedFrame) == 16);
+
+    utility::RingBuffer<QueuedFrame, 64> transmit_buffer_;
 };
 
 // Everything below is built from the board's CAN port table (board::kCanPorts),

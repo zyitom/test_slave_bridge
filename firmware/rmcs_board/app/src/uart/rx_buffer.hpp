@@ -76,7 +76,13 @@ private:
         config.dst_addr_ctrl = DMA_MGR_ADDRESS_CONTROL_INCREMENT;
         config.src_mode = DMA_MGR_HANDSHAKE_MODE_HANDSHAKE;
         config.dst_mode = DMA_MGR_HANDSHAKE_MODE_NORMAL;
-        config.src_burst_size = DMA_MGR_NUM_TRANSFER_PER_BURST_4T;
+        // One transfer per handshake, because the UART raises the RX DMA
+        // request at uart_rx_fifo_trg_not_empty -- i.e. with a single byte in
+        // the FIFO (see Uart::init). A burst larger than the guaranteed FIFO
+        // occupancy makes the DMA read RBR again on an empty FIFO and store
+        // whatever it returns: with the previous 4T setting every received byte
+        // landed in the ring as one good byte followed by three junk bytes.
+        config.src_burst_size = DMA_MGR_NUM_TRANSFER_PER_BURST_1T;
         config.size_in_byte = kDmaTransSize;
         config.linked_ptr = reinterpret_cast<uintptr_t>(&dma_linked_descriptors_[1]);
         config.interrupt_mask = DMA_INTERRUPT_MASK_ABORT | DMA_INTERRUPT_MASK_ERROR;

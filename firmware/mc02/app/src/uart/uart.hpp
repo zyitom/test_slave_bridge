@@ -183,10 +183,75 @@ private:
     // STM32H723 groups UART kernel clocks: USART1/6/9/10 share one selectable
     // source, UART2/3/4/5/7/8 another. This board uses USART1, USART10, UART7
     // and UART5.
+    //
+    // Resolved from the RCC source-selection register rather than via
+    // HAL_RCCEx_GetPeriphCLKFreq(): that function's if/else chain in this HAL
+    // version covers SAI/SPI/ADC/SDMMC/FDCAN but has NO branch for either UART
+    // group, so both RCC_PERIPHCLK_USART16910 and RCC_PERIPHCLK_USART234578 fall
+    // through to its final `else { frequency = 0; }` and return 0. That made
+    // handle_config() take its kernel_clock_hz == 0 early-out and return false
+    // without ever writing BRR, so every runtime baudrate request was silently
+    // ignored and the port stayed at the CubeMX compile-time 115200.
+    //
+    // It was invisible to a same-board UART7<->UART10 loopback test: both ends
+    // ignored the switch identically, so the loop still passed at every
+    // requested rate while actually running at 115200 the whole time. Only a
+    // cross-board test against an end that *did* switch exposed it -- 8 bytes
+    // sent arrived as 64 at a peer running 8x faster.
+    //
+    // This mirrors UART_SetConfig()'s own switch on UART_GETCLOCKSOURCE.
     [[nodiscard]] uint32_t peripheral_clock_hz() const {
-        if (hal_uart_handle_ == &huart1 || hal_uart_handle_ == &huart10)
-            return HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_USART16910);
-        return HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_USART234578);
+        const bool group_16910 = hal_uart_handle_ == &huart1 || hal_uart_handle_ == &huart10;
+        const uint32_t source =
+            group_16910 ? __HAL_RCC_GET_USART16_SOURCE() : __HAL_RCC_GET_USART234578_SOURCE();
+
+        // The two groups' selection fields share encodings only by position, so
+        // each is compared against its own group's constants.
+        if (group_16910) {
+            switch (source) {
+            case RCC_USART16CLKSOURCE_D2PCLK2: return HAL_RCC_GetPCLK2Freq();
+            case RCC_USART16CLKSOURCE_HSI: return hsi_clock_hz();
+            case RCC_USART16CLKSOURCE_CSI: return CSI_VALUE;
+            case RCC_USART16CLKSOURCE_LSE: return LSE_VALUE;
+            case RCC_USART16CLKSOURCE_PLL2: {
+                PLL2_ClocksTypeDef pll2{};
+                HAL_RCCEx_GetPLL2ClockFreq(&pll2);
+                return pll2.PLL2_Q_Frequency;
+            }
+            case RCC_USART16CLKSOURCE_PLL3: {
+                PLL3_ClocksTypeDef pll3{};
+                HAL_RCCEx_GetPLL3ClockFreq(&pll3);
+                return pll3.PLL3_Q_Frequency;
+            }
+            default: return 0;
+            }
+        }
+
+        switch (source) {
+        case RCC_USART234578CLKSOURCE_D2PCLK1: return HAL_RCC_GetPCLK1Freq();
+        case RCC_USART234578CLKSOURCE_HSI: return hsi_clock_hz();
+        case RCC_USART234578CLKSOURCE_CSI: return CSI_VALUE;
+        case RCC_USART234578CLKSOURCE_LSE: return LSE_VALUE;
+        case RCC_USART234578CLKSOURCE_PLL2: {
+            PLL2_ClocksTypeDef pll2{};
+            HAL_RCCEx_GetPLL2ClockFreq(&pll2);
+            return pll2.PLL2_Q_Frequency;
+        }
+        case RCC_USART234578CLKSOURCE_PLL3: {
+            PLL3_ClocksTypeDef pll3{};
+            HAL_RCCEx_GetPLL3ClockFreq(&pll3);
+            return pll3.PLL3_Q_Frequency;
+        }
+        default: return 0;
+        }
+    }
+
+    // HSI feeds the UARTs through its divider, so the raw HSI_VALUE is only
+    // correct when the divider is 1. UART_SetConfig applies the same shift.
+    [[nodiscard]] static uint32_t hsi_clock_hz() {
+        if (__HAL_RCC_GET_FLAG(RCC_FLAG_HSIDIV) != 0U)
+            return static_cast<uint32_t>(HSI_VALUE >> (__HAL_RCC_GET_HSI_DIVIDER() >> 3U));
+        return static_cast<uint32_t>(HSI_VALUE);
     }
 
     data::DataId data_id_;
