@@ -31,6 +31,13 @@ ch32_board 是四块板里**最容易把自己弄进死胡同**的一块，原�
   ```bash
   export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm     # [前机路径] -> riscv32-unknown-elf-gcc 13.2
   ```
+  > 本板的 `toolchain-wch-riscv.cmake` 对这个变量做了通配符搜索
+  > （`$ENV{GNURISCV_TOOLCHAIN_PATH}/rv32*/bin`），所以**指到工具链的上级目录也能用**
+  > （如这里的 `~/3rd_party/hpm`，实际二进制在其下的
+  > `rv32imac_zicsr_zifencei_multilib_b_ext-linux/bin/`）。**这个宽松规则只对
+  > ch32_board 成立**——rmcs_board 用的是 HPM SDK 自带的 `cmake/toolchain.cmake`，
+  > 要求该变量直接指到含 `bin/` 的那一层，指到上级会报错。同一个环境变量、两块板
+  > 解析方式不同，别把这里的写法搬到 rmcs_board 去用。
 - **也支持 MounRiver `MRS_Toolchain_*`**。工具前缀由 `toolchain-wch-riscv.cmake`
   自动探测（依次试 `riscv32-wch-elf-` / `riscv-wch-elf-` / `riscv32-unknown-elf-`），
   `-DWCH_TOOLCHAIN_PREFIX=` 可强制指定。注意 MRS 的 `Toolchain/` 下并排放着三套 GCC，

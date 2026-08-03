@@ -31,23 +31,15 @@ rmcs_board 与其他三块板最大的不同：它是 **RISC-V（Andes 核）**�
 
 > 三者是独立镜像，**同一时刻只能刷其中一个**；刷任一套会覆盖另外两套。
 
-> **选型要点（实测 2026-08-01，各 3 轮，别凭直觉也别凭单次测量选）**：
+> **选型要点（结论，别凭直觉也别凭单次测量选）**：**单核 USB 在每一个分位上都赢，
+> 包括尾部**，只要一块桥板够用、USB 线长够用，它就是最优解。EtherCAT 换来的不是
+> 速度，是**确定性**（p99-p50 只差个位数 us）和多从站/长距离能力——固定延迟能在
+> 控制器里补偿，随机抖动不能。核对调镜像的 USB 尾部**不可复现**（少数轮次 max 会
+> 跳到基线的近两倍），是它最需要注意的性质。
 >
-> | | p50 | p99 | max（3 轮） |
-> |---|---|---|---|
-> | USB 单核镜像 | **99.8** | **125.6** | 128.5 ~ 142.0 |
-> | USB 核对调镜像 | 124.8 | 146.8 ~ 155.7 | 159.7 ~ **250.7** |
-> | EtherCAT（IgH） | 133.4 | 140.5 | 161.4 ~ 177.1 |
->
-> **单核 USB 在每一个分位上都赢，包括尾部，而且三轮高度一致。** 只要一块桥板够用、
-> USB 线长够用，它就是最优解。EtherCAT 换来的不是速度，是**确定性**（p99-p50 只有 7us）
-> 和多从站/长距离能力——固定延迟能在控制器里补偿，随机抖动不能。
->
-> 核对调镜像的 USB 尾部**不可复现**（1/3 的轮次 max 跳到 250），这是它最需要注意的性质。
->
-> 完整分布、C-state 的影响、以及两条被否掉的主机侧调优见
-> [ecat/DESIGN.md](ecat/DESIGN.md) 3.5 / 3.6 节；被推翻的假设见
-> [CORE_SWAP_MIGRATION.md](ecat/CORE_SWAP_MIGRATION.md) 4.6 节。
+> 完整的三轮分布数据、C-state 的影响、以及两条被否掉的主机侧调优见
+> [ecat/DESIGN.md](ecat/DESIGN.md) 3.5 / 3.6 节（**数据权威来源，本节不复述**）；
+> 被推翻的假设见 [CORE_SWAP_MIGRATION.md](ecat/CORE_SWAP_MIGRATION.md) 4.6 节。
 
 ## 跨芯片对比：HPM5321 DualCan vs HPM6E8Y [实测 2026-08-01，各 3 轮]
 
@@ -336,7 +328,10 @@ mc02 永远停在 CubeMX 的 115200。修法是照 `UART_SetConfig()` 自己 swi
 
 ## 构建
 ```bash
-export PATH=~/3rd_party/hpm/bin:$PATH        # [前机路径] 确保 riscv32-unknown-elf-gcc 可见
+# [前机路径] 换机器请按 BUILD_ENVIRONMENT.md §2.1 重新指向；GNURISCV_TOOLCHAIN_PATH
+# 必须直接指到含 bin/ 的那一层，不是它的上级目录，否则 configure 会报找不到工具链
+export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux
+export PATH="${GNURISCV_TOOLCHAIN_PATH}/bin:$PATH"
 # USB 数据固件（超级构建，含 app + bootloader）
 cmake --preset debug -S firmware/rmcs_board
 cmake --build firmware/rmcs_board/build       # target: rmcs_board_app / rmcs_board_bootloader

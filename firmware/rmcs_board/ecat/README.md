@@ -205,13 +205,19 @@ USB 与 EtherCAT 为什么落在同一个核(而不是各占一核),以及"USB �
 
 ```bash
 cmake -G Ninja -S firmware/rmcs_board/ecat/core1 -B build-ecat-core1 \
-      -DBOARD=hpm6e00evk -DCMAKE_BUILD_TYPE=debug
+      -DCMAKE_BUILD_TYPE=debug
 cmake --build build-ecat-core1     # 生成 core0/src/sec_core_img.c
 
 cmake -G Ninja -S firmware/rmcs_board/ecat/core0 -B build-ecat-core0 \
-      -DBOARD=hpm6e00evk -DCMAKE_BUILD_TYPE=debug
+      -DCMAKE_BUILD_TYPE=debug
 cmake --build build-ecat-core0     # 产出可烧录的 core0 镜像(内嵌 core1)
 ```
+
+> `BOARD` 不用显式传,两个子项目的 CMakeLists.txt 都把默认值定死在
+> `hpm6e80ivm1`(即下面「烧录」一节的板型)。**不要传 `-DBOARD=hpm6e00evk`**——
+> 那是 HPM SDK 自带的示例板定义,缺本仓库 `board_app.hpp` 等文件,configure
+> 能过但编译会在 `app/src/led/gpio_led.hpp` 处报
+> `fatal error: board_app.hpp: No such file or directory`[实测 2026-08-04]。
 
 ## P1 验证方法
 

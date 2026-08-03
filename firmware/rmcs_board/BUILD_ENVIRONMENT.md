@@ -40,12 +40,15 @@
 | RISC-V 工具链 | `rv32imac_zicsr_zifencei_multilib_b_ext`(HPMicro GNU) | **否** | 见下方状态更新 |
 | 烧录工具 | HPMicro Manufacturing Tool v0.6.0(DFU) | 否 | 见 §5 |
 
-> **状态更新(2026-07-27,实测):当前开发机已装 RISC-V 工具链**,下面这段"缺工具链"的
+> **状态更新(2026-08-04,实测):当前开发机已装 RISC-V 工具链**,下面这段"缺工具链"的
 > 结论只适用于 TL101 那台机器,不要照搬到当前机器。本机实测:
-> `/home/zyi/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux/bin/riscv32-unknown-elf-gcc`
-> 存在,`cmake --build firmware/rmcs_board/ecat/build` 全量通过(core0 FLASH 163468 B /
-> ILM 24800 B)。`~/3rd_party/hpm` 下还有 `hpm_sdk`、`openocd-linux-x86_64`、
-> `HPMicro_Manufacturing_Tool_v0.6.0`。**断言"本机没工具链"之前先 `ls` 确认。**
+> `~/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux/bin/riscv32-unknown-elf-gcc`
+> 存在,`cmake --build firmware/rmcs_board/build` 全量通过。**注意路径带
+> `rv32imac_zicsr_zifencei_multilib_b_ext-linux/` 这一层**,`GNURISCV_TOOLCHAIN_PATH`
+> 要指到这一层而不是上级 `~/3rd_party/hpm`,指错会在 configure 阶段报
+> `It was unable to find the toolchain`。**任何时候断言"本机有/没工具链"之前先
+> `ls ~/3rd_party/hpm/*/bin/riscv32-unknown-elf-gcc` 确认**,不要照抄某个历史时间点
+> 的路径描述——`~/3rd_party/hpm` 下具体装了什么会随机器和时间变化。
 
 **(历史结论,针对 TL101)TL101 上目前缺 RISC-V 工具链**(`~/3rd_party/hpm` 不存在,
 PATH 里无 `riscv32-unknown-elf-gcc`),所以固件的实际编译/烧录需在**已装工具链的开发 PC**

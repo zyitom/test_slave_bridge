@@ -41,30 +41,50 @@
 仓库文档里大量出现 `~/3rd_party/hpm`、`~/3rd_party/MRS_Toolchain_Linux_X64_V240`、
 `~/3rd_party/wch-openocd` 这类**绝对路径**。关于它们：
 
-- 这些是**上一台开发机上真实可用的安装位置**，不是示例、不是占位符。原样保留是为了
-  让换机器的人有一份"确实跑通过"的配置可以照抄。
-- **当前机器上的实际安装情况（2026-08-01 逐条 `ls` 复核，取代 2026-07-27 那份，
-  后者对本机已不准确）**：
+- 这些是**某台开发机上真实可用的安装位置**，不是示例、不是占位符。原样保留是为了
+  让换机器的人有一份"确实跑通过"的配置可以照抄。**但路径本身会随机器变化，任何一条
+  记录都会过期**——不要不加验证地直接信，先按下面的检查命令跑一遍再决定。
+- **权威路径只有一份，就是 `firmware/rmcs_board/BUILD_ENVIRONMENT.md` §2.1**；
+  本节以及其他任何文档里出现的具体路径都只是"曾经验证过的参照"，与该文档冲突时
+  以那份为准，发现冲突应回去更新冲突的那一份，不要留着两份互相矛盾的记录。
+- **检查当前机器实际安装了什么，用命令，不要读日期戳的文字描述**（描述会过期，
+  命令不会）：
 
-  | 路径 | 本机 | 说明 |
+  ```bash
+  ls ~/3rd_party/hpm/*/bin/riscv32-unknown-elf-gcc 2>&1          # HPM RISC-V 工具链
+  ls ~/3rd_party/MRS_Toolchain_*/Toolchain/*/bin/riscv*-elf-gcc 2>&1  # MounRiver（ch32_board 备选）
+  which openocd arm-none-eabi-gcc dfu-util 2>&1
+  ```
+
+- **本机（2026-08-04 实测）状态**：
+
+  | 组件 | 路径 | 说明 |
   |---|---|---|
-  | `~/3rd_party/rv32imac_zicsr_zifencei_multilib_b_ext-linux` | **已装** | **RISC-V 工具链的真实位置**（gcc 13.2.0）。已实测编出 `rmcs_board` 单核 / 核对调 / `ecat` 全部目标 |
-  | `~/3rd_party/hpm` | 部分 | **只有 `HPMicro_Manufacturing_Tool_v0.6.0`**。此前记的"工具链 + hpm_sdk + openocd 都在这里"对本机不成立 |
-  | OpenOCD | **未装** | 全机没有。HPM 板的日常烧录走 USB DFU（`dfu-util`），不需要它；只有给空片烧 bootloader 才需要 |
-  | `~/3rd_party/MRS_Toolchain_Linux_X64_V240` | **不存在** | 本机没有 MounRiver，`ch32_board` 在本机编不了 |
-  | `~/3rd_party/wch-openocd` | 不存在 | 见 `firmware/ch32_board/AGENTS.md` |
+  | HPM RISC-V 工具链 | `~/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux/bin/` | **已装**（gcc 13.2.0）。`GNURISCV_TOOLCHAIN_PATH` 要指到这一层，不是 `~/3rd_party/hpm` 本身——少一层会在 configure 阶段报错，见 [ENV.md](ENV.md) RISC-V GCC 一节 |
+  | ARM GCC | 系统 apt `gcc-arm-none-eabi`（13.2.rel1） | **已装**，`c_board`/`mc02` 均已实测编过 |
+  | ch32_board 工具链 | 复用上面的 HPM RISC-V 工具链 | **已装**（同一套，见 `firmware/ch32_board/AGENTS.md`），`ch32_board` 已实测编过 |
+  | MounRiver `MRS_Toolchain_*` | — | **不存在**，只是 ch32_board 的可选替代工具链，不是必需 |
+  | OpenOCD | — | **未装**。HPM/STM32 板日常烧录走 USB DFU（`dfu-util`，已装），不需要它；只有 ch32_board 用 WCH-Link 调试/烧录才要 |
+  | `dfu-util` | 系统 apt | **已装** |
 
-  由此，本机可用的构建/烧录组合是：**host SDK + `rmcs_board` 全部固件 + DFU 烧录**；
-  `ch32_board` 缺工具链，板级调试缺 JTAG。**缺 JTAG 不等于看不到现场**——
-  `rmcs_board` 已有两条走 USB 的带内诊断通道，见
-  `firmware/rmcs_board/AGENTS.md`「板上没有调试器时怎么看现场」。
+  由此，本机可用的构建组合是：**host SDK + 全部四块板固件**（`c_board`、`mc02`、
+  `ch32_board`、`rmcs_board`）均已实测 `cmake --build` 通过；DFU 烧录可用，
+  ch32_board 的 WCH-Link 调试/烧录因缺 OpenOCD 暂不可用。
 
-- **不要凭本节旧措辞断言"本机没有工具链"——先 `ls` 确认。** 路径不存在时也不要删改
-  文档里的路径，按下一条重新指向即可。
+- **不要凭本节旧措辞断言机器缺什么——先用上面的检查命令确认。** 路径不存在时也不要
+  删改文档里的路径，按下一条重新指向即可。
 - 换到新机器时的正确做法：按对应 `firmware/<board>/AGENTS.md` 的依赖清单重新安装，
   再把 `GNURISCV_TOOLCHAIN_PATH`、`WCH_TOOLCHAIN_PATH`、`PATH` 等环境变量指向新的
   安装位置；文档里的路径只当参照。
 - 工具链一律**留在仓库外**，不入库、不做 submodule。
+- **`firmware/mc02` 的两个子模块（`stm32h7xx-hal-driver`、`cmsis-device-h7`）容易被
+  漏掉**：仓库 clone 后默认只注册不拉取，`git submodule status` 输出以 `-` 开头
+  就是未初始化，`cmake configure` 会报 `Cannot find source file`。检查/修复：
+  ```bash
+  git submodule status firmware/mc02/bsp/stm32h7xx-hal-driver firmware/mc02/bsp/cmsis-device-h7
+  git submodule update --init firmware/mc02/bsp/stm32h7xx-hal-driver firmware/mc02/bsp/cmsis-device-h7
+  ```
+  这与工具链无关，纯粹是子模块初始化状态[实测 2026-08-04]。
 
 各文档中出现机器相关路径的地方标注为 `[前机路径]`，看到这个标记就按本节理解。
 
