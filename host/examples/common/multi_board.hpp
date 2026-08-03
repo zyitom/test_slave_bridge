@@ -75,6 +75,15 @@ public:
         (void)data;
     }
     virtual void on_dbus(const librmcs::data::UartDataView& data) { (void)data; }
+    // GPIO digital read result. Boards report the level of a channel that was
+    // armed with gpio_digital_read(); channel indices match gpio_analog/digital.
+    // Board telemetry from a diagnostics build (rmcs_board's LIBRMCS_CAN_DIAG or
+    // mc02's LIBRMCS_APP_CAN_DIAG), carried on an otherwise unused UART id.
+    virtual void on_diagnostic(const librmcs::data::UartDataView& data) { (void)data; }
+    virtual void on_gpio_digital(int channel, const librmcs::data::GpioDigitalDataView& data) {
+        (void)channel;
+        (void)data;
+    }
     virtual void on_accelerometer(const librmcs::data::ImuAccelerometerDataView& data) { (void)data; }
     virtual void on_gyroscope(const librmcs::data::ImuGyroscopeDataView& data) { (void)data; }
     virtual void on_temperature(const librmcs::data::ImuTemperatureDataView& data) { (void)data; }
@@ -110,6 +119,15 @@ public:
         (void)channel;
         (void)data;
         throw std::logic_error{"this board has no GPIO digital-write channels"};
+    }
+    // Arm a channel as a digital input. Without this the adapter could only write
+    // pins, so a GPIO test could confirm that a write was accepted but never that
+    // the pin actually moved -- which needs a wire to an input and a read back.
+    virtual BoardTransmitter& gpio_digital_read(
+        int channel, const librmcs::data::GpioReadConfigView& config) {
+        (void)channel;
+        (void)config;
+        throw std::logic_error{"this board has no GPIO read channels"};
     }
 };
 
@@ -178,16 +196,36 @@ private:
             }
             return *this;
         }
+        // Bounds-checked like can()/uart() above: kGpioDescriptors is a fixed
+        // array, so an out-of-range channel read past its end and handed a
+        // garbage descriptor to the board. The firmware validates the channel
+        // index too, but only after this side has already committed the
+        // out-of-bounds read, which is UB regardless of what the board does.
+    private:
+        static const auto& gpio_descriptor(int channel) {
+            const auto& descriptors = librmcs::spec::c_board::kGpioDescriptors;
+            if (channel < 0 || static_cast<size_t>(channel) >= descriptors.size())
+                throw std::out_of_range{"CBoard: GPIO channel out of range"};
+            return descriptors[static_cast<size_t>(channel)];
+        }
+
+    public:
         BoardTransmitter& gpio_analog(
             int channel, const librmcs::data::GpioAnalogDataView& data) override {
-            builder.gpio_analog_write(librmcs::spec::c_board::kGpioDescriptors[channel], data);
+            builder.gpio_analog_write(gpio_descriptor(channel), data);
             return *this;
         }
         BoardTransmitter& gpio_digital(
             int channel, const librmcs::data::GpioDigitalDataView& data) override {
-            builder.gpio_digital_write(librmcs::spec::c_board::kGpioDescriptors[channel], data);
+            builder.gpio_digital_write(gpio_descriptor(channel), data);
             return *this;
         }
+        BoardTransmitter& gpio_digital_read(
+            int channel, const librmcs::data::GpioReadConfigView& config) override {
+            builder.gpio_digital_read(gpio_descriptor(channel), config);
+            return *this;
+        }
+
     };
 
     void can1_receive_callback(const librmcs::data::CanDataView& data) override {
@@ -216,6 +254,11 @@ private:
         receiver_.on_temperature(data);
     }
 
+    void gpio_digital_read_result_callback(
+        const librmcs::spec::c_board::GpioDescriptor& gpio,
+        const librmcs::data::GpioDigitalDataView& data) override {
+        receiver_.on_gpio_digital(static_cast<int>(gpio.channel_index), data);
+    }
     BoardReceiver& receiver_;
     librmcs::board::CBoard board_;
 };
@@ -277,16 +320,33 @@ private:
             }
             return *this;
         }
+        // See the CBoard equivalent: unchecked indexing here was an out-of-bounds
+        // read on a fixed array, independent of the firmware's own validation.
+    private:
+        static const auto& gpio_descriptor(int channel) {
+            const auto& descriptors = librmcs::spec::mc02::kGpioDescriptors;
+            if (channel < 0 || static_cast<size_t>(channel) >= descriptors.size())
+                throw std::out_of_range{"Mc02: GPIO channel out of range"};
+            return descriptors[static_cast<size_t>(channel)];
+        }
+
+    public:
         BoardTransmitter& gpio_analog(
             int channel, const librmcs::data::GpioAnalogDataView& data) override {
-            builder.gpio_analog_write(librmcs::spec::mc02::kGpioDescriptors[channel], data);
+            builder.gpio_analog_write(gpio_descriptor(channel), data);
             return *this;
         }
         BoardTransmitter& gpio_digital(
             int channel, const librmcs::data::GpioDigitalDataView& data) override {
-            builder.gpio_digital_write(librmcs::spec::mc02::kGpioDescriptors[channel], data);
+            builder.gpio_digital_write(gpio_descriptor(channel), data);
             return *this;
         }
+        BoardTransmitter& gpio_digital_read(
+            int channel, const librmcs::data::GpioReadConfigView& config) override {
+            builder.gpio_digital_read(gpio_descriptor(channel), config);
+            return *this;
+        }
+
     };
 
     void can1_receive_callback(const librmcs::data::CanDataView& data) override {
@@ -318,6 +378,15 @@ private:
         receiver_.on_gyroscope(data);
     }
 
+    void diagnostic_receive_callback(const librmcs::data::UartDataView& data) override {
+        receiver_.on_diagnostic(data);
+    }
+
+    void gpio_digital_read_result_callback(
+        const librmcs::spec::mc02::GpioDescriptor& gpio,
+        const librmcs::data::GpioDigitalDataView& data) override {
+        receiver_.on_gpio_digital(static_cast<int>(gpio.channel_index), data);
+    }
     BoardReceiver& receiver_;
     librmcs::board::Mc02 board_;
 };

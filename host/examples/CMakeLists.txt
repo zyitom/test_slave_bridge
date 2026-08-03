@@ -85,3 +85,12 @@ if(LIBRMCS_ENABLE_SOEM OR LIBRMCS_ENABLE_IGH)
     add_executable(bridge_can_loopback_latency bridge_can_loopback_latency.cpp)
     target_link_libraries(bridge_can_loopback_latency PRIVATE librmcs-sdk)
 endif()
+
+add_executable(motor_load motor_load.cpp)
+target_link_libraries(motor_load PRIVATE librmcs-sdk)
+
+add_executable(imu_dbus_check imu_dbus_check.cpp)
+target_link_libraries(imu_dbus_check PRIVATE librmcs-sdk)
+
+add_executable(mc02_can_diag mc02_can_diag.cpp)
+target_link_libraries(mc02_can_diag PRIVATE librmcs-sdk)

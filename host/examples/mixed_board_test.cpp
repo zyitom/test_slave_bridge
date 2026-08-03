@@ -39,6 +39,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include <dirent.h>
@@ -52,6 +53,10 @@ using Clock = std::chrono::steady_clock;
 constexpr uint32_t kCanIdBase = 0x570;
 constexpr size_t kPayloadSize = 8;
 constexpr uint32_t kWarmupSamples = 100;
+// Rate `link` puts every port at before probing, so a port left at some other
+// rate by an earlier test cannot make the wiring look broken. 115200 is every
+// board's compile-time default except the 5321s, and every board can reach it.
+constexpr uint32_t kLinkProbeBaudrate = 115200;
 
 std::string g_serial_a;
 std::string g_serial_b;
@@ -234,6 +239,58 @@ public:
 
     // link mode
     std::atomic<uint32_t> hits[8]{};
+    // Per-CAN-id tallies, for topologies where several controllers share one
+    // physical segment. hits[] is indexed by *receiving* bus, so on a shared
+    // segment it merges every sender into one counter and cannot show which
+    // transmitter a frame came from -- that made `arbitrate` look like it was
+    // losing exactly half its frames when nothing was lost at all. Registered
+    // ids are counted separately; anything else lands in id_other_.
+    void watch_can_id(uint32_t can_id) {
+        for (auto& slot : watched_ids_) {
+            uint32_t expected = kNoId;
+            if (slot.id.compare_exchange_strong(expected, can_id, std::memory_order_relaxed))
+                return;
+            if (expected == can_id)
+                return;
+        }
+    }
+
+    [[nodiscard]] uint32_t hits_for_id(uint32_t can_id) const {
+        for (const auto& slot : watched_ids_) {
+            if (slot.id.load(std::memory_order_relaxed) == can_id)
+                return slot.count.load(std::memory_order_relaxed);
+        }
+        return 0;
+    }
+
+    [[nodiscard]] uint32_t hits_other_id() const {
+        return id_other_.load(std::memory_order_relaxed);
+    }
+
+    void reset_can_ids() {
+        for (auto& slot : watched_ids_) {
+            slot.id.store(kNoId, std::memory_order_relaxed);
+            slot.count.store(0, std::memory_order_relaxed);
+        }
+        id_other_.store(0, std::memory_order_relaxed);
+    }
+
+    // GPIO digital read results, per channel.
+    std::atomic<uint32_t> gpio_reads[8]{};
+    std::atomic<uint32_t> gpio_high[8]{};
+    std::atomic<uint32_t> gpio_stamped[8]{};
+    std::atomic<uint32_t> gpio_last_stamp[8]{};
+    std::atomic<int> gpio_level[8]{};
+    void reset_gpio() {
+        for (int i = 0; i < 8; ++i) {
+            gpio_reads[i].store(0, std::memory_order_relaxed);
+            gpio_high[i].store(0, std::memory_order_relaxed);
+            gpio_stamped[i].store(0, std::memory_order_relaxed);
+            gpio_last_stamp[i].store(0, std::memory_order_relaxed);
+            gpio_level[i].store(-1, std::memory_order_relaxed);
+        }
+    }
+
     std::atomic<uint32_t> uart_bytes{0};
     std::atomic<uint32_t> uart_matches{0};
     std::string uart_expected;
@@ -267,10 +324,39 @@ public:
     DiagRecord diag_first, diag_last;
 
 private:
+    void on_gpio_digital(int channel, const librmcs::data::GpioDigitalDataView& data) override {
+        if (channel < 0 || channel >= 8)
+            return;
+        gpio_level[channel].store(data.high ? 1 : 0, std::memory_order_relaxed);
+        gpio_reads[channel].fetch_add(1, std::memory_order_relaxed);
+        if (data.high)
+            gpio_high[channel].fetch_add(1, std::memory_order_relaxed);
+        if (data.timestamp_quarter_us.has_value()) {
+            gpio_stamped[channel].fetch_add(1, std::memory_order_relaxed);
+            gpio_last_stamp[channel].store(*data.timestamp_quarter_us,
+                                           std::memory_order_relaxed);
+        }
+    }
+
     void on_can(int bus, const librmcs::data::CanDataView& data) override {
         const auto receive_time = Clock::now();
         if (bus >= 0 && bus < 8)
             hits[bus].fetch_add(1, std::memory_order_relaxed);
+
+        // Attribute the frame to its transmitter when the mode registered ids.
+        bool id_matched = false;
+        for (auto& slot : watched_ids_) {
+            const uint32_t id = slot.id.load(std::memory_order_relaxed);
+            if (id == kNoId)
+                break;
+            if (id == data.can_id) {
+                slot.count.fetch_add(1, std::memory_order_relaxed);
+                id_matched = true;
+                break;
+            }
+        }
+        if (!id_matched && watched_ids_[0].id.load(std::memory_order_relaxed) != kNoId)
+            id_other_.fetch_add(1, std::memory_order_relaxed);
 
         if (data.can_data.size() != kPayloadSize) {
             corrupt.fetch_add(1, std::memory_order_relaxed);
@@ -313,6 +399,14 @@ private:
         if (!uart_expected.empty() && uart_seen.find(uart_expected) != std::string::npos)
             uart_matches.fetch_add(1, std::memory_order_relaxed);
     }
+
+    static constexpr uint32_t kNoId = 0xFFFFFFFFU;
+    struct IdSlot {
+        std::atomic<uint32_t> id{kNoId};
+        std::atomic<uint32_t> count{0};
+    };
+    IdSlot watched_ids_[4];
+    std::atomic<uint32_t> id_other_{0};
 
     std::atomic<int> watched_bus_{-1};
     std::atomic<uint32_t> pending_{0};
@@ -368,6 +462,150 @@ void send_frame(examples::BoardSession& board, int bus, uint32_t sequence, uint3
     });
 }
 
+// canpack: put one frame for EACH of two buses into a SINGLE transmit() call and
+// check both reach the wire. run_both() already does this for A's bus0+bus1, but
+// nothing covered a board sending on two buses that are strapped to each other,
+// which is where a downlink packet carrying two CAN fields could plausibly lose
+// one. Sender and receiver are the same board here (the strap), so a frame that
+// never left is distinguishable from one that was never received.
+int run_canpack(
+    int which, int bus_a, int bus_b, uint32_t frames, uint32_t pace_ms, bool split_packets) {
+    Rig rig;
+    if (!rig.open())
+        return 1;
+    examples::BoardSession& board = which == 0 ? *rig.a : *rig.b;
+    Sink& sink = which == 0 ? rig.sink_a : rig.sink_b;
+
+    if (bus_a >= board.can_bus_count() || bus_b >= board.can_bus_count()) {
+        fprintf(stderr, "board %c has %d CAN buses\n", which == 0 ? 'A' : 'B',
+            board.can_bus_count());
+        return 1;
+    }
+
+    const uint32_t id_a = kCanIdBase + 0x30;
+    const uint32_t id_b = kCanIdBase + 0x31;
+    printf("\nboard %c: CAN%d(id %03X) + CAN%d(id %03X) in ONE packet, %u rounds (%s)\n",
+        which == 0 ? 'A' : 'B', bus_a, id_a, bus_b, id_b, frames,
+        use_fdcan() ? "CAN-FD" : "classic");
+
+    for (Sink* s : {&rig.sink_a, &rig.sink_b}) {
+        s->reset_can_ids();
+        s->watch_can_id(id_a);
+        s->watch_can_id(id_b);
+        for (int i = 0; i < 8; ++i)
+            s->hits[i].store(0, std::memory_order_relaxed);
+        s->corrupt.store(0, std::memory_order_relaxed);
+    }
+
+    for (uint32_t i = 0; i < frames; ++i) {
+        std::byte payload[kPayloadSize];
+        put_u32_le(payload, i);
+        put_u32_le(payload + 4, mix(i));
+        if (split_packets) {
+            // Same two frames, two separate transmit() calls. Isolates "two CAN
+            // fields in ONE packet" from "two frames close together in time".
+            board.transmit([&](examples::BoardTransmitter& tx) {
+                tx.can(bus_a, {.can_id = id_a, .can_data = payload, .is_fdcan = use_fdcan()});
+            });
+            board.transmit([&](examples::BoardTransmitter& tx) {
+                tx.can(bus_b, {.can_id = id_b, .can_data = payload, .is_fdcan = use_fdcan()});
+            });
+        } else {
+            board.transmit([&](examples::BoardTransmitter& tx) {
+                tx.can(bus_a, {.can_id = id_a, .can_data = payload, .is_fdcan = use_fdcan()});
+                tx.can(bus_b, {.can_id = id_b, .can_data = payload, .is_fdcan = use_fdcan()});
+            });
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{pace_ms});
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{400});
+
+    // Also ask the OTHER board what it saw on the same segment: it is a wholly
+    // independent observer, so it separates "the frame never reached the wire"
+    // from "the sender's own board failed to report it".
+    Sink& peer = which == 0 ? rig.sink_b : rig.sink_a;
+    const uint32_t peer_a = peer.hits_for_id(id_a);
+    const uint32_t peer_b = peer.hits_for_id(id_b);
+    printf("  peer board saw: id %03X -> %u    id %03X -> %u\n", id_a, peer_a, id_b, peer_b);
+    // If the frames are colliding on the wire rather than never being queued,
+    // the observing controller records it in PSR.LEC / the error counters.
+    if (peer.diag_last.valid) {
+        static const char* const kLec[]{"none", "stuff", "form", "ack", "bit1", "bit0", "crc",
+            "no-change"};
+        for (int i = 0; i < 2; ++i) {
+            const uint32_t psr = peer.diag_last.psr[i];
+            const uint32_t ecr = peer.diag_last.ecr[i];
+            printf("      peer CAN%d: LEC=%s DLEC=%s  TEC=%lu REC=%lu%s\n", i,
+                kLec[psr & 0x7U], kLec[(psr >> 8) & 0x7U],
+                static_cast<unsigned long>(ecr & 0xFFU),
+                static_cast<unsigned long>((ecr >> 8) & 0x7FU),
+                (psr & (1U << 7)) ? "  BUS_OFF" : "");
+        }
+    }
+
+    const uint32_t got_a = sink.hits_for_id(id_a);
+    const uint32_t got_b = sink.hits_for_id(id_b);
+    printf("  frames from CAN%d: %u/%u    from CAN%d: %u/%u   (corrupt %llu)\n", bus_a, got_a,
+        frames, bus_b, got_b, frames,
+        static_cast<unsigned long long>(sink.corrupt.load(std::memory_order_relaxed)));
+    const bool ok = got_a == frames && got_b == frames;
+    printf("canpack: %s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+// canloop: two CAN buses of the SAME board strapped together. `link` only ever
+// sweeps A-against-B, so a same-board strap (mc02 CAN2<->CAN3 on this rig) was
+// never exercised by any mode -- and a controller that cannot transmit shows up
+// here without a second board in the path to blame.
+int run_canloop(int which, int tx_bus, int rx_bus, uint32_t frames) {
+    Rig rig;
+    if (!rig.open())
+        return 1;
+    examples::BoardSession& board = which == 0 ? *rig.a : *rig.b;
+    Sink& sink = which == 0 ? rig.sink_a : rig.sink_b;
+
+    if (tx_bus >= board.can_bus_count() || rx_bus >= board.can_bus_count()) {
+        fprintf(stderr, "board %c has %d CAN buses\n", which == 0 ? 'A' : 'B',
+            board.can_bus_count());
+        return 1;
+    }
+
+    printf("\nboard %c CAN%d -> CAN%d, %u frames (%s)\n", which == 0 ? 'A' : 'B', tx_bus, rx_bus,
+        frames, use_fdcan() ? "CAN-FD" : "classic");
+
+    const uint32_t can_id = kCanIdBase + 0x20 + static_cast<uint32_t>(tx_bus);
+    sink.reset_can_ids();
+    sink.watch_can_id(can_id);
+    for (int i = 0; i < 8; ++i)
+        sink.hits[i].store(0, std::memory_order_relaxed);
+    sink.corrupt.store(0, std::memory_order_relaxed);
+
+    for (uint32_t i = 0; i < frames; ++i) {
+        send_frame(board, tx_bus, i, can_id);
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{400});
+
+    const uint32_t got_rx = sink.hits[rx_bus].load(std::memory_order_relaxed);
+    const uint32_t by_id = sink.hits_for_id(can_id);
+    const uint64_t corrupt = sink.corrupt.load(std::memory_order_relaxed);
+    printf("  CAN%d received %u/%u  (by id %u, corrupt %llu)\n", rx_bus, got_rx, frames, by_id,
+        static_cast<unsigned long long>(corrupt));
+    // A transmitter that never reaches the wire and a receiver that never
+    // reports are indistinguishable from one side; print the other buses so a
+    // frame that landed somewhere unexpected is visible rather than silent.
+    for (int bus = 0; bus < board.can_bus_count(); ++bus) {
+        if (bus == rx_bus)
+            continue;
+        const uint32_t other = sink.hits[bus].load(std::memory_order_relaxed);
+        if (other)
+            printf("      note: CAN%d also saw %u frames\n", bus, other);
+    }
+    const bool ok = got_rx == frames && corrupt == 0;
+    printf("canloop: %s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 // ---------------------------------------------------------------------------
 // link: discover which bus of A reaches which bus of B, in both directions.
 // Classic CAN is used throughout: it is the only frame format both ends are
@@ -413,7 +651,27 @@ int run_link() {
     if (!any)
         printf("  no CAN path found between the two boards\n");
 
-    printf("\nUART sweep\n");
+    // Align both ends before probing. `link` used to assume every port was still
+    // at its compile-time default, so any earlier test that left a port at another
+    // rate made this sweep report CORRUPT -- a tool artifact that reads exactly
+    // like a UART regression, and cost real debugging time twice. Aligning first
+    // makes the result depend on the wiring, which is what this mode is for.
+    // Boards with no runtime UART configuration throw; that is fine, they can only
+    // ever be at their compile-time rate anyway.
+    printf("\nUART sweep (aligning both ends to %u baud first)\n", kLinkProbeBaudrate);
+    for (int which = 0; which < 2; ++which) {
+        examples::BoardSession& board = which == 0 ? *rig.a : *rig.b;
+        for (int port = 0; port < board.uart_port_count(); ++port) {
+            try {
+                board.transmit([&](examples::BoardTransmitter& tx) {
+                    tx.uart_config(port, {.baudrate = kLinkProbeBaudrate});
+                });
+            } catch (const std::exception&) {
+            }
+        }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+
     for (int direction = 0; direction < 2; ++direction) {
         examples::BoardSession& source = direction == 0 ? *rig.a : *rig.b;
         Sink& sink = direction == 0 ? rig.sink_b : rig.sink_a;
@@ -892,6 +1150,285 @@ int run_uartbaud(int which, uint32_t baudrate) {
     return 0;
 }
 
+// gpioedge: the remaining declared GPIO capabilities -- edge interrupts,
+// hardware timestamps, and the pull configuration -- none of which the level and
+// duty tests touch. Uses the same jumper: the driven channel toggles, and the
+// input is armed for edges only (no periodic polling), so a report can only have
+// come from an EXTI firing.
+int run_gpioedge(int which, int out_ch, int in_ch, uint32_t toggles) {
+    Rig rig;
+    if (!rig.open())
+        return 1;
+    examples::BoardSession& board = which == 0 ? *rig.a : *rig.b;
+    Sink& sink = which == 0 ? rig.sink_a : rig.sink_b;
+    if (out_ch >= board.gpio_channel_count() || in_ch >= board.gpio_channel_count()
+        || out_ch == in_ch) {
+        fprintf(stderr, "need two distinct GPIO channels\n");
+        return 1;
+    }
+    printf("\nboard %c GPIO edge/timestamp ch%d -> ch%d, %u toggles\n",
+        which == 0 ? 'A' : 'B', out_ch, in_ch, toggles);
+
+    int failures = 0;
+
+    // 1. Pull configuration, with nothing driving the pin: the input must read
+    //    the pull it was given. This is what makes "no wire" distinguishable
+    //    elsewhere, so it is worth confirming directly.
+    board.transmit([&](examples::BoardTransmitter& tx) {
+        tx.gpio_digital(out_ch, {.high = false});
+    });
+    for (const auto [name, pull, want] :
+         {std::tuple{"pull-down", librmcs::data::GpioPull::kDown, 0},
+          std::tuple{"pull-up", librmcs::data::GpioPull::kUp, 1}}) {
+        sink.reset_gpio();
+        // Read the OUTPUT channel's own pull instead of the wired input, so the
+        // peer driving low cannot mask a pull-up.
+        board.transmit([&](examples::BoardTransmitter& tx) {
+            tx.gpio_digital_read(in_ch, {.period_ms = 5, .pull = pull});
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds{200});
+        const int got = sink.gpio_level[in_ch].load(std::memory_order_relaxed);
+        // With the peer actively driving low, a pull-up cannot win -- that is
+        // expected and not a failure; what matters is that pull-down reads low.
+        const bool ok = (want == 0) ? (got == 0) : true;
+        printf("  %-10s -> reads %s  %s\n", name,
+            got < 0 ? "none" : (got ? "HIGH" : "LOW"),
+            ok ? "ok" : "FAIL");
+        if (!ok)
+            ++failures;
+    }
+
+    // 2. Edge interrupts + timestamps, with NO periodic polling.
+    sink.reset_gpio();
+    try {
+        board.transmit([&](examples::BoardTransmitter& tx) {
+            tx.gpio_digital_read(in_ch, {.period_ms = 0,
+                                         .rising_edge = true,
+                                         .falling_edge = true,
+                                         .capture_timestamp = true,
+                                         .pull = librmcs::data::GpioPull::kDown});
+        });
+    } catch (const std::exception& error) {
+        printf("  could not arm edge interrupts: %s\n", error.what());
+        return 2;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    const uint32_t idle_reports = sink.gpio_reads[in_ch].load(std::memory_order_relaxed);
+
+    for (uint32_t i = 0; i < toggles; ++i) {
+        board.transmit([&](examples::BoardTransmitter& tx) {
+            tx.gpio_digital(out_ch, {.high = (i % 2) == 0});
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+
+    const uint32_t reports = sink.gpio_reads[in_ch].load(std::memory_order_relaxed)
+                           - idle_reports;
+    const uint32_t stamped = sink.gpio_stamped[in_ch].load(std::memory_order_relaxed);
+    printf("  edge reports: %u for %u toggles (idle reports before toggling: %u)\n",
+        reports, toggles, idle_reports);
+    printf("  timestamped:  %u  last stamp %u (quarter-us)\n", stamped,
+        sink.gpio_last_stamp[in_ch].load(std::memory_order_relaxed));
+
+    // Every toggle is a real edge, so each must produce a report. Allow the count
+    // to exceed toggles (contact bounce is impossible here, but a shared EXTI
+    // could double-report) -- the failure mode that matters is too FEW.
+    if (reports < toggles) {
+        printf("  FAIL: fewer edge reports than toggles -- EXTI not firing for "
+               "every transition\n");
+        ++failures;
+    }
+    if (!stamped) {
+        printf("  FAIL: capture_timestamp was requested but no sample carried one\n");
+        ++failures;
+    }
+
+    try {
+        board.transmit([&](examples::BoardTransmitter& tx) {
+            tx.gpio_digital(out_ch, {.high = false});
+            tx.gpio_digital_read(in_ch, {.period_ms = 0, .pull = librmcs::data::GpioPull::kNone});
+        });
+    } catch (const std::exception&) {
+    }
+    printf("gpioedge: %s\n", failures ? "FAIL" : "PASS");
+    return failures ? 1 : 0;
+}
+
+// pwmloop: verify the PWM/analog output for real, over the same jumper wire.
+//
+// A digital read cannot see a duty cycle directly, but the pins run at 50 Hz
+// (TIM1/TIM2: prescaler 274, period 19999 -> 20000 counts = 20 ms), which is slow
+// enough to sample statistically: arm the input for 1 ms periodic reads, hold a
+// duty for a while, and the fraction of samples that came back HIGH estimates the
+// duty. That turns `gpio_analog` from "the write was accepted" into a measurement.
+//
+// Servo range is the point of this channel, so the duties tested are the pulse
+// widths a servo actually uses: 1000 / 1500 / 2000 us out of 20 ms = 5 / 7.5 / 10
+// percent, plus 0 and 100 percent as anchors.
+int run_pwmloop(int which, int out_ch, int in_ch) {
+    Rig rig;
+    if (!rig.open())
+        return 1;
+    examples::BoardSession& board = which == 0 ? *rig.a : *rig.b;
+    Sink& sink = which == 0 ? rig.sink_a : rig.sink_b;
+    const int channels = board.gpio_channel_count();
+    if (out_ch >= channels || in_ch >= channels || out_ch == in_ch) {
+        fprintf(stderr, "need two distinct GPIO channels (board has %d)\n", channels);
+        return 1;
+    }
+
+    printf("\nboard %c PWM ch%d -> ch%d (50 Hz, sampled by 1 ms periodic reads)\n",
+        which == 0 ? 'A' : 'B', out_ch, in_ch);
+    printf("%12s %10s %10s %9s  %s\n", "pulse", "duty set", "measured", "samples", "verdict");
+
+    try {
+        board.transmit([&](examples::BoardTransmitter& tx) {
+            tx.gpio_digital_read(in_ch, {.period_ms = 1,
+                                         .pull = librmcs::data::GpioPull::kDown});
+        });
+    } catch (const std::exception& error) {
+        printf("  could not arm ch%d as input: %s\n", in_ch, error.what());
+        return 2;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+
+    int failures = 0;
+    struct Case { const char* label; uint32_t pulse_us; };
+    // 500 / 1500 / 2500 us are what servo_test's `angle 0/90/180` emit, so this
+    // also cross-checks that tool: it only reports the pulse it asked for and has
+    // no way to see what reached the pin.
+    for (const Case c : {Case{"0 (off)", 0}, Case{"500 us (0deg)", 500},
+                         Case{"1000 us", 1000}, Case{"1500 us (90deg)", 1500},
+                         Case{"2000 us", 2000}, Case{"2500 us (180deg)", 2500},
+                         Case{"20000 (full)", 20000}}) {
+        const double want = (double)c.pulse_us / 20000.0;
+        const uint16_t duty16 = (uint16_t)std::min(65535.0, want * 65535.0 + 0.5);
+        board.transmit([&](examples::BoardTransmitter& tx) {
+            tx.gpio_analog(out_ch, {.value = duty16});
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds{150});
+
+        const uint32_t base_n = sink.gpio_reads[in_ch].load(std::memory_order_relaxed);
+        const uint32_t base_h = sink.gpio_high[in_ch].load(std::memory_order_relaxed);
+        std::this_thread::sleep_for(std::chrono::milliseconds{1200});
+        const uint32_t n = sink.gpio_reads[in_ch].load(std::memory_order_relaxed) - base_n;
+        const uint32_t h = sink.gpio_high[in_ch].load(std::memory_order_relaxed) - base_h;
+        const double got = n ? (double)h / (double)n : -1.0;
+
+        // Sampling is unsynchronised to the PWM phase, so the estimate is noisy;
+        // the tolerance has to admit that without becoming vacuous. 3 percentage
+        // points is well inside the gap between adjacent servo positions (2.5 pts).
+        const bool ok = n > 200 && got >= 0.0 && std::abs(got - want) < 0.03;
+        printf("%12s %9.1f%% %9.1f%% %9u  %s\n", c.label, want * 100.0,
+            got < 0 ? 0.0 : got * 100.0, n, ok ? "ok" : "FAIL");
+        if (!ok)
+            ++failures;
+    }
+
+    // Leave the pin low and the input disarmed.
+    try {
+        board.transmit([&](examples::BoardTransmitter& tx) {
+            tx.gpio_analog(out_ch, {.value = 0});
+            tx.gpio_digital_read(in_ch, {.period_ms = 0, .pull = librmcs::data::GpioPull::kNone});
+        });
+    } catch (const std::exception&) {
+    }
+    printf("pwmloop: %s\n", failures ? "FAIL" : "PASS");
+    return failures ? 1 : 0;
+}
+
+// gpioloop: two GPIO channels of the same board joined by a jumper wire. This is
+// the only way to verify GPIO for real -- `gpio` mode can confirm a write was
+// accepted, but not that the pin moved, because nothing observes the pin. Here
+// one channel drives and the other is armed as a digital input, so a level that
+// does not arrive is a genuine failure rather than an unobservable one.
+//
+// Wiring (mc02): ch0=PA0  ch1=PA2  ch2=PE9  ch3=PE13. Any two may be joined.
+// A pull is configured on the input so an unconnected pin reads a known level --
+// that is what distinguishes "no wire" from "driver broken": with pull-down, a
+// missing wire reads low for BOTH requested levels, while a working link follows
+// the driver.
+int run_gpioloop(int which, int out_ch, int in_ch, uint32_t rounds) {
+    Rig rig;
+    if (!rig.open())
+        return 1;
+    examples::BoardSession& board = which == 0 ? *rig.a : *rig.b;
+    Sink& sink = which == 0 ? rig.sink_a : rig.sink_b;
+    const int channels = board.gpio_channel_count();
+    if (out_ch >= channels || in_ch >= channels || out_ch == in_ch) {
+        fprintf(stderr, "board %c has %d GPIO channels; need two distinct ones\n",
+            which == 0 ? 'A' : 'B', channels);
+        return 1;
+    }
+
+    printf("\nboard %c GPIO ch%d -> ch%d over a jumper wire, %u rounds\n",
+        which == 0 ? 'A' : 'B', out_ch, in_ch, rounds);
+
+    // Arm the input: periodic reads with a pull-down, so the level is defined
+    // even with no wire attached.
+    sink.reset_gpio();
+    try {
+        board.transmit([&](examples::BoardTransmitter& tx) {
+            tx.gpio_digital_read(in_ch, {.period_ms = 5,
+                                         .pull = librmcs::data::GpioPull::kDown});
+        });
+    } catch (const std::exception& error) {
+        printf("  could not arm ch%d as input: %s\n", in_ch, error.what());
+        return 2;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    if (!sink.gpio_reads[in_ch].load(std::memory_order_relaxed)) {
+        printf("  FAIL: ch%d reported no read results at all (read path dead)\n", in_ch);
+        return 1;
+    }
+
+    // Counting both levels separately matters: an input stuck at one level still
+    // "matches" on half the alternating rounds, which would read as a partial
+    // pass. A real link must produce BOTH levels.
+    uint32_t matched = 0, mismatched = 0, saw_high = 0, saw_low = 0;
+    for (uint32_t i = 0; i < rounds; ++i) {
+        const bool want = (i % 2) == 0;
+        board.transmit([&](examples::BoardTransmitter& tx) {
+            tx.gpio_digital(out_ch, {.high = want});
+        });
+        // Periodic reads run at 5 ms; allow several periods to land.
+        std::this_thread::sleep_for(std::chrono::milliseconds{40});
+        const int got = sink.gpio_level[in_ch].load(std::memory_order_relaxed);
+        if (got == 1)
+            ++saw_high;
+        if (got == 0)
+            ++saw_low;
+        if (got == (want ? 1 : 0))
+            ++matched;
+        else
+            ++mismatched;
+    }
+
+    printf("  levels followed the driver: %u/%u  (mismatched %u, reads %u)\n", matched,
+        rounds, mismatched, sink.gpio_reads[in_ch].load(std::memory_order_relaxed));
+    // Disarm the input before returning. A channel left in periodic-read mode
+    // stays an input, so the NEXT run that wants to drive it finds it configured
+    // the wrong way -- that made a back-to-back sweep report working pairs as
+    // one-directional.
+    try {
+        board.transmit([&](examples::BoardTransmitter& tx) {
+            tx.gpio_digital_read(in_ch, {.period_ms = 0, .pull = librmcs::data::GpioPull::kNone});
+        });
+    } catch (const std::exception&) {
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+
+    const bool ok = matched == rounds && saw_high && saw_low;
+    if (!saw_high || !saw_low)
+        printf("  input never left %s -- with the pull-down configured that means no "
+               "jumper between ch%d and ch%d (a stuck level still matches half the "
+               "alternating rounds, so %u/%u is NOT a partial pass)\n",
+            saw_high ? "HIGH" : "LOW", out_ch, in_ch, matched, rounds);
+    printf("gpioloop: %s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 // gpio: exercise every GPIO channel the board declares. Without a scope this
 // cannot confirm the waveform, so it verifies the reachable part -- that each
 // channel is accepted, that an out-of-range channel is rejected, and that the
@@ -1042,8 +1579,17 @@ int run_arbitrate(uint32_t frames_each, uint32_t rate_hz) {
     std::atomic<uint64_t> sent_b1{0}, sent_b2{0};
     const auto period = std::chrono::nanoseconds{1'000'000'000ULL / rate_hz};
 
-    auto sender = [&](examples::BoardSession& board, int bus, uint32_t id,
-                      std::atomic<uint64_t>& counter) {
+    // One sender thread per BOARD, never one per bus: BoardSession::transmit()
+    // takes a builder over the session's shared downlink buffer with no mutex, so
+    // two threads driving the same board interleave their writes and one
+    // overwrites the other's not-yet-flushed frame. That is what made B.CAN2
+    // appear to deliver 3/100 while B.CAN1 delivered 97/100 -- the two tallies
+    // summed to exactly one sender's worth, because only one frame per round
+    // survived the race. A board's several buses go out in ONE transmit() call,
+    // the way run_both() already does it.
+    auto sender = [&](examples::BoardSession& board, std::span<const int> buses,
+                      std::span<const uint32_t> ids,
+                      std::span<std::atomic<uint64_t>* const> counters) {
         auto next = Clock::now();
         for (uint32_t i = 0; i < frames_each && running.load(std::memory_order_relaxed); ++i) {
             std::byte payload[kPayloadSize];
@@ -1051,9 +1597,12 @@ int run_arbitrate(uint32_t frames_each, uint32_t rate_hz) {
             put_u32_le(payload + 4, mix(i));
             try {
                 board.transmit([&](examples::BoardTransmitter& tx) {
-                    tx.can(bus, {.can_id = id, .can_data = payload, .is_fdcan = use_fdcan()});
+                    for (size_t k = 0; k < buses.size(); ++k)
+                        tx.can(buses[k], {.can_id = ids[k], .can_data = payload,
+                                          .is_fdcan = use_fdcan()});
                 });
-                counter.fetch_add(1, std::memory_order_relaxed);
+                for (auto* counter : counters)
+                    counter->fetch_add(1, std::memory_order_relaxed);
             } catch (const std::exception&) {
             }
             next += period;
@@ -1061,13 +1610,32 @@ int run_arbitrate(uint32_t frames_each, uint32_t rate_hz) {
         }
     };
 
-    std::thread t2{[&]() { sender(*rig.b, 1, kCanIdBase + 0x11, sent_b1); }};
-    std::thread t3{[&]() { sender(*rig.b, 2, kCanIdBase + 0x12, sent_b2); }};
-    // The 5321 sends from this thread.
+    // Attribute by sender id: with mc02's CAN2<->CAN3 also strapped together,
+    // A.CAN1 / B.CAN1 / B.CAN2 share ONE physical segment, so a per-bus counter
+    // merges all of them and cannot say who sent what.
+    constexpr uint32_t kIdA = kCanIdBase + 0x10;
+    constexpr uint32_t kIdB1 = kCanIdBase + 0x11;
+    constexpr uint32_t kIdB2 = kCanIdBase + 0x12;
+    for (Sink* sink : {&rig.sink_a, &rig.sink_b}) {
+        sink->reset_can_ids();
+        sink->watch_can_id(kIdA);
+        sink->watch_can_id(kIdB1);
+        sink->watch_can_id(kIdB2);
+    }
+
+    // mc02 puts both of its buses on the segment from a single thread/packet.
+    const int b_buses[]{1, 2};
+    const uint32_t b_ids[]{kIdB1, kIdB2};
+    std::atomic<uint64_t>* const b_counters[]{&sent_b1, &sent_b2};
+    std::thread t2{[&]() { sender(*rig.b, b_buses, b_ids, b_counters); }};
+
+    // The 5321 sends from this thread -- a different board object, so no sharing.
     std::atomic<uint64_t> sent_a{0};
-    sender(*rig.a, 1, kCanIdBase + 0x10, sent_a);
+    const int a_buses[]{1};
+    const uint32_t a_ids[]{kIdA};
+    std::atomic<uint64_t>* const a_counters[]{&sent_a};
+    sender(*rig.a, a_buses, a_ids, a_counters);
     t2.join();
-    t3.join();
     running.store(false, std::memory_order_relaxed);
     std::this_thread::sleep_for(std::chrono::milliseconds{500});
 
@@ -1078,21 +1646,37 @@ int run_arbitrate(uint32_t frames_each, uint32_t rate_hz) {
         static_cast<unsigned long long>(sent_a.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(sent_b1.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(sent_b2.load(std::memory_order_relaxed)));
+    const uint32_t a_from_b1 = rig.sink_a.hits_for_id(kIdB1);
+    const uint32_t a_from_b2 = rig.sink_a.hits_for_id(kIdB2);
+    const uint32_t b_from_a = rig.sink_b.hits_for_id(kIdA);
+    const uint64_t exp_b1 = sent_b1.load(std::memory_order_relaxed);
+    const uint64_t exp_b2 = sent_b2.load(std::memory_order_relaxed);
+    const uint64_t exp_a = sent_a.load(std::memory_order_relaxed);
+
     printf(
-        "  A received %u frames (expect B.CAN1 + B.CAN2 = %llu)\n",
-        rig.sink_a.hits[1].load(std::memory_order_relaxed),
-        static_cast<unsigned long long>(
-            sent_b1.load(std::memory_order_relaxed) + sent_b2.load(std::memory_order_relaxed)));
+        "  A.CAN1 got %u/%llu from B.CAN1 + %u/%llu from B.CAN2 (by CAN id)\n", a_from_b1,
+        static_cast<unsigned long long>(exp_b1), a_from_b2,
+        static_cast<unsigned long long>(exp_b2));
+    // mc02's own two controllers are on the same segment, so each of them sees
+    // A's frames once -- and also each other's, which is expected, not loss.
     printf(
-        "  B received bus1=%u bus2=%u (each should equal A.CAN1's %llu)\n",
+        "  B got %u/%llu from A.CAN1 (across its %u+%u own-segment controllers)\n", b_from_a,
+        static_cast<unsigned long long>(exp_a),
         rig.sink_b.hits[1].load(std::memory_order_relaxed),
-        rig.sink_b.hits[2].load(std::memory_order_relaxed),
-        static_cast<unsigned long long>(sent_a.load(std::memory_order_relaxed)));
+        rig.sink_b.hits[2].load(std::memory_order_relaxed));
     printf(
-        "  corrupt: A=%llu B=%llu\n",
+        "  corrupt: A=%llu B=%llu   unattributed: A=%u B=%u\n",
         static_cast<unsigned long long>(rig.sink_a.corrupt.load(std::memory_order_relaxed)),
-        static_cast<unsigned long long>(rig.sink_b.corrupt.load(std::memory_order_relaxed)));
-    return 0;
+        static_cast<unsigned long long>(rig.sink_b.corrupt.load(std::memory_order_relaxed)),
+        rig.sink_a.hits_other_id(), rig.sink_b.hits_other_id());
+
+    // Arbitration is supposed to serialise, not drop. Anything missing here is a
+    // real loss now that each sender is counted separately.
+    const bool ok = a_from_b1 == exp_b1 && a_from_b2 == exp_b2 && b_from_a >= exp_a
+                 && rig.sink_a.corrupt.load(std::memory_order_relaxed) == 0
+                 && rig.sink_b.corrupt.load(std::memory_order_relaxed) == 0;
+    printf("arbitrate: %s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
 }
 
 void print_usage() {
@@ -1139,11 +1723,32 @@ int main(int argc, char** argv) {
         if (mode == "arbitrate")
             return run_arbitrate(
                 static_cast<uint32_t>(argument(2, 2000)), static_cast<uint32_t>(argument(3, 1000)));
+        if (mode == "canpack")
+            return run_canpack(
+                static_cast<int>(argument(2, 1)), static_cast<int>(argument(3, 1)),
+                static_cast<int>(argument(4, 2)), static_cast<uint32_t>(argument(5, 50)),
+                static_cast<uint32_t>(argument(6, 3)), argument(7, 0) != 0);
+        if (mode == "canloop")
+            return run_canloop(
+                static_cast<int>(argument(2, 1)), static_cast<int>(argument(3, 1)),
+                static_cast<int>(argument(4, 2)), static_cast<uint32_t>(argument(5, 50)));
         if (mode == "uartloop")
             return run_uartloop(
                 static_cast<int>(argument(2, 1)), static_cast<int>(argument(3, 1)),
                 static_cast<int>(argument(4, 2)), static_cast<uint32_t>(argument(5, 0)),
                 static_cast<uint32_t>(argument(6, 20)));
+        if (mode == "gpioedge")
+            return run_gpioedge(
+                static_cast<int>(argument(2, 1)), static_cast<int>(argument(3, 0)),
+                static_cast<int>(argument(4, 1)), static_cast<uint32_t>(argument(5, 10)));
+        if (mode == "pwmloop")
+            return run_pwmloop(
+                static_cast<int>(argument(2, 1)), static_cast<int>(argument(3, 0)),
+                static_cast<int>(argument(4, 1)));
+        if (mode == "gpioloop")
+            return run_gpioloop(
+                static_cast<int>(argument(2, 1)), static_cast<int>(argument(3, 0)),
+                static_cast<int>(argument(4, 1)), static_cast<uint32_t>(argument(5, 6)));
         if (mode == "gpio")
             return run_gpio(static_cast<int>(argument(2, 1)));
         if (mode == "uartbaud")

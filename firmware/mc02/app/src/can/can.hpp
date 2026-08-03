@@ -93,6 +93,17 @@ private:
             HAL_FDCAN_ActivateNotification(hal_can_handle_, FDCAN_IT_BUS_OFF, 0) == ok);
     }
 
+    // Logical index for telemetry, derived from the peripheral instance rather
+    // than stored: the constructor takes no index, and adding one would touch
+    // every call site for a diagnostics-only value.
+    [[nodiscard]] std::size_t diag_index() const {
+        if (hal_can_handle_->Instance == FDCAN1)
+            return 0;
+        if (hal_can_handle_->Instance == FDCAN2)
+            return 1;
+        return 2;
+    }
+
     FDCAN_HandleTypeDef* hal_can_handle_;
 
     struct TransmitMailboxData {

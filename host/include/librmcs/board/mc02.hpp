@@ -70,6 +70,12 @@ public:
         virtual void uart1_receive_callback(const librmcs::data::UartDataView& data) { (void)data; }
         virtual void uart2_receive_callback(const librmcs::data::UartDataView& data) { (void)data; }
         virtual void uart3_receive_callback(const librmcs::data::UartDataView& data) { (void)data; }
+        // Telemetry from a -DLIBRMCS_APP_CAN_DIAG firmware, on the otherwise
+        // unused kUart0 id. Ignored by default so ordinary applications are
+        // unaffected by a diagnostic build.
+        virtual void diagnostic_receive_callback(const librmcs::data::UartDataView& data) {
+            (void)data;
+        }
 
         virtual void gpio_digital_read_result_callback(
             const librmcs::spec::mc02::GpioDescriptor& gpio,
@@ -112,6 +118,13 @@ public:
             case data::DataId::kUart1: uart1_receive_callback(data); return true;
             case data::DataId::kUart2: uart2_receive_callback(data); return true;
             case data::DataId::kUart3: uart3_receive_callback(data); return true;
+            // kUart0 is not a port on this board (its UARTs are kUart1..3 plus
+            // DBUS), so a LIBRMCS_APP_CAN_DIAG firmware uses that free id for
+            // telemetry -- the same convention rmcs_board follows. Accepting it
+            // here matters: returning false makes the deserializer treat the frame
+            // as a protocol error and tear the session down, so a diagnostic build
+            // would kill the link it is meant to be diagnosing.
+            case data::DataId::kUart0: diagnostic_receive_callback(data); return true;
             default: return false;
             }
         }

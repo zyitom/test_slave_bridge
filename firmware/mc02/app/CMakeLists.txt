@@ -65,6 +65,13 @@ target_link_libraries(mc02_app PRIVATE
     tinyusb_app
 )
 
+# Same switch and same default as rmcs_board's: OFF, because it adds counters to
+# the CAN forwarding hot path and occupies DataId::kUart0 on the uplink.
+option(LIBRMCS_APP_CAN_DIAG "Emit CAN telemetry on the kUart0 uplink" OFF)
+if(LIBRMCS_APP_CAN_DIAG)
+    target_compile_definitions(mc02_app PRIVATE LIBRMCS_APP_CAN_DIAG=1)
+endif()
+
 mc02_apply_target_options(
     mc02_app
     "${CMAKE_CURRENT_SOURCE_DIR}/../bsp/linker/STM32H723VGTx_APP.ld"

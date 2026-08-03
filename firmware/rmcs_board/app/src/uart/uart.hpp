@@ -129,6 +129,22 @@ public:
     [[nodiscard]] uint32_t oscr() const { return uart_base_->OSCR; }
     [[nodiscard]] UART_Type* base() const { return uart_base_; }
 
+    // The baudrate the hardware is really running, reconstructed from the divisor
+    // and oversample rate actually programmed -- not the value the host asked for.
+    // That distinction is the whole point: a rejected request leaves the divisor
+    // untouched, so this still reports the old rate and the host can tell.
+    //
+    // OSCR holds the oversample rate, with 0 meaning 32 (the SDK encodes it that
+    // way because the field is 5 bits).
+    [[nodiscard]] uint32_t effective_baudrate() const {
+        const uint32_t osc_field = uart_base_->OSCR & UART_OSCR_OSC_MASK;
+        const uint32_t osc = osc_field ? osc_field : 32U;
+        const uint32_t divisor = uart_divisor_;
+        if (!osc || !divisor) [[unlikely]]
+            return 0;
+        return uart_clock_hz_ / (osc * divisor);
+    }
+
 private:
     // Caller must guarantee the TX DMA is stopped: this sets LCR.DLAB, during
     // which any DMA write intended for THR would hit the divisor latch instead.

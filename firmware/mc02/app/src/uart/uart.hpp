@@ -85,6 +85,26 @@ public:
         return true;
     }
 
+    // The baudrate actually programmed, reconstructed from BRR rather than from
+    // Init.BaudRate: the latter is only what was last requested, and on a rejected
+    // request neither it nor BRR is written, so reading BRR back is what lets the
+    // host tell "switch applied" from "switch refused, old rate still running".
+    [[nodiscard]] uint32_t effective_baudrate() const {
+        const uint32_t kernel_clock_hz = peripheral_clock_hz();
+        const uint32_t brr = hal_uart_handle_->Instance->BRR & 0xFFFFU;
+        if (!kernel_clock_hz || !brr) [[unlikely]]
+            return 0;
+        const uint32_t presc = UARTPrescTable[hal_uart_handle_->Init.ClockPrescaler & 0x0FU];
+        const uint32_t clock = presc ? kernel_clock_hz / presc : kernel_clock_hz;
+        if (hal_uart_handle_->Init.OverSampling == UART_OVERSAMPLING_8) {
+            // Oversampling by 8 stores BRR[3] as zero and the low nibble shifted
+            // right by one, so undo that before dividing.
+            const uint32_t usartdiv = (brr & 0xFFF0U) | ((brr & 0x0007U) << 1U);
+            return usartdiv ? (2U * clock) / usartdiv : 0U;
+        }
+        return clock / brr;
+    }
+
     void handle_downlink(const data::UartDataView& data) {
         const auto size = data.uart_data.size();
         if (!size)

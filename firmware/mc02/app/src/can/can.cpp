@@ -8,6 +8,8 @@
 #include <fdcan.h>
 
 #include "core/include/librmcs/data/datas.hpp"
+#include "firmware/mc02/app/src/diag/can_diag.hpp"
+#include "firmware/mc02/app/src/led/led.hpp"
 #include "firmware/mc02/app/src/usb/helper.hpp"
 
 // Place the CAN forwarding hot path in zero-wait ITCM (copied from FLASH at boot
@@ -48,8 +50,10 @@ void Can::handle_downlink(const data::CanDataView& data) {
             std::memcpy(mailbox.data, data.can_data.data(), data.can_data.size());
     };
 
-    if (!transmit_buffer_.emplace_back_n(construct, 1))
+    if (!transmit_buffer_.emplace_back_n(construct, 1)) {
         led::led->downlink_buffer_full();
+        diag::note_tx_fail(diag_index());
+    }
 }
 
 LIBRMCS_ITCM
@@ -129,9 +133,32 @@ void Can::handle_uplink(data::DataId field_id, core::protocol::Serializer& seria
         std::memcpy(payload.data() + 4, &rdhr, sizeof(uint32_t));
         can_data.can_data = {payload.data(), can_data_length};
 
+        // kBadAlloc means the uplink batch pool was full and this frame did NOT
+        // get serialized. It used to go unchecked while RXF0A below acknowledged
+        // the message anyway, so the frame was dropped with nothing recorded
+        // anywhere -- no counter, no LED, no way for the host to tell a dropped
+        // frame from one that never arrived. On this Full-Speed board (1 ms
+        // frames) that is reachable under ordinary load: with mc02's CAN2<->CAN3
+        // strap, one downlink packet carrying two CAN fields makes each
+        // controller receive both frames, so 2 frames sent become 4 to ship
+        // upstream per round and the pool runs dry. Measured as ~30% of the
+        // frames from whichever CAN field came *second* in the packet silently
+        // vanishing, which looked like a transmit or arbitration fault and is
+        // neither.
+        //
+        // Matches rmcs_board's Can::serialize_uplink, which has always flagged
+        // this. Still acknowledged below either way: retrying from the RX FIFO
+        // would stall the drain loop and cost newer frames too, so a full pool
+        // drops the frame -- the point here is that it stops being silent.
+        const auto uplink_result = serializer.write_can(field_id, can_data);
+        if (uplink_result == core::protocol::Serializer::SerializeResult::kBadAlloc) [[unlikely]] {
+            led::led->uplink_buffer_full();
+            diag::note_uplink_drop(diag_index());
+        } else {
+            diag::note_frame(diag_index());
+        }
         core::utility::assert_always(
-            serializer.write_can(field_id, can_data)
-            != core::protocol::Serializer::SerializeResult::kInvalidArgument);
+            uplink_result != core::protocol::Serializer::SerializeResult::kInvalidArgument);
 
         hal_can_instance->RXF0A = get_index;
     }
@@ -177,19 +204,28 @@ extern "C" LIBRMCS_ITCM void HAL_FDCAN_RxFifo0Callback(
 
     Can* can;
     data::DataId field_id;
+    std::size_t diag_index;
 
     if (hfdcan == &hfdcan1) {
         can = can1.get();
         field_id = data::DataId::kCan1;
+        diag_index = 0;
     } else if (hfdcan == &hfdcan2) {
         can = can2.get();
         field_id = data::DataId::kCan2;
+        diag_index = 1;
     } else if (hfdcan == &hfdcan3) {
         can = can3.get();
         field_id = data::DataId::kCan3;
+        diag_index = 2;
     } else {
         return;
     }
+
+    // Counted per interrupt, not per frame: a frozen entry count next to a
+    // non-empty RX FIFO is what distinguishes "the interrupt stopped being
+    // delivered" from "the controller stopped seeing traffic".
+    diag::note_isr_entry(diag_index);
 
     can->handle_uplink(field_id, usb::get_serializer());
 }

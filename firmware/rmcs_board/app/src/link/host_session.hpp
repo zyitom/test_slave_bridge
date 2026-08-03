@@ -132,6 +132,14 @@ private:
         return false;
     }
 
+    // NOTE: a rejected baudrate cannot be reported to the host through the return
+    // value -- it means "this field id was recognised", not "the operation
+    // succeeded". Echoing the config field back on the uplink does NOT work
+    // either: UartConfig is a downlink-only channel by contract, and the host's
+    // handler treats an uplink one as a routing error, fails the deserializer and
+    // kills the link (measured: UART went from PASS to 0/320). Reporting it needs
+    // a NEW uplink field, i.e. a real protocol extension. See
+    // rmcs_board/AGENTS.md "已知缺口".
     bool uart_config_deserialized_callback(
         core::protocol::FieldId id, const data::UartConfigView& data) override {
         if (!session_established_)
