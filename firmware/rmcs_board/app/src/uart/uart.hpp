@@ -76,6 +76,19 @@ public:
         // Clearing it here covers both outcomes.
         uart_base_->LCR &= ~UART_LCR_DLAB_MASK;
 
+        // Rejected: the divisor was left untouched, so the port is still running
+        // at the old rate and the queued bytes are still valid for it. Skipping
+        // the FIFO reset keeps them, which matches the SDK's own LIN sample --
+        // it returns before its uart_reset_rx_fifo() on this path rather than
+        // discarding data over a request that changed nothing.
+        //
+        // 80 MHz cannot represent every rate inside the SDK's 3% tolerance, and
+        // reporting success here would tell the host a switch had happened when
+        // it had not -- the one failure mode that makes a peer rate mismatch look
+        // like a wiring or hardware fault.
+        if (status != status_success) [[unlikely]]
+            return false;
+
         // The FIFO still holds whatever the aborted DMA had already pushed.
         // Those bytes predate the new divisor, so shifting them out now would
         // put a burst of corrupt characters on the line at the new rate; the
@@ -84,14 +97,7 @@ public:
         uart_reset_tx_fifo(uart_base_);
 
         snapshot_divisor();
-
-        // Report the solver's verdict rather than "the request was well-formed".
-        // 80 MHz cannot represent every rate within the SDK's 3% tolerance, and
-        // on rejection the divisor is unchanged -- the port keeps running at the
-        // old rate. Returning true there told the host a switch had happened
-        // when it had not, which is the one failure mode that makes a peer
-        // mismatch look like a wiring or hardware fault.
-        return status == status_success;
+        return true;
     }
 
     void handle_downlink(const data::UartDataView& data) {

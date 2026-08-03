@@ -244,6 +244,22 @@ HPM SDK **全库没有任何读回 `DLL`/`DLM` 的代码**，也没有 `uart_get
 **带着 DLAB=1 直接 return**，不清标志位（`drivers/src/hpm_uart_drv.c:222-227`）。
 所以调用方必须无条件自己清一次 DLAB，不能只在成功分支清。
 
+`uart_set_baudrate()` **是有返回值的**（`status_success` /
+`status_uart_no_suitable_baudrate_parameter_found`），上游样例也确实检查它，而且
+**失败时提前 return、跳过后面的 FIFO 复位**：
+
+```c
+hpm_stat_t stat = uart_set_baudrate(TEST_UART, lin_baudrate, uart_source_clk);
+if (status_success == stat) { ... } else { printf("not supports"); return; }
+uart_reset_rx_fifo(TEST_UART);   /* 只有成功才走到这里 */
+```
+
+我们照这个形状做：被拒时分频器没动、旧波特率仍然有效、队列里的字节对它仍然合法，
+所以**跳过 FIFO 复位**（不为一次什么都没改的请求丢数据），直接返回 false。
+这也和仓库内 `ch32_board` 的既成惯例一致——它对 BRR 范围做检查后同样返回 false，
+注释讲得最直白：*"this is host-supplied data, so a bad value must be reported,
+never asserted on"*。
+
 ### 已知缺口：配置被拒绝，主机看不到
 
 `handle_config()` 现在返回求解器的真实结果（80 MHz 表示不出的波特率会被拒，

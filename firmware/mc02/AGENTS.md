@@ -47,10 +47,19 @@ cmake --build firmware/mc02/build --target mc02_app mc02_bootloader
 `kernel_clock_hz == 0` 提前返回，**`BRR` 一次都没写过**，主机发来的运行时波特率
 请求被静默忽略，端口永远停在 CubeMX 的 115200。
 
-**正确做法**（已改成这样）：照 HAL 自己 `UART_SetConfig()` 的写法，switch
-`__HAL_RCC_GET_USART16_SOURCE()` / `__HAL_RCC_GET_USART234578_SOURCE()`，
-逐个分支取 `HAL_RCC_GetPCLK1Freq()` / `PCLK2` / HSI（**要按 `RCC_FLAG_HSIDIV`
-右移**）/ CSI / LSE / PLL2Q / PLL3Q。
+**正确做法**（已改成这样）：用 HAL 自己的 `UART_GETCLOCKSOURCE(handle, src)` 宏——
+它按外设实例分派，正是 `UART_SetConfig()` 在 init 时算 `BRR` 用的同一个宏——
+再按 `UART_CLOCKSOURCE_*` 取 `HAL_RCC_GetPCLK1Freq()` / `PCLK2` / HSI（**要按
+`RCC_FLAG_HSIDIV` 右移**）/ CSI / LSE / PLL2Q / PLL3Q。不要自己手写"哪个口属于
+哪个时钟组"的判断，那是在重复这个宏已经做对的事。
+
+### 为什么 c_board 两行就够、这块板不行
+
+c_board 同样的功能只用两行（`HAL_RCC_GetPCLKxFreq()`，见
+`firmware/c_board/app/src/uart/uart.hpp` 的 `peripheral_clock_hz()`），**那在 F407
+上是对的**：STM32F407 的 UART 直接挂在自己的 APB 总线上，总线频率就是内核时钟，
+连 `Init.ClockPrescaler` 字段都不存在。STM32H7 在中间插了**每组可选时钟源 + 预分频器**，
+所以必须先解析时钟源，频率才有意义。**别看着 c_board 简单就照抄过来。**
 
 **为什么很难发现**：`UART7 <-> UART10` 自环测试在 115200 到 2000000 **全部 PASS**。
 自环把两端同时设成目标值，配置没生效时两端**一起**留在 115200，于是波特率一致、

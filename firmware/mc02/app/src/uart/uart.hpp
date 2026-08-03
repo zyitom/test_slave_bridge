@@ -180,78 +180,57 @@ private:
             == HAL_OK;
     }
 
-    // STM32H723 groups UART kernel clocks: USART1/6/9/10 share one selectable
-    // source, UART2/3/4/5/7/8 another. This board uses USART1, USART10, UART7
-    // and UART5.
+    // Kernel clock feeding this UART's baudrate divider.
     //
-    // Resolved from the RCC source-selection register rather than via
-    // HAL_RCCEx_GetPeriphCLKFreq(): that function's if/else chain in this HAL
-    // version covers SAI/SPI/ADC/SDMMC/FDCAN but has NO branch for either UART
-    // group, so both RCC_PERIPHCLK_USART16910 and RCC_PERIPHCLK_USART234578 fall
-    // through to its final `else { frequency = 0; }` and return 0. That made
-    // handle_config() take its kernel_clock_hz == 0 early-out and return false
-    // without ever writing BRR, so every runtime baudrate request was silently
-    // ignored and the port stayed at the CubeMX compile-time 115200.
+    // c_board does the same job in two lines with HAL_RCC_GetPCLKxFreq(), and
+    // that is correct there: on STM32F407 a UART is clocked straight off its APB
+    // bus, so the bus frequency IS the kernel clock. STM32H7 inserts a
+    // selectable clock source per UART group plus Init.ClockPrescaler, so the
+    // source has to be resolved before the frequency means anything.
     //
-    // It was invisible to a same-board UART7<->UART10 loopback test: both ends
-    // ignored the switch identically, so the loop still passed at every
-    // requested rate while actually running at 115200 the whole time. Only a
-    // cross-board test against an end that *did* switch exposed it -- 8 bytes
-    // sent arrived as 64 at a peer running 8x faster.
+    // Resolved with the HAL's own UART_GETCLOCKSOURCE, which dispatches on the
+    // peripheral instance -- the same macro UART_SetConfig() uses to compute BRR
+    // at init. Deliberately NOT HAL_RCCEx_GetPeriphCLKFreq(): that function's
+    // if/else chain in this HAL version covers SAI/SPI/ADC/SDMMC/FDCAN but has
+    // NO branch for either UART group, so RCC_PERIPHCLK_USART16910 and
+    // RCC_PERIPHCLK_USART234578 both fall through to its final
+    // `else { frequency = 0; }` and return 0. Those macros do exist, so nothing
+    // warns at compile time. handle_config() then took its kernel_clock_hz == 0
+    // early-out and returned without ever writing BRR: every runtime baudrate
+    // request was silently ignored and the port stayed at the CubeMX 115200.
     //
-    // This mirrors UART_SetConfig()'s own switch on UART_GETCLOCKSOURCE.
+    // Invisible to a same-board UART7<->UART10 loopback: both ends ignored the
+    // switch identically, so the loop passed at every requested rate while
+    // actually running at 115200 throughout. Only a cross-board test against an
+    // end that did switch exposed it.
     [[nodiscard]] uint32_t peripheral_clock_hz() const {
-        const bool group_16910 = hal_uart_handle_ == &huart1 || hal_uart_handle_ == &huart10;
-        const uint32_t source =
-            group_16910 ? __HAL_RCC_GET_USART16_SOURCE() : __HAL_RCC_GET_USART234578_SOURCE();
+        UART_ClockSourceTypeDef clocksource = UART_CLOCKSOURCE_UNDEFINED;
+        UART_GETCLOCKSOURCE(hal_uart_handle_, clocksource);
 
-        // The two groups' selection fields share encodings only by position, so
-        // each is compared against its own group's constants.
-        if (group_16910) {
-            switch (source) {
-            case RCC_USART16CLKSOURCE_D2PCLK2: return HAL_RCC_GetPCLK2Freq();
-            case RCC_USART16CLKSOURCE_HSI: return hsi_clock_hz();
-            case RCC_USART16CLKSOURCE_CSI: return CSI_VALUE;
-            case RCC_USART16CLKSOURCE_LSE: return LSE_VALUE;
-            case RCC_USART16CLKSOURCE_PLL2: {
-                PLL2_ClocksTypeDef pll2{};
-                HAL_RCCEx_GetPLL2ClockFreq(&pll2);
-                return pll2.PLL2_Q_Frequency;
-            }
-            case RCC_USART16CLKSOURCE_PLL3: {
-                PLL3_ClocksTypeDef pll3{};
-                HAL_RCCEx_GetPLL3ClockFreq(&pll3);
-                return pll3.PLL3_Q_Frequency;
-            }
-            default: return 0;
-            }
-        }
-
-        switch (source) {
-        case RCC_USART234578CLKSOURCE_D2PCLK1: return HAL_RCC_GetPCLK1Freq();
-        case RCC_USART234578CLKSOURCE_HSI: return hsi_clock_hz();
-        case RCC_USART234578CLKSOURCE_CSI: return CSI_VALUE;
-        case RCC_USART234578CLKSOURCE_LSE: return LSE_VALUE;
-        case RCC_USART234578CLKSOURCE_PLL2: {
+        switch (clocksource) {
+        case UART_CLOCKSOURCE_D2PCLK1: return HAL_RCC_GetPCLK1Freq();
+        case UART_CLOCKSOURCE_D2PCLK2: return HAL_RCC_GetPCLK2Freq();
+        case UART_CLOCKSOURCE_CSI: return CSI_VALUE;
+        case UART_CLOCKSOURCE_LSE: return LSE_VALUE;
+        case UART_CLOCKSOURCE_HSI:
+            // HSI reaches the UARTs through its divider, so raw HSI_VALUE is
+            // only right when that divider is 1. UART_SetConfig shifts the same
+            // way. UART7/UART10 select HSI in the .ioc, so this path is live.
+            if (__HAL_RCC_GET_FLAG(RCC_FLAG_HSIDIV) != 0U)
+                return static_cast<uint32_t>(HSI_VALUE >> (__HAL_RCC_GET_HSI_DIVIDER() >> 3U));
+            return static_cast<uint32_t>(HSI_VALUE);
+        case UART_CLOCKSOURCE_PLL2: {
             PLL2_ClocksTypeDef pll2{};
             HAL_RCCEx_GetPLL2ClockFreq(&pll2);
             return pll2.PLL2_Q_Frequency;
         }
-        case RCC_USART234578CLKSOURCE_PLL3: {
+        case UART_CLOCKSOURCE_PLL3: {
             PLL3_ClocksTypeDef pll3{};
             HAL_RCCEx_GetPLL3ClockFreq(&pll3);
             return pll3.PLL3_Q_Frequency;
         }
         default: return 0;
         }
-    }
-
-    // HSI feeds the UARTs through its divider, so the raw HSI_VALUE is only
-    // correct when the divider is 1. UART_SetConfig applies the same shift.
-    [[nodiscard]] static uint32_t hsi_clock_hz() {
-        if (__HAL_RCC_GET_FLAG(RCC_FLAG_HSIDIV) != 0U)
-            return static_cast<uint32_t>(HSI_VALUE >> (__HAL_RCC_GET_HSI_DIVIDER() >> 3U));
-        return static_cast<uint32_t>(HSI_VALUE);
     }
 
     data::DataId data_id_;
