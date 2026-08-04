@@ -126,13 +126,27 @@ fi
 
 echo "== Kernel boot parameters (cannot be changed at runtime) =="
 CMDLINE="$(cat /proc/cmdline)"
+# Absence is a deliberate choice here, not a misconfiguration. MEASURED
+# 2026-08-04 (HOST_TUNING.md 1.3, 2x2 interleaved, 3 rounds x 20000 samples):
+# isolating the event thread's physical P-core buys min -1us, p99 -0.8us,
+# p99.9 -2..4us on a ~100us board path of which 50.3us is fixed CAN wire time.
+# That is 1-3%, paid for with a whole physical P-core (2 of 12 P threads).
+# On a machine that also runs compute the trade is usually not worth it, so this
+# reports the state and the price instead of demanding one answer.
+MISSING_ISOLATION=""
 for want in isolcpus nohz_full rcu_nocbs; do
     if grep -q "$want=" <<<"$CMDLINE"; then
         ok "$want present: $(grep -o "${want}=[^ ]*" <<<"$CMDLINE")"
     else
-        warn "$want missing -- add it to GRUB_CMDLINE_LINUX and reboot"
+        MISSING_ISOLATION+="${MISSING_ISOLATION:+ }$want"
     fi
 done
+if [[ -n "$MISSING_ISOLATION" ]]; then
+    info "not set: $MISSING_ISOLATION -- fine, that is this machine's choice."
+    info "  Isolating the event thread's P-core measured min -1us, p99 -0.8us,"
+    info "  p99.9 -2..4us; the price is a whole physical P-core. See 1.3."
+    info "  PINNING the event thread to a P-core still matters and is not this."
+fi
 if uname -r | grep -qi "realtime\|rt"; then
     ok "PREEMPT_RT kernel: $(uname -r)"
 else
@@ -179,6 +193,63 @@ if [[ -r /sys/devices/cpu_core/cpus && -r /sys/devices/cpu_atom/cpus ]]; then
             warn "   thread; isolating both measured ~5 us of p99, HOST_TUNING.md 1.3)"
         else
             ok "isolated cores are whole physical cores (SMT siblings included)"
+        fi
+
+        # `irqaffinity=` on the cmdline only sets the BOOT-TIME default. Multi-queue
+        # drivers (nvme, iwlwifi, igc, ...) call irq_set_affinity_hint at runtime and
+        # spread one queue per CPU, which lands them right back on the isolated cores.
+        # MEASURED on this machine 2026-08-04: with isolcpus=6,7 and
+        # irqaffinity=0-5,8-21 set, nvme0q7+iwlwifi:queue_7 were still pinned to cpu6
+        # and nvme0q8+iwlwifi:queue_8 to cpu7 -- i.e. disk and wifi interrupts on the
+        # USB event thread's core, the two burstiest sources on a laptop.
+        # Housekeeping target = every P-core that is NOT isolated. Building this by
+        # trimming the P-core range textually would leave the isolated cores in it,
+        # which moves an IRQ onto exactly the core it had to leave.
+        HOUSEKEEPING=""
+        for cpu in $(expand_cpu_list "$P_CORES"); do
+            grep -qw "$cpu" <<<"$ISOL_LIST" && continue
+            HOUSEKEEPING+="${HOUSEKEEPING:+,}$cpu"
+        done
+        [[ -n "$HOUSEKEEPING" ]] || HOUSEKEEPING="0"
+        INTRUDERS="" MANAGED=""
+        for dir in /proc/irq/[0-9]*; do
+            [[ -r "$dir/smp_affinity_list" ]] || continue
+            irq="${dir##*/}"
+            aff="$(cat "$dir/smp_affinity_list" 2>/dev/null)" || continue
+            hit=""
+            for cpu in $(expand_cpu_list "$aff"); do
+                grep -qw "$cpu" <<<"$ISOL_LIST" && hit=1
+            done
+            [[ -n "$hit" ]] || continue
+            name="$(find "$dir" -maxdepth 1 -mindepth 1 -printf '%f\n' 2>/dev/null \
+                | grep -vE '^(affinity_hint|effective_affinity|effective_affinity_list|node|smp_affinity|smp_affinity_list|spurious)$' \
+                | head -1)"
+            if [[ "$CHECK_ONLY" == "1" ]]; then
+                INTRUDERS+="$irq(${name:-?}) "
+            elif echo "$HOUSEKEEPING" > "$dir/smp_affinity_list" 2>/dev/null; then
+                INTRUDERS+="$irq(${name:-?}) "
+            else
+                # blk-mq managed interrupts (nvme queues) refuse manual reassignment:
+                # the kernel owns one queue per CPU and there is no way to evict them
+                # short of reducing the queue count at probe time.
+                MANAGED+="$irq(${name:-?}) "
+            fi
+        done
+        if [[ -n "$INTRUDERS" ]]; then
+            if [[ "$CHECK_ONLY" == "1" ]]; then
+                warn "IRQs sitting on isolated cores: $INTRUDERS"
+                warn "  (run without --check to move them to $HOUSEKEEPING)"
+            else
+                ok "moved IRQs off the isolated cores: $INTRUDERS"
+            fi
+        fi
+        if [[ -n "$MANAGED" ]]; then
+            warn "kernel-managed IRQs stuck on isolated cores: $MANAGED"
+            warn "  (blk-mq per-CPU queues; smp_affinity is read-only for these."
+            warn "   Only fewer queues at probe time would move them.)"
+        fi
+        if [[ -z "$INTRUDERS$MANAGED" ]]; then
+            ok "no IRQ is bound to an isolated core"
         fi
     fi
 fi
@@ -322,6 +393,45 @@ for ctrl in $(tr ' ' '\n' <<<"$BOARD_CONTROLLERS" | grep -v '^$' | sort -u); do
             chrt -f -p 90 "$TH_PID" 2>/dev/null \
                 && ok "$ctrl: $COUNT boards share IRQ $n, rtprio $TH_PRIO -> 90" \
                 || warn "$ctrl: could not raise IRQ $n priority"
+        fi
+
+        # WHICH core that thread lands on matters more than its priority.
+        # MEASURED 2026-08-04, A/B/A on two 5321 DualCan, 20000 samples each:
+        # IRQ thread on an E-core gives min 83.2 / p50 121.4 / avg 120.7 us; the
+        # same run with it on a P-core gives min 76.3-77.0 / p50 100.3-100.4 /
+        # avg 102.1-103.4, and moving it back reproduces the loss. That is ~21 us
+        # of p50 -- larger than the governor, and nobody had checked it because
+        # section 2 only ever tested "same core as the event thread" (harmful).
+        # With no irqaffinity= on the cmdline the kernel is free to pick an
+        # E-core, which is exactly what it did here.
+        # Detection only needs to READ; --check is routinely run unprivileged, so
+        # gating the whole block on writability silently hid the diagnosis.
+        if [[ -r /sys/devices/cpu_core/cpus && -r "/proc/irq/$n/smp_affinity_list" ]]; then
+            IRQ_AFF="$(cat "/proc/irq/$n/smp_affinity_list")"
+            # effective_affinity_list, not ps's psr. An MSI vector can target only
+            # ONE APIC id, so writing a SET to smp_affinity_list makes the kernel
+            # elect one CPU from it -- that election is what effective_affinity
+            # reports, and it is the core that actually takes the interrupt.
+            # psr only says where the thread last ran, so right after an affinity
+            # change it still shows the old core until the thread is next woken;
+            # trusting it reports success while the interrupt is still on an E-core.
+            IRQ_CORE="$(cat "/proc/irq/$n/effective_affinity_list" 2>/dev/null)"
+            [[ "$IRQ_CORE" =~ ^[0-9]+$ ]] || IRQ_CORE="$(ps -eLo psr,comm --no-headers 2>/dev/null \
+                | awk -v p="irq/$n-xhci" '$2 ~ p {print $1; exit}')"
+            P_LIST=" $(expand_cpu_list "$(cat /sys/devices/cpu_core/cpus)") "
+            if [[ -n "$IRQ_CORE" ]] && ! grep -qw "$IRQ_CORE" <<<"$P_LIST"; then
+                if [[ "$CHECK_ONLY" == "1" ]]; then
+                    warn "  IRQ $n thread runs on cpu$IRQ_CORE (an E-core) -- costs ~21 us of p50"
+                    warn "  (run without --check to move it to a P-core)"
+                elif echo "$(cat /sys/devices/cpu_core/cpus)" \
+                    > "/proc/irq/$n/smp_affinity_list" 2>/dev/null; then
+                    ok "  IRQ $n thread was on E-core cpu$IRQ_CORE, affinity $IRQ_AFF -> P-cores"
+                else
+                    warn "  IRQ $n thread on E-core cpu$IRQ_CORE and affinity is not writable"
+                fi
+            elif [[ -n "$IRQ_CORE" ]]; then
+                ok "  IRQ $n thread is on P-core cpu$IRQ_CORE"
+            fi
         fi
         break
     done

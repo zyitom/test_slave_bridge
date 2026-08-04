@@ -5,6 +5,13 @@ exclude:
   - sec_core_img.c
   # Beckhoff-SSC-generated sources (license-gated, not in the repository).
   - SSC
+  # host/src/transport/igh/reference/: standalone programs kept as proof of the
+  # ecrt call sequences, compiled by hand against the IgH master headers. CMake
+  # already drops them (host/CMakeLists.txt: FILTER ... EXCLUDE REGEX
+  # "/transport/igh/reference/"), so linting them checked code the build never
+  # produces -- 238 of the 594 clang-tidy findings came from here, including
+  # every cert-err33-c. Only one directory in the tree carries this name.
+  - reference
 
 host:
   cmake: host/CMakeLists.txt

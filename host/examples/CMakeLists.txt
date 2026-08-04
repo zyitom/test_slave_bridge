@@ -41,6 +41,12 @@ add_executable(usb_ep0_rtt usb_ep0_rtt.cpp)
 target_link_libraries(usb_ep0_rtt PRIVATE librmcs-sdk)
 target_include_directories(usb_ep0_rtt SYSTEM PRIVATE ${LIBUSB_INCLUDE_DIRS})
 
+# Splits board-level one-way latency into fixed floor vs per-frame pipeline step,
+# by sending a burst of CAN frames inside a single USB packet. Answers whether
+# the firmware sits on the critical path or is hidden behind the CAN wire.
+add_executable(can_path_split can_path_split.cpp)
+target_link_libraries(can_path_split PRIVATE librmcs-sdk)
+
 # USB bulk OUT packet-rate ceiling: sends each record in its own packet so the
 # packet rate can be raised without raising the per-bus CAN frame rate. Separates
 # the USB transaction limit from the CAN wire limit that caps dual_board_test.

@@ -36,21 +36,18 @@ public:
     static constexpr size_t kSessionAckRetryCount = 5;
     static constexpr auto kSessionRefreshInterval = std::chrono::milliseconds{250};
 
-    explicit Impl(
-        std::unique_ptr<transport::Transport> transport, data::DataCallback& callback)
+    explicit Impl(std::unique_ptr<transport::Transport> transport, data::DataCallback& callback)
         : callback_(callback)
         , deserializer_(*this)
         , expected_session_nonce_(generate_session_nonce())
         , transport_(std::move(transport)) {
         // USB bulk completions and EtherCAT callbacks are both arbitrary
         // slices of one reliable byte stream, not protocol-field boundaries.
-        transport_->receive([this](std::span<const std::byte> buffer) {
-            deserializer_.feed(buffer);
+        transport_->receive(
+            [this](std::span<const std::byte> buffer) { deserializer_.feed(buffer); });
+        transport_->receive_cyclic_can([this](data::DataId id, const data::CanDataView& data) {
+            (void)can_deserialized_callback(id, data);
         });
-        transport_->receive_cyclic_can(
-            [this](data::DataId id, const data::CanDataView& data) {
-                (void)can_deserialized_callback(id, data);
-            });
         transport_->on_link_restart([this] {
             // A new ARQ generation cannot continue a partially received
             // protocol field. The callback runs on the transport receive
@@ -78,9 +75,18 @@ public:
         transport_.reset();
     }
 
-    PacketBuilder start_transmit(bool cyclic) {
-        return PacketBuilder{transport_.get(), cyclic};
-    }
+    // The constructor hands three `this`-capturing lambdas to transport_, and the
+    // destructor joins a thread and releases that transport. Copying or moving an
+    // Impl would leave those registered callbacks pointing at the old object and
+    // duplicate ownership of both the thread and the transport. Nothing does so
+    // today -- Handler holds Impl by raw pointer and moves the pointer, not the
+    // object -- so deleting these turns a latent footgun into a compile error.
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+    Impl(Impl&&) = delete;
+    Impl& operator=(Impl&&) = delete;
+
+    PacketBuilder start_transmit(bool cyclic) { return PacketBuilder{transport_.get(), cyclic}; }
 
     bool can_deserialized_callback(
         core::protocol::FieldId id, const data::CanDataView& data) override {
@@ -397,7 +403,8 @@ struct PacketBuilderImpl {
         return process_result(serializer_.write_gpio_analog_value(channel_index, view));
     }
 
-    [[nodiscard]] bool write_imu_accelerometer(const data::ImuAccelerometerDataView& view) noexcept {
+    [[nodiscard]] bool
+        write_imu_accelerometer(const data::ImuAccelerometerDataView& view) noexcept {
         return process_result(serializer_.write_imu_accelerometer(view));
     }
 
