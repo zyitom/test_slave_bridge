@@ -419,18 +419,27 @@ for ctrl in $(tr ' ' '\n' <<<"$BOARD_CONTROLLERS" | grep -v '^$' | sort -u); do
             [[ "$IRQ_CORE" =~ ^[0-9]+$ ]] || IRQ_CORE="$(ps -eLo psr,comm --no-headers 2>/dev/null \
                 | awk -v p="irq/$n-xhci" '$2 ~ p {print $1; exit}')"
             P_LIST=" $(expand_cpu_list "$(cat /sys/devices/cpu_core/cpus)") "
+            # cpu_atom lumps two very different tiers together. On this Meteor Lake
+            # the E-cores split into 3800 MHz compute-tile cores and 2500 MHz LP
+            # cores on the SoC tile, and only the latter really hurts: MEASURED
+            # p50 100.4 (P, 4500) / 100.8..119.2 (E, 3800, right on the threshold)
+            # / 121.3 (LP E, 2500). Report the clock so the diagnosis is not just
+            # "an E-core" when the tiers differ by 44%.
+            IRQ_MHZ="$(($(cat "/sys/devices/system/cpu/cpu$IRQ_CORE/cpufreq/cpuinfo_max_freq" \
+                2>/dev/null || echo 0) / 1000))"
+            [[ "$IRQ_MHZ" == "0" ]] && IRQ_MHZ="?"
             if [[ -n "$IRQ_CORE" ]] && ! grep -qw "$IRQ_CORE" <<<"$P_LIST"; then
                 if [[ "$CHECK_ONLY" == "1" ]]; then
-                    warn "  IRQ $n thread runs on cpu$IRQ_CORE (an E-core) -- costs ~21 us of p50"
+                    warn "  IRQ $n thread runs on cpu$IRQ_CORE (E-core, ${IRQ_MHZ} MHz max) -- up to ~21 us of p50"
                     warn "  (run without --check to move it to a P-core)"
                 elif echo "$(cat /sys/devices/cpu_core/cpus)" \
                     > "/proc/irq/$n/smp_affinity_list" 2>/dev/null; then
-                    ok "  IRQ $n thread was on E-core cpu$IRQ_CORE, affinity $IRQ_AFF -> P-cores"
+                    ok "  IRQ $n thread was on E-core cpu$IRQ_CORE (${IRQ_MHZ} MHz), affinity $IRQ_AFF -> P-cores"
                 else
                     warn "  IRQ $n thread on E-core cpu$IRQ_CORE and affinity is not writable"
                 fi
             elif [[ -n "$IRQ_CORE" ]]; then
-                ok "  IRQ $n thread is on P-core cpu$IRQ_CORE"
+                ok "  IRQ $n thread is on P-core cpu$IRQ_CORE (${IRQ_MHZ} MHz)"
             fi
         fi
         break
