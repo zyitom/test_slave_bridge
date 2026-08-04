@@ -364,8 +364,17 @@ void Can::handle_interrupt_flags(uint32_t flags) {
             if (fault == led::CanFault::kNone)
                 fault = classify_can_fault(mcan_get_data_phase_last_error_code(can_base_));
         }
-        const uint8_t can_idx = (data_id_ == data::DataId::kCan0) ? 0U : 1U;
-        led::led->report_can_fault(can_idx, fault);
+        // Index the indicator by this controller's position in board::kCanPorts,
+        // which is what report_can_fault's per-controller state is keyed on.
+        // The previous two-way "CAN0 or else 1" test collapses every controller
+        // above CAN1 onto indicator 1, so on a board with more than two CAN
+        // ports plus a matching indicator table, a CAN2/CAN3 fault would light
+        // CAN1's LED and overwrite CAN1's own state. Latent rather than
+        // observable today -- the only >2-CAN board (hpm6e8y) ships an empty
+        // kCanIndicatorPins, and report_can_fault() bounds-checks against it, so
+        // the bad index was discarded there. Deriving it correctly keeps that
+        // from becoming a real misreport the moment such a board gains LEDs.
+        led::led->report_can_fault(static_cast<uint8_t>(can_index()), fault);
     }
 }
 

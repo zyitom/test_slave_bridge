@@ -3,45 +3,56 @@
 # Host-side latency tuning for the librmcs transports (USB bulk and EtherCAT/IgH).
 #
 # WHY THIS EXISTS: every setting below is runtime-only and reverts on reboot, and
-# two of them have a mandatory ORDER that is easy to get wrong (the NIC must be
-# tuned while the EtherCAT master does NOT hold it). Doing this by hand from a
-# doc reliably produces a half-applied machine, and a half-applied machine
-# produces latency numbers that look like transport problems.
+# the machine's own facts (which xHCI controller the board landed on, which IRQ
+# serves it, whether the isolated core is a P-core or an E-core) change without
+# anyone editing a doc. So this script DISCOVERS rather than hardcodes, and
+# reports what it found even when it changes nothing.
 #
-# WHAT IS MEASURED AND WHAT IS NOT -- read before believing any of it
-# (full data in firmware/rmcs_board/ecat/DESIGN.md sections 3.5 / 3.6):
+# WHAT IS MEASURED AND WHAT IS NOT -- read before believing any of it.
+# Host-path numbers below come from host/examples/usb_ep0_rtt.cpp (3000 samples,
+# 1 ms gap, SCHED_FIFO 80, pinned); board+USB RTT numbers come from
+# can_loopback_latency. Full write-up and the negative results in HOST_TUNING.md.
 #
-#   PM QoS / C-states   MEASURED, LARGE. USB p99.9 188.2 -> 158.9 us,
-#                       max 216.8 -> 160.7 us. USB blocks in libusb_handle_events
-#                       so its core sleeps; EtherCAT busy-polls and never does,
-#                       which is why only USB cares. NOT applied by this script:
-#                       it needs a process to hold the fd open (see --pmqos).
+#   CPU frequency       MEASURED, LARGEST SINGLE EFFECT. p50 77.5 -> 67.5 us,
+#                       p99 ~100 -> ~82 us, reproduced over 3 rounds. A
+#                       SCHED_FIFO thread that SLEEPS between transfers does NOT
+#                       hold the clock up: under powersave the core sat at
+#                       1.8-2.3 GHz and only reached 4.1 GHz once something
+#                       stopped it from idling. This supersedes the older
+#                       "governor: measured, no effect" note -- see HOST_TUNING.md
+#                       section 4 for why the CAN-loopback test could not see it.
+#   PM QoS / C-states   MEASURED, AND IT IS THE SAME EFFECT AS THE GOVERNOR, NOT
+#                       AN ADDITIONAL ONE. pm_qos=0 gives p50 68.3; governor
+#                       alone gives 67.5; BOTH TOGETHER give 68.3 -- not additive,
+#                       because both simply keep the core clocked up. Holding
+#                       /dev/cpu_dma_latency at 0 costs power machine-wide, so
+#                       prefer the governor and add --pmqos only for the last
+#                       ~2 us at p99. NOT applied by this script: it needs a
+#                       process to hold the fd open (see --pmqos).
+#   Per-core C-state    MEASURED, DOES NOT WORK. Disabling C6/C10 on the
+#     disable           application core alone changed nothing (p50 77.8 vs 77.4
+#                       baseline). Disabling them on ALL cores while leaving C1E
+#                       enabled bought only a small tail improvement (p99 ~94 vs
+#                       ~100) and NO p50 change -- C1E alone is enough to let the
+#                       clock fall. Do not replace --pmqos with this.
+#   cpuidle governor    MEASURED, NO EFFECT. menu -> teo moved nothing outside
+#     menu -> teo       noise. Reported below, not changed.
+#   Bluetooth on the    MEASURED, NO EFFECT on the host path. btusb shares the
+#     board's root hub  board's root hub and does inject periodic split
+#                       transactions, but unbinding it moved nothing. Reported
+#                       below so the neighbour is at least visible.
 #   RT throttling off   Assumed necessary, inherited from earlier work (a ~50 ms
 #                       max latency was traced to it). NOT re-measured here.
-#   governor            MEASURED, NO EFFECT (p50/p99/max all within noise). The
-#                       SCHED_FIFO thread already holds the frequency up. Applied
-#                       anyway because it is free and removes a variable.
-#   NIC rx-usecs=0      ALMOST CERTAINLY A NO-OP HERE. Observed: set it to 0,
-#                       start the master, stop the master, read it back -- it is
-#                       3 again. ec_igc re-initializes the hardware when it takes
-#                       the NIC, so the ethtool value never reaches the EtherCAT
-#                       data path. Kept only because a future switch to
-#                       ec_generic (which does go through the kernel stack) would
-#                       make coalescing matter for real. Do NOT treat "rx-usecs
-#                       is 0" as evidence the NIC has been tuned.
-#   NIC EEE off         Already off on this machine; the script only verifies.
-#   xHCI IRQ thread     MEASURED, NO EFFECT. Raising irq/N-xhci_hcd from the RT
-#     RT priority       kernel default FIFO 50 to FIFO 90 changed nothing across
-#                       3 runs: it sits on a different core from the libusb event
-#                       thread, so the two never compete. Left at the default.
-#   USB root hub        Set to power/control=on. NOT measured as a delta -- the
-#     power/control     hub's runtime_status was already 'active', so it was never
-#                       suspending. Applied to close off a class of surprise.
+#   xHCI IRQ thread     MEASURED, NO EFFECT WITH ONE BOARD; REQUIRED WITH TWO.
+#     RT priority       See HOST_TUNING.md 4.3: two boards on one controller share
+#                       one IRQ thread, and at the RT default of FIFO 50 both
+#                       boards' max latency goes to ~1 ms. This script prints the
+#                       discovered IRQ and its priority; it does not raise it,
+#                       because for the single-board case that is a no-op.
+#   USB power/control   Set to on. NOT measured as a delta -- runtime_status was
+#                       already 'active', so nothing was ever suspending. Applied
+#                       to close off a class of surprise.
 #   irqbalance          Must stay OFF (it would migrate the xHCI IRQ at runtime).
-#                       Already inactive here; the script only verifies.
-#
-# The full write-up, including why USB and EtherCAT react differently to host
-# tuning at all, is in HOST_TUNING.md at the repository root.
 #
 # EXPLICITLY DISPROVEN -- do NOT add these back:
 #   Pinning the xHCI IRQ to the same core as the libusb event thread:
@@ -58,7 +69,7 @@
 #
 set -euo pipefail
 
-ETHERCAT_IF="${ETHERCAT_IF:-enp2s0}"
+USB_VENDOR_ID="a11c"   # every librmcs board; the product id differs per board
 CHECK_ONLY=0
 PMQOS_ONLY=0
 case "${1:-}" in
@@ -77,16 +88,33 @@ ok()   { printf '  \033[32m[ok]\033[0m    %s\n' "$1"; }
 warn() { printf '  \033[33m[warn]\033[0m  %s\n' "$1"; }
 info() { printf '  [info]  %s\n' "$1"; }
 
+# Expand a kernel CPU list ("6,7" / "12-21" / "0-5,8") into separate numbers.
+expand_cpu_list() {
+    local out="" part parts
+    IFS=',' read -ra parts <<<"$1"
+    for part in "${parts[@]}"; do
+        if [[ "$part" == *-* ]]; then
+            out+=" $(seq "${part%-*}" "${part#*-}")"
+        else
+            out+=" $part"
+        fi
+    done
+    echo "$out"
+}
+
 # --- PM QoS: hold deep C-states off for as long as this process lives --------
 # Kept in this script rather than a systemd unit on purpose: it costs real power
-# and it is only wanted while measuring, so making it a boot-time service would
-# silently tax the machine forever.
+# machine-wide and, now that the governor is known to capture nearly all of the
+# same benefit, it is only worth holding while chasing the last microseconds of
+# p99 during a measurement.
 if [[ "$PMQOS_ONLY" == "1" ]]; then
     if [[ "$EUID" -ne 0 ]]; then
         echo "error: --pmqos must run as root" >&2
         exit 1
     fi
-    echo ">> Holding /dev/cpu_dma_latency at 0 (deep C-states disabled)."
+    echo ">> Holding /dev/cpu_dma_latency at 0 (all idle states blocked)."
+    echo "   Most of what this buys is also available from the CPU governor at a"
+    echo "   fraction of the power -- run the plain script first."
     echo "   Leave this running for the duration of the measurement; Ctrl-C releases."
     exec python3 -c '
 import os, struct, signal
@@ -111,6 +139,50 @@ else
     warn "not an RT kernel ($(uname -r)); tail latency will be worse"
 fi
 
+# On Intel hybrid parts an isolated E-core is a downgrade, not a tuning: lower
+# IPC and a lower clock ceiling than any P-core. cpu_core/cpu_atom are the
+# kernel's own classification, so this needs no CPU model table.
+if [[ -r /sys/devices/cpu_core/cpus && -r /sys/devices/cpu_atom/cpus ]]; then
+    P_CORES="$(cat /sys/devices/cpu_core/cpus)"
+    E_CORES="$(cat /sys/devices/cpu_atom/cpus)"
+    info "hybrid CPU: P-cores $P_CORES, E-cores $E_CORES"
+    ISOL="$(grep -o 'isolcpus=[^ ]*' <<<"$CMDLINE" | cut -d= -f2- || true)"
+    if [[ -n "$ISOL" ]]; then
+        E_LIST=" $(expand_cpu_list "$E_CORES") "
+        ISOL_LIST=" $(expand_cpu_list "$ISOL") "
+        BAD=""
+        for cpu in $ISOL_LIST; do
+            grep -qw "$cpu" <<<"$E_LIST" && BAD+="$cpu "
+        done
+        if [[ -n "$BAD" ]]; then
+            warn "isolcpus lands on E-core(s): $BAD -- isolate a P-core instead"
+            warn "  (an isolated E-core gives the busy-poll thread lower IPC and clock)"
+        else
+            ok "isolated cores are P-cores"
+        fi
+
+        # Isolating one SMT thread but not its sibling leaves the shared L1/L2
+        # and execution units open to anything the scheduler puts on the sibling.
+        # MEASURED (HOST_TUNING.md 1.3): isolating the whole physical core is
+        # worth ~5 us of p99 and ~8 us of p99.9. It does nothing for p50.
+        LONELY=""
+        for cpu in $ISOL_LIST; do
+            SIB_FILE="/sys/devices/system/cpu/cpu$cpu/topology/thread_siblings_list"
+            [[ -r "$SIB_FILE" ]] || continue
+            for sib in $(expand_cpu_list "$(cat "$SIB_FILE")"); do
+                grep -qw "$sib" <<<"$ISOL_LIST" || LONELY+="cpu$cpu's sibling cpu$sib; "
+            done
+        done
+        if [[ -n "$LONELY" ]]; then
+            warn "isolcpus splits an SMT pair -- not isolated: $LONELY"
+            warn "  (the sibling shares L1/L2 and execution units with the event"
+            warn "   thread; isolating both measured ~5 us of p99, HOST_TUNING.md 1.3)"
+        else
+            ok "isolated cores are whole physical cores (SMT siblings included)"
+        fi
+    fi
+fi
+
 echo "== RT scheduler =="
 RT_RUNTIME="$(cat /proc/sys/kernel/sched_rt_runtime_us)"
 if [[ "$RT_RUNTIME" == "-1" ]]; then
@@ -122,14 +194,14 @@ else
     ok "sched_rt_runtime_us: $RT_RUNTIME -> -1"
 fi
 
-echo "== CPU governor (measured: no effect; applied to remove a variable) =="
+echo "== CPU frequency (MEASURED: largest single effect, ~10 us of p50) =="
 GOV="$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo n/a)"
 if [[ "$GOV" == "n/a" ]]; then
     info "no cpufreq sysfs; skipping"
 elif [[ "$GOV" == "performance" ]]; then
     ok "governor already performance"
 elif [[ "$CHECK_ONLY" == "1" ]]; then
-    warn "governor = $GOV (run without --check to set performance)"
+    warn "governor = $GOV -- costs ~10 us of p50; run without --check to fix"
 else
     for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
         echo performance > "$g" 2>/dev/null || true
@@ -137,76 +209,123 @@ else
     ok "governor: $GOV -> performance"
 fi
 
-echo "== EtherCAT NIC ($ETHERCAT_IF) =="
-# ORDER MATTERS: while the master is running, ec_igc owns the NIC and it is not
-# a netdev any more -- ethtool fails with "no device matches name". Stop, tune,
-# start.
-MASTER_WAS_RUNNING=0
-if systemctl is-active --quiet ethercat 2>/dev/null; then
-    MASTER_WAS_RUNNING=1
+echo "== Idle states (context for --pmqos; nothing changed here) =="
+IDLE_GOV="$(cat /sys/devices/system/cpu/cpuidle/current_governor 2>/dev/null || echo n/a)"
+info "cpuidle governor: $IDLE_GOV (menu vs teo measured identical here)"
+for s in /sys/devices/system/cpu/cpu0/cpuidle/state*/; do
+    [[ -r "$s/name" ]] || continue
+    info "  $(cat "$s/name") exit latency $(cat "$s/latency") us"
+done
+
+echo "== EtherCAT NIC =="
+# The IgH master binds the NIC away from the kernel, so ethtool must run while
+# the master is stopped. Interface names and drivers change with the machine --
+# discover instead of hardcoding, and say so plainly when there is nothing to do.
+ETHERCAT_IF="${ETHERCAT_IF:-}"
+if [[ -z "$ETHERCAT_IF" ]]; then
+    for candidate in /sys/class/net/*/; do
+        name="$(basename "$candidate")"
+        [[ "$name" == "lo" || "$name" == wl* ]] && continue
+        drv="$(basename "$(readlink -f "$candidate/device/driver" 2>/dev/null || echo none)")"
+        if [[ "$drv" == "igc" ]]; then ETHERCAT_IF="$name"; break; fi
+        [[ -z "$ETHERCAT_IF" ]] && ETHERCAT_IF="$name"
+    done
 fi
-
-if ! ip link show "$ETHERCAT_IF" >/dev/null 2>&1; then
-    if [[ "$CHECK_ONLY" == "1" ]]; then
-        warn "$ETHERCAT_IF not a netdev (EtherCAT master holds it); stop it to inspect"
+if [[ -z "$ETHERCAT_IF" ]]; then
+    info "no candidate NIC found; skipping (USB-only machine)"
+elif ! ip link show "$ETHERCAT_IF" >/dev/null 2>&1; then
+    if systemctl is-active --quiet ethercat 2>/dev/null; then
+        info "$ETHERCAT_IF held by the EtherCAT master; stop it to tune the NIC"
     else
-        info "stopping ethercat master to release $ETHERCAT_IF"
-        systemctl stop ethercat
-        sleep 3
+        info "$ETHERCAT_IF is not a netdev and no master is running"
     fi
-fi
-
-if ip link show "$ETHERCAT_IF" >/dev/null 2>&1; then
-    RXU="$(ethtool -c "$ETHERCAT_IF" 2>/dev/null | sed -n 's/^rx-usecs:[[:space:]]*//p')"
-    if [[ "$RXU" == "0" ]]; then
-        ok "rx-usecs already 0"
-    elif [[ "$CHECK_ONLY" == "1" ]]; then
-        warn "rx-usecs = $RXU (run without --check to set 0)"
-    else
-        # igc runs Rx/Tx as a queue pair: setting tx-usecs is rejected outright,
-        # only rx-usecs may be written. Do not "fix" this by adding tx-usecs.
-        if ethtool -C "$ETHERCAT_IF" rx-usecs 0 >/dev/null 2>&1; then
-            ok "rx-usecs: $RXU -> 0"
-        else
-            warn "driver rejected rx-usecs 0 (leaving $RXU)"
-        fi
+else
+    NIC_DRV="$(basename "$(readlink -f "/sys/class/net/$ETHERCAT_IF/device/driver" 2>/dev/null || echo unknown)")"
+    info "candidate NIC: $ETHERCAT_IF (driver $NIC_DRV)"
+    if [[ "$NIC_DRV" != "igc" ]]; then
+        # HOST_TUNING.md section 3.1's rx-usecs / queue-pair notes are igc-specific.
+        info "  not an igc NIC -- the igc coalescing notes in HOST_TUNING.md do not apply"
     fi
-
     if ethtool --show-eee "$ETHERCAT_IF" 2>/dev/null | grep -q "EEE status: disabled"; then
         ok "EEE disabled"
     elif [[ "$CHECK_ONLY" == "1" ]]; then
         warn "EEE not disabled"
     else
         ethtool --set-eee "$ETHERCAT_IF" eee off >/dev/null 2>&1 \
-            && ok "EEE -> off" || warn "could not disable EEE"
+            && ok "EEE -> off" || info "could not disable EEE (may be unsupported)"
     fi
 fi
 
-if [[ "$MASTER_WAS_RUNNING" == "1" && "$CHECK_ONLY" == "0" ]]; then
-    systemctl start ethercat
-    sleep 5
-    ok "ethercat master restarted"
-fi
-
-echo "== USB device (a11c:a904) =="
-USB_DEV=""
+echo "== USB board =="
+BOARD_CONTROLLERS=""
+# Match on vendor id only: the product id differs per board (a901 hpm5321,
+# a902 hpm5321_dual_can, a904 hpm6e8y), and hardcoding one silently reports
+# "board not enumerated" the moment a different board is plugged in.
+FOUND_BOARD=0
 for d in /sys/bus/usb/devices/*/; do
-    [[ "$(cat "$d/idVendor" 2>/dev/null)" == "a11c" ]] || continue
-    [[ "$(cat "$d/idProduct" 2>/dev/null)" == "a904" ]] || continue
-    USB_DEV="$d"
-done
-if [[ -z "$USB_DEV" ]]; then
-    warn "board not enumerated"
-else
-    PCTL="$(cat "$USB_DEV/power/control" 2>/dev/null || echo n/a)"
+    [[ "$(cat "$d/idVendor" 2>/dev/null)" == "$USB_VENDOR_ID" ]] || continue
+    FOUND_BOARD=1
+    PID="$(cat "$d/idProduct" 2>/dev/null || echo '?')"
+    BUS="$(cat "$d/busnum" 2>/dev/null || echo '?')"
+    SPEED="$(cat "$d/speed" 2>/dev/null || echo '?')"
+    PRODUCT="$(cat "$d/product" 2>/dev/null || echo '')"
+    CTRL="$(readlink -f "$d" | grep -o '0000:[0-9a-f]*:[0-9a-f]*\.[0-9a-f]*' | tail -1)"
+    ok "$USB_VENDOR_ID:$PID on bus $BUS at ${SPEED}M via ${CTRL:-unknown}  $PRODUCT"
+
+    PCTL="$(cat "$d/power/control" 2>/dev/null || echo n/a)"
     if [[ "$PCTL" == "on" ]]; then
-        ok "power/control = on (autosuspend disabled)"
+        ok "  power/control = on (autosuspend disabled)"
     elif [[ "$CHECK_ONLY" == "1" ]]; then
-        warn "power/control = $PCTL"
+        warn "  power/control = $PCTL"
     else
-        echo on > "$USB_DEV/power/control" && ok "power/control: $PCTL -> on"
+        echo on > "$d/power/control" && ok "  power/control: $PCTL -> on"
     fi
-fi
+
+    [[ -n "$CTRL" ]] && BOARD_CONTROLLERS+=" $CTRL"
+
+    # Anything else on the same root hub competes for the same microframes.
+    # Measured no effect for btusb here, but a device with real periodic
+    # bandwidth (a camera streaming isoc) is a different story, so show it.
+    if [[ "$BUS" != "?" ]]; then
+        NEIGHBOURS="$(lsusb -t 2>/dev/null | awk -v b="$BUS" '
+            /^\/:/ { inbus = ($0 ~ ("Bus 00" b "\\.")) ; next }
+            inbus && /Driver=/ { print }' | grep -v "Driver=\[none\]" | wc -l)"
+        [[ "$NEIGHBOURS" -gt 0 ]] \
+            && info "  $NEIGHBOURS other device interface(s) share this root hub"
+    fi
+done
+[[ "$FOUND_BOARD" == "0" ]] && warn "no $USB_VENDOR_ID:* board enumerated"
+
+# xHCI IRQ priority. Boards sharing one controller also share ONE IRQ thread, and
+# at the RT default of FIFO 50 that thread is where their tail latency goes.
+# MEASURED on two 5321 DualCan boards on 00:14.0, 1 kHz duty cycle, two rounds:
+# max 189.9/222.3 us at FIFO 50 -> 126.3/141.4 us at FIFO 90, p50 unchanged.
+# With a single board it is a no-op (measured), so only act when sharing.
+echo "== xHCI IRQ priority =="
+for ctrl in $(tr ' ' '\n' <<<"$BOARD_CONTROLLERS" | grep -v '^$' | sort -u); do
+    COUNT="$(tr ' ' '\n' <<<"$BOARD_CONTROLLERS" | grep -c "^$ctrl$")"
+    [[ -d "/sys/bus/pci/devices/$ctrl/msi_irqs" ]] || continue
+    for irq in /sys/bus/pci/devices/"$ctrl"/msi_irqs/*; do
+        n="$(basename "$irq")"
+        grep -q "^ *$n:.*xhci" /proc/interrupts || continue
+        TH="$(ps -eo pid,rtprio,comm --no-headers 2>/dev/null | grep "irq/$n-xhci" || true)"
+        [[ -n "$TH" ]] || continue
+        TH_PID="$(awk '{print $1}' <<<"$TH")"
+        TH_PRIO="$(awk '{print $2}' <<<"$TH")"
+        if [[ "$COUNT" -lt 2 ]]; then
+            info "$ctrl: 1 board on IRQ $n (rtprio $TH_PRIO) -- raising it is a no-op here"
+        elif [[ "$TH_PRIO" -ge 90 ]]; then
+            ok "$ctrl: $COUNT boards share IRQ $n, already rtprio $TH_PRIO"
+        elif [[ "$CHECK_ONLY" == "1" ]]; then
+            warn "$ctrl: $COUNT boards share IRQ $n at rtprio $TH_PRIO -- costs ~60-80 us of max"
+        else
+            chrt -f -p 90 "$TH_PID" 2>/dev/null \
+                && ok "$ctrl: $COUNT boards share IRQ $n, rtprio $TH_PRIO -> 90" \
+                || warn "$ctrl: could not raise IRQ $n priority"
+        fi
+        break
+    done
+done
 
 # The root hub defaults to power/control=auto. It was never observed suspending
 # (a hub cannot while a child is active), so this is hardening rather than a fix.
@@ -220,6 +339,18 @@ if [[ "$CHECK_ONLY" == "0" ]]; then
     ok "root hubs power/control -> on"
 fi
 
+echo "== IOMMU (per-URB dma_map cost; NOT measured, see HOST_TUNING.md 5) =="
+IOMMU_TYPE=""
+for g in /sys/bus/pci/devices/*/iommu_group/type; do
+    [[ -r "$g" ]] && { IOMMU_TYPE="$(cat "$g")"; break; }
+done
+if [[ -z "$IOMMU_TYPE" ]]; then
+    ok "no IOMMU groups (translation off)"
+else
+    info "domain type: $IOMMU_TYPE"
+    [[ "$IOMMU_TYPE" == DMA* ]] && info "  iommu.passthrough=1 on the cmdline removes per-URB map/unmap (untested)"
+fi
+
 echo "== irqbalance (must stay off: it migrates the xHCI IRQ at runtime) =="
 if systemctl is-active --quiet irqbalance 2>/dev/null; then
     warn "irqbalance is RUNNING -- stop and disable it"
@@ -229,11 +360,12 @@ fi
 
 echo "== C-states =="
 if command -v lsof >/dev/null 2>&1 && lsof /dev/cpu_dma_latency >/dev/null 2>&1; then
-    ok "/dev/cpu_dma_latency held (deep C-states disabled)"
+    ok "/dev/cpu_dma_latency held (all idle states blocked)"
 else
-    warn "deep C-states ENABLED -- USB tail latency will be ~30-60 us worse."
-    warn "Run '$0 --pmqos' in another terminal while measuring USB."
+    info "deep C-states enabled. With governor=performance this costs only ~2 us"
+    info "at p99; run '$0 --pmqos' in another terminal to close that gap."
 fi
 
 echo
 echo ">> Done. Nothing here survives a reboot; re-run after every boot."
+echo ">> Verify with: sudo RMCS_RTT_LABEL=after ./host/build/examples/usb_ep0_rtt"

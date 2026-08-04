@@ -1,13 +1,19 @@
 # 构建环境
 
 > **文档类型**：现行规范
-> **适用范围**：全仓库
+> **适用范围**：全仓库，**只管"怎么把代码编出来"**
 > **状态**：现行有效
-> **相关文档**：[README.md](README.md) · `firmware/<board>/AGENTS.md`
+> **相关文档**：[README.md](README.md) · `firmware/<board>/AGENTS.md` · **[HOST_TUNING.md](HOST_TUNING.md)（运行环境：内核 / USB / 网卡调优，不在本文）**
 
 ## 摘要
 
 本机（Ubuntu 22.04.5 LTS）已配置完成，`host` / `firmware/ch32_board` 实测可编。
+
+> **本文不含任何内核调优。** 跑起来之后的主机侧设置——CPU governor、C-state / PM QoS、
+> USB autosuspend、`isolcpus`/`nohz_full`、xHCI 中断优先级、IOMMU、网卡参数——
+> 全部在 **[HOST_TUNING.md](HOST_TUNING.md)**，配可执行的 `host-tuning.sh`。
+> 那些设置**除内核 cmdline 外都不持久化，每次重启要重跑**，和本文的"装一次就好"是
+> 两回事，所以分开两份文档。
 
 ## 版本要求
 
@@ -71,6 +77,9 @@ sudo apt install clang-format-20 clang-tidy-20
 sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-20 200
 sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-20 200
 ```
+
+> **本机实际装的是 18**（`clang-format-18` / `clang-tidy-18`，无 update-alternatives 条目），
+> 满足上表的"≥ 16"，`.scripts/clang-*-check` 正常工作。上面的命令是推荐版本，不是本机现状。
 
 > `main` 分支本身就有存量格式漂移，lint 在干净 checkout 上也 fail。
 > 判断标准用**增量对比 HEAD**，不看绝对数字。

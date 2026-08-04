@@ -107,7 +107,7 @@ sudo chrt -f 80 ./host/build/examples/bridge_can_loopback_latency usb      3000 
 - **1 块板 → 用 USB 单核镜像。** 99.8us，没有任何理由上 EtherCAT。
 - **2-3 块板 → 多块 USB 板仍然合理**，而且**故障隔离比 EtherCAT 好**。
   代价是 p50 退到约 125us（和 EtherCAT 基本持平），且**必须把 xHCI 中断线程提到
-  FIFO 90**，否则 max 约 1 ms（见 [../../HOST_TUNING.md](../../HOST_TUNING.md) 4.3）。
+  FIFO 90**，否则 max 约 1 ms（见 [../../HOST_TUNING.md](../../HOST_TUNING.md) 第 9 节）。
 - **EtherCAT 只在这三种情况下才划算**，且都与延迟无关：
   1. **布线**：一根线菊花链穿过机体，vs N 根线都要回主机（滑环、转台尤其明显）；
   2. **距离**：超过 USB 的约 5 m；
@@ -118,17 +118,23 @@ sudo chrt -f 80 ./host/build/examples/bridge_can_loopback_latency usb      3000 
 ## 主机侧延迟调优（每次重启都要重做）
 
 ```bash
-sudo ./host-tuning.sh          # 应用：RT 限流关闭、governor、网卡 rx-usecs/EEE、USB autosuspend
-sudo ./host-tuning.sh --check  # 只报告不改
-sudo ./host-tuning.sh --pmqos  # 另开一个终端，测量期间持住（关深 C-state）
+sudo ./host-tuning.sh          # 应用：governor=performance、RT 限流关闭、USB autosuspend 等
+sudo ./host-tuning.sh --check  # 只报告不改（还会打印本机的控制器、IRQ、P/E 核归属）
+sudo ./host-tuning.sh --pmqos  # 另开一个终端，测量期间持住（只为最后约 2us 的 p99）
 ```
 
-**除内核 cmdline 外全部不持久化。** 逐项状态、证据等级、以及两条被实测否掉的调优
-（governor 无效、xHCI 中断与事件线程绑同核**有害**）见
-[ecat/DESIGN.md](ecat/DESIGN.md) 第 5 节的表和 3.6 节。
+**除内核 cmdline 外全部不持久化。** 逐项状态、证据等级、以及被实测否掉的做法见
+[../../HOST_TUNING.md](../../HOST_TUNING.md)（现行权威）第 1-3 节；
+板级分布数据仍在 [ecat/DESIGN.md](ecat/DESIGN.md) 第 5 节和 3.6 节。
 
-> 测 USB 延迟前**必须**先跑 `--pmqos`，否则测到的是电源管理不是传输：
-> 同一测试开关它的差别是 max 216.8 -> 160.7 us。
+> 测 USB 延迟前**必须**先把主机弄到高频状态，否则测到的是电源管理不是传输：
+> 主机路径上 p50 77.5 -> 67.5us、p99 约 100 -> 77us `[实测 2026-08-04]`；
+> 板级 RTT 上则是 max 216.8 -> 160.7us（p50 被微帧量化，不动）。
+>
+> **但这一条只对"核会空闲"的负载成立。** 紧凑 ping-pong（`dual_board_test latency`
+> 无采样间隔）下 governor 完全没有差别，powersave 自己就跑满频率；1kHz 控制环才是
+> 会空闲的那一类。**别拿压测结论去判断控制环的主机调优**——判据与数据见
+> [../../HOST_TUNING.md](../../HOST_TUNING.md) 1.1。
 
 ## 烧录脚本（仓库根目录）
 ```bash
@@ -318,7 +324,7 @@ mc02 永远停在 CubeMX 的 115200。修法是照 `UART_SetConfig()` 自己 swi
 **主循环周期实测 0.72us（空闲）/ 0.85us（16000 f/s 满载）**，所以"等下一趟主循环"这件事
 最多值 0.85us。对照 RTT p50 124.8us，**板端整条路径不到 3%**。
 完整论证与"哪些板端优化因此不值得做"见
-[../../HOST_TUNING.md](../../HOST_TUNING.md) 4.2 节。
+[../../HOST_TUNING.md](../../HOST_TUNING.md) 第 8 节。
 
 ## 板上没有调试器时怎么看现场
 

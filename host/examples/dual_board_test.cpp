@@ -25,6 +25,22 @@
 // RMCS_CAN_CLASSIC=1 switches the CAN payload from CAN-FD (1 Mbit/s
 // arbitration + 5 Mbit/s data with BRS) to classic CAN. Differencing the two
 // runs separates wire time from the rest of the path, which no single run can.
+//
+// RMCS_CAN_CROSSED=1 is for a rig whose two CAN cables are swapped (A.CAN0 wired
+// to B.CAN1 and A.CAN1 to B.CAN0). `link` diagnoses that case by name; this flag
+// then lets `latency` measure through it, because the crossing changes only
+// which controller receives -- the electrical path and both firmware paths are
+// unchanged, and the measured numbers match a correctly wired rig. `link` itself
+// deliberately keeps FAILing so the miswiring never becomes invisible.
+//
+// RMCS_LATENCY_GAP_US sets the idle time between latency samples. The default 0
+// sends the next frame as soon as the echo lands -- a ~10 kHz ping-pong that
+// never lets the core idle, which makes the tool BLIND to every host setting
+// that only bites once it does. Measured on this rig: at gap 0 the CPU governor
+// changes nothing (p50 100.6 either way), at gap 1000 it is worth 16-18 us of
+// p50 (120 -> 102) because the extra host latency makes the reply miss its USB
+// microframe and wait for the next. Set it to 1000 to reproduce a 1 kHz control
+// loop before drawing any conclusion about host tuning. See HOST_TUNING.md 1.2.
 
 #include <algorithm>
 #include <atomic>
@@ -65,6 +81,31 @@ std::string g_serial_b;
 bool use_fdcan() {
     const char* classic = std::getenv("RMCS_CAN_CLASSIC");
     return !(classic && classic[0] == '1');
+}
+
+// Opt-in for a rig whose two CAN cables are swapped (A.CAN0 wired to B.CAN1 and
+// A.CAN1 to B.CAN0). Frames still cross a real bus between two independent
+// controllers, so the measurement stays valid -- only the landing bus index
+// moves. Deliberately NOT auto-detected: `link` must keep failing on a miswired
+// rig, otherwise the tool would hide the very defect it exists to find.
+bool crossed_rig() {
+    const char* crossed = std::getenv("RMCS_CAN_CROSSED");
+    return crossed != nullptr && crossed[0] == '1';
+}
+
+// Idle time inserted between latency samples, in microseconds. 0 (the default)
+// is a back-to-back ping-pong, which measures the link at full tilt but keeps
+// the core busy; a real 1 kHz control loop leaves it idle 99% of the time and
+// behaves differently under CPU frequency scaling. See HOST_TUNING.md 1.1.
+long latency_gap_us() {
+    const char* raw = std::getenv("RMCS_LATENCY_GAP_US");
+    if (raw == nullptr || *raw == '\0')
+        return 0;
+    char* end = nullptr;
+    const long value = std::strtol(raw, &end, 10);
+    if (end == raw || *end != '\0' || value < 0)
+        return 0;
+    return value;
 }
 
 uint32_t mix(uint32_t x) {
@@ -189,9 +230,7 @@ public:
     }
 
     uint64_t unhandled_can() const { return unhandled_can_.load(std::memory_order_relaxed); }
-    uint64_t can_count(int bus) const {
-        return can_count_[bus].load(std::memory_order_relaxed);
-    }
+    uint64_t can_count(int bus) const { return can_count_[bus].load(std::memory_order_relaxed); }
 
 private:
     void can0_receive_callback(const librmcs::data::CanDataView& data) override {
@@ -283,8 +322,7 @@ std::vector<std::pair<std::string, std::string>> enumerate_boards() {
 bool discover() {
     const auto found = enumerate_boards();
     if (found.size() < 2) {
-        fprintf(
-            stderr, "need two hpm5321_dual_can boards (a11c:a902), found %zu\n", found.size());
+        fprintf(stderr, "need two hpm5321_dual_can boards (a11c:a902), found %zu\n", found.size());
         return false;
     }
     // Deterministic A/B assignment: sorted serial order. RMCS_BOARD_A /
@@ -347,7 +385,8 @@ bool link_can_direction(
     for (uint32_t attempt = 0; attempt < kAttempts; ++attempt) {
         transmit_can(
             source.board(), bus,
-            {.can_id = kCanIdBase + static_cast<uint32_t>(bus), .can_data = payload,
+            {.can_id = kCanIdBase + static_cast<uint32_t>(bus),
+             .can_data = payload,
              .is_fdcan = fd});
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
         if (probe.matched.load(std::memory_order_relaxed) > 0)
@@ -357,12 +396,22 @@ bool link_can_direction(
     const uint32_t matched = probe.matched.load(std::memory_order_relaxed);
     const uint32_t received = probe.received.load(std::memory_order_relaxed);
     const int landed = probe.last_bus.load(std::memory_order_relaxed);
-    const bool ok = matched > 0 && landed == bus
-                 && probe.last_value.load(std::memory_order_relaxed) == token;
+    const bool ok =
+        matched > 0 && landed == bus && probe.last_value.load(std::memory_order_relaxed) == token;
     printf(
         "  %-26s %s  (rx=%u matched=%u landed_on_bus=%d hw_timestamp=%s)\n", label,
         ok ? "PASS" : "FAIL", received, matched, landed,
         probe.saw_timestamp.load(std::memory_order_relaxed) ? "yes" : "no");
+    // A frame that arrived intact on the OTHER bus is a wiring fault, not a
+    // firmware fault: the payload and the hardware timestamp are both good, only
+    // the pair of cables is swapped. Say so, because the raw FAIL above sends
+    // people hunting through the CAN driver instead of looking at the desk.
+    if (matched > 0 && landed == 1 - bus)
+        printf(
+            "  %-26s   -> intact frame landed on CAN%d: the two CAN cables are\n"
+            "  %-26s      swapped. Swap them at ONE board, or set RMCS_CAN_CROSSED=1\n"
+            "  %-26s      to measure through the crossing anyway.\n",
+            "", landed, "", "");
     sink.set_can_handler(nullptr, nullptr);
     return ok;
 }
@@ -477,7 +526,16 @@ public:
         return true;
     }
 
-    void set_expected_bus(int bus) { expected_bus_ = bus; }
+    // Where a frame is expected to LAND, and the id it must carry. On a correctly
+    // wired rig they are the same bus, which is why they are set together. On a
+    // rig whose two CAN cables are swapped the frame lands on the other
+    // controller while the id still keys off the TRANSMIT bus, so the two have to
+    // be decoupled -- see set_landing_bus() and RMCS_CAN_CROSSED.
+    void set_expected_bus(int bus) {
+        expected_bus_ = bus;
+        expected_id_ = kCanIdBase + static_cast<uint32_t>(bus);
+    }
+    void set_landing_bus(int bus) { expected_bus_ = bus; }
 
     uint64_t invalid() const { return invalid_.load(std::memory_order_relaxed); }
     uint64_t unexpected() const { return unexpected_.load(std::memory_order_relaxed); }
@@ -494,8 +552,7 @@ private:
             wrong_bus_.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        if (data.can_id != kCanIdBase + static_cast<uint32_t>(expected_bus_)
-            || data.is_fdcan != use_fdcan() || data.is_extended_can_id
+        if (data.can_id != expected_id_ || data.is_fdcan != use_fdcan() || data.is_extended_can_id
             || data.is_remote_transmission || data.can_data.size() != kPayloadSize) {
             invalid_.fetch_add(1, std::memory_order_relaxed);
             return;
@@ -545,6 +602,7 @@ private:
     static constexpr uint64_t kReceivedState = 2;
 
     int expected_bus_ = 0;
+    uint32_t expected_id_ = kCanIdBase;
     std::atomic<uint64_t> state_{kReceivedState};
     std::atomic<int64_t> send_time_ns_{0};
     std::atomic<int64_t> latency_ns_{0};
@@ -564,12 +622,15 @@ int run_latency(int bus, uint32_t samples, int core_a, int core_b, int core_main
 
     LatencyProbe probe;
     probe.set_expected_bus(bus);
+    const int landing_bus = crossed_rig() ? 1 - bus : bus;
+    probe.set_landing_bus(landing_bus);
     board_b.set_can_handler(&probe, LatencyProbe::handler);
 
     const bool fd = use_fdcan();
     printf(
-        "A.CAN%d -> B.CAN%d, %u samples after %u warm-up (%s)\n", bus, bus, samples,
-        kWarmupSamples, fd ? "CAN-FD 1M/5M BRS" : "classic CAN 1M");
+        "A.CAN%d -> B.CAN%d, %u samples after %u warm-up (%s)%s\n", bus, landing_bus, samples,
+        kWarmupSamples, fd ? "CAN-FD 1M/5M BRS" : "classic CAN 1M",
+        crossed_rig() ? "  [RMCS_CAN_CROSSED=1: swapped-cable rig]" : "");
 
     std::vector<double> latencies;
     std::vector<double> uplinks;
@@ -589,7 +650,8 @@ int run_latency(int bus, uint32_t samples, int core_a, int core_b, int core_main
         probe.arm(sequence, Clock::now());
         transmit_can(
             board_a.board(), bus,
-            {.can_id = kCanIdBase + static_cast<uint32_t>(bus), .can_data = payload,
+            {.can_id = kCanIdBase + static_cast<uint32_t>(bus),
+             .can_data = payload,
              .is_fdcan = fd});
 
         double latency_us = 0.0;
@@ -605,6 +667,12 @@ int run_latency(int bus, uint32_t samples, int core_a, int core_b, int core_main
             if (has_uplink)
                 uplinks.push_back(uplink_us);
         }
+        // Idle the core between samples when asked. Back-to-back (the default)
+        // keeps the CPU busy enough to hold its own clock up, which makes this
+        // tool blind to every host setting that only bites once the core sleeps.
+        // Set this to 1000 to reproduce a 1 kHz control loop's duty cycle.
+        if (latency_gap_us() > 0)
+            std::this_thread::sleep_for(std::chrono::microseconds{latency_gap_us()});
     }
     measure_end = Clock::now();
     const double measured_span_us =
@@ -644,8 +712,8 @@ int run_latency(int bus, uint32_t samples, int core_a, int core_b, int core_main
         }
         const double count = static_cast<double>(n);
         const double denominator = count * sum_xx - sum_x * sum_x;
-        const double slope = denominator != 0.0 ? (count * sum_xy - sum_x * sum_y) / denominator
-                                                : 0.0;
+        const double slope =
+            denominator != 0.0 ? (count * sum_xy - sum_x * sum_y) / denominator : 0.0;
         const double intercept = (sum_y - slope * sum_x) / count;
 
         std::vector<double> residuals;
@@ -827,9 +895,9 @@ int run_dual(uint32_t samples) {
     const uint64_t misrouted = counter.misrouted.load(std::memory_order_relaxed);
     printf(
         "bus0 %llu/%u  bus1 %llu/%u  corrupt=%llu misrouted=%llu\n",
-        static_cast<unsigned long long>(bus0), samples,
-        static_cast<unsigned long long>(bus1), samples,
-        static_cast<unsigned long long>(corrupt), static_cast<unsigned long long>(misrouted));
+        static_cast<unsigned long long>(bus0), samples, static_cast<unsigned long long>(bus1),
+        samples, static_cast<unsigned long long>(corrupt),
+        static_cast<unsigned long long>(misrouted));
 
     const bool ok = bus0 == samples && bus1 == samples && corrupt == 0 && misrouted == 0;
     printf("dual: %s\n", ok ? "PASS" : "FAIL");
@@ -880,7 +948,8 @@ int run_uart(uint32_t rounds) {
     // overrun it.
     constexpr size_t kChunk = 64;
     const uint64_t total = static_cast<uint64_t>(rounds) * kChunk;
-    printf("A.UART0 -> B.UART0: %u rounds x %zu bytes = %llu bytes @921600\n", rounds, kChunk,
+    printf(
+        "A.UART0 -> B.UART0: %u rounds x %zu bytes = %llu bytes @921600\n", rounds, kChunk,
         static_cast<unsigned long long>(total));
 
     uint64_t index = 0;
@@ -903,8 +972,8 @@ int run_uart(uint32_t rounds) {
         "kB/s)\n",
         static_cast<unsigned long long>(bytes), static_cast<unsigned long long>(total),
         static_cast<unsigned long long>(stream.chunks.load(std::memory_order_relaxed)),
-        static_cast<unsigned long long>(mismatches),
-        static_cast<double>(bytes) / seconds / 1e3, 921600.0 / 10.0 / 1e3);
+        static_cast<unsigned long long>(mismatches), static_cast<double>(bytes) / seconds / 1e3,
+        921600.0 / 10.0 / 1e3);
 
     const bool ok = bytes == total && mismatches == 0;
     printf("uart: %s\n", ok ? "PASS" : "FAIL");
@@ -992,13 +1061,31 @@ void stress_handler(void* context, int bus, const librmcs::data::CanDataView& da
         counter->corrupt.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    const uint64_t previous = counter->last_sequence[bus].exchange(sequence, std::memory_order_relaxed);
+    const uint64_t previous =
+        counter->last_sequence[bus].exchange(sequence, std::memory_order_relaxed);
     if (sequence != previous + 1 && counter->received[bus].load(std::memory_order_relaxed) != 0)
         counter->gaps[bus].fetch_add(1, std::memory_order_relaxed);
     counter->received[bus].fetch_add(1, std::memory_order_relaxed);
 }
 
 int run_stress(uint32_t frames_per_sec, uint32_t seconds, int buses, int per_packet) {
+    // These arrive straight from argv. Out-of-range values used to be accepted
+    // silently and produce nonsense -- `buses`/`per_packet` sit where a reader
+    // of the usage line expects core numbers, so passing "7 6" once meant
+    // "7 buses, 6 frames per packet" and skewed every number in the report.
+    if (frames_per_sec == 0 || seconds == 0) {
+        fprintf(stderr, "stress: frames_per_sec and seconds must be non-zero\n");
+        return 1;
+    }
+    if (buses < 1 || buses > 2 || per_packet < 1) {
+        fprintf(
+            stderr,
+            "stress: buses must be 1 or 2 and per_packet >= 1 (got buses=%d "
+            "per_packet=%d)\n",
+            buses, per_packet);
+        return 1;
+    }
+
     Node board_a{g_serial_a, -1, "rmcs-a"};
     Node board_b{g_serial_b, -1, "rmcs-b"};
     std::this_thread::sleep_for(std::chrono::milliseconds{300});
@@ -1031,11 +1118,17 @@ int run_stress(uint32_t frames_per_sec, uint32_t seconds, int buses, int per_pac
 
     const bool fd = use_fdcan();
     printf(
-        "stress: %u frames/s per bus on %d bus(es) for %u s (%s)\n", frames_per_sec, buses,
-        seconds, fd ? "CAN-FD 1M/5M BRS" : "classic CAN 1M");
+        "stress: %u frames/s per bus on %d bus(es) for %u s (%s)\n", frames_per_sec, buses, seconds,
+        fd ? "CAN-FD 1M/5M BRS" : "classic CAN 1M");
 
-    const auto period = std::chrono::nanoseconds{1'000'000'000ULL / frames_per_sec};
+    // `frames_per_sec` counts FRAMES per bus, and `per_packet` of them ride in
+    // one USB packet, so the loop iterates frames_per_sec/per_packet times a
+    // second and the period scales with per_packet. Getting this wrong is not
+    // cosmetic: pacing per ITERATION would silently send per_packet times the
+    // requested frame rate.
     const uint64_t total_per_bus = static_cast<uint64_t>(frames_per_sec) * seconds;
+    const auto period = std::chrono::nanoseconds{
+        1'000'000'000ULL * static_cast<uint64_t>(per_packet) / frames_per_sec};
     const auto start = Clock::now();
     auto next = start;
 
@@ -1044,18 +1137,24 @@ int run_stress(uint32_t frames_per_sec, uint32_t seconds, int buses, int per_pac
     uint64_t last_report_bus0 = 0, last_report_bus1 = 0;
     uint32_t reported_second = 0;
 
-    for (uint64_t sequence = 0; sequence < total_per_bus; ++sequence) {
-        std::byte payload[kPayloadSize];
-        put_u32_le(payload, static_cast<uint32_t>(sequence));
-        put_u32_le(payload + 4, mix(static_cast<uint32_t>(sequence)));
+    for (uint64_t sequence = 0; sequence < total_per_bus;) {
         {
             // `per_packet` frames go into ONE USB packet. The transmit builder
             // batches every write until it goes out of scope, so this is the
             // difference between N packets per second and N/per_packet -- which
             // matters because the USB HS microframe rate (8000/s) caps packets,
             // not frames.
+            //
+            // Every frame carries its OWN sequence number. Reusing one number
+            // for the whole batch would make the receiver see per_packet-1
+            // repeats and count each as a gap, reporting loss that never
+            // happened.
             auto builder = board_a.board().start_transmit();
-            for (int repeat = 0; repeat < per_packet; ++repeat) {
+            for (int repeat = 0; repeat < per_packet && sequence < total_per_bus;
+                 ++repeat, ++sequence) {
+                std::byte payload[kPayloadSize];
+                put_u32_le(payload, static_cast<uint32_t>(sequence));
+                put_u32_le(payload + 4, mix(static_cast<uint32_t>(sequence)));
                 builder.can0_transmit(
                     {.can_id = kCanIdBase + 0, .can_data = payload, .is_fdcan = fd});
                 if (buses > 1)
@@ -1158,8 +1257,11 @@ bool frame_case(
     try {
         transmit_can(
             source.board(), 0,
-            {.can_id = can_id, .can_data = payload, .is_fdcan = fd,
-             .is_extended_can_id = extended, .is_remote_transmission = rtr});
+            {.can_id = can_id,
+             .can_data = payload,
+             .is_fdcan = fd,
+             .is_extended_can_id = extended,
+             .is_remote_transmission = rtr});
     } catch (const std::exception&) {
         sent = false;
     }
@@ -1276,7 +1378,8 @@ int run_uart_raw(uint32_t length, bool idle_delimited) {
     for (uint32_t i = 0; i < length; ++i)
         payload[i] = static_cast<std::byte>(i);
 
-    printf("A.UART0 -> B.UART0: one %u-byte ramp 00..%02X, idle_delimited=%s\n", length,
+    printf(
+        "A.UART0 -> B.UART0: one %u-byte ramp 00..%02X, idle_delimited=%s\n", length,
         static_cast<unsigned>((length - 1) & 0xFF), idle_delimited ? "true" : "false");
     printf("  sent :");
     for (uint32_t i = 0; i < length; ++i)
@@ -1295,16 +1398,17 @@ int run_uart_raw(uint32_t length, bool idle_delimited) {
 
 void print_usage() {
     fprintf(
-        stderr,
-        "usage: dual_board_test <mode> [args]\n"
-        "  list                                          enumerate attached boards\n"
-        "  link                                          verify every wired direction\n"
-        "  latency [bus] [samples] [ca] [cb] [cmain]     A.CANx -> B.CANx one-way latency\n"
-        "  dual    [samples]                             both buses in parallel\n"
-        "  uart    [rounds]                              A.UART0 -> B.UART0 integrity\n"
-        "  stress  [frames_per_sec] [seconds]            sustained flood, loss accounting\n"
-        "env: RMCS_CAN_CLASSIC=1 classic CAN instead of CAN-FD\n"
-        "     RMCS_BOARD_A / RMCS_BOARD_B  override the serial-order A/B assignment\n");
+        stderr, "usage: dual_board_test <mode> [args]\n"
+                "  list                                          enumerate attached boards\n"
+                "  link                                          verify every wired direction\n"
+                "  latency [bus] [samples] [ca] [cb] [cmain]     A.CANx -> B.CANx one-way latency\n"
+                "  dual    [samples]                             both buses in parallel\n"
+                "  uart    [rounds]                              A.UART0 -> B.UART0 integrity\n"
+                "  stress  [fps] [seconds] [buses] [per_packet]  sustained flood, loss accounting\n"
+                "          fps is FRAMES/s per bus; per_packet frames share one USB packet,\n"
+                "          so packets/s is fps/per_packet.  buses 1..2, per_packet >= 1\n"
+                "env: RMCS_CAN_CLASSIC=1 classic CAN instead of CAN-FD\n"
+                "     RMCS_BOARD_A / RMCS_BOARD_B  override the serial-order A/B assignment\n");
 }
 
 } // namespace
@@ -1345,8 +1449,7 @@ int main(int argc, char** argv) {
         if (mode == "uart")
             return run_uart(static_cast<uint32_t>(argument(2, 2000)));
         if (mode == "uartraw")
-            return run_uart_raw(
-                static_cast<uint32_t>(argument(2, 16)), argument(3, 1) != 0);
+            return run_uart_raw(static_cast<uint32_t>(argument(2, 16)), argument(3, 1) != 0);
         if (mode == "stress")
             return run_stress(
                 static_cast<uint32_t>(argument(2, 4000)), static_cast<uint32_t>(argument(3, 10)),

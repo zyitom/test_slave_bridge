@@ -34,7 +34,8 @@ public:
         uint16_t usb_vid, int32_t usb_pid, std::string_view serial_filter,
         const ConnectionOptions& options)
         : logger_(logging::get_logger())
-        , free_transmit_transfers_(kTransmitTransferCount) {
+        , free_transmit_transfers_(kTransmitTransferCount)
+        , dev_mem_available_(false) {
 
         usb_init(usb_vid, usb_pid, serial_filter, options);
         utility::FinalAction rollback_on_failure{[this]() noexcept {
@@ -43,6 +44,15 @@ public:
             libusb_close(libusb_device_handle_);
             libusb_exit(libusb_context_);
         }};
+
+        // Probe dev_mem availability: if the kernel usbfs driver supports DMA-coherent
+        // buffers the allocation will succeed; fall back to heap allocation silently.
+        auto* probe = libusb_dev_mem_alloc(libusb_device_handle_, 1);
+        if (probe) {
+            libusb_dev_mem_free(libusb_device_handle_, probe, 1);
+            dev_mem_available_ = true;
+            logger_.info("libusb dev_mem (zero-copy) available");
+        }
 
         init_transmit_transfers();
 
@@ -118,10 +128,8 @@ public:
 
         int ret = libusb_submit_transfer(transfer);
         if (ret != 0) [[unlikely]] {
-            throw std::runtime_error(
-                std::format(
-                    "Failed to submit transmit transfer: {} ({})", ret,
-                    helper::libusb_errname(ret)));
+            throw std::runtime_error(std::format(
+                "Failed to submit transmit transfer: {} ({})", ret, helper::libusb_errname(ret)));
         }
 
         // If success: Ownership is transferred to libusb
@@ -157,7 +165,9 @@ private:
     public:
         explicit TransferWrapper(Usb& self)
             : self_(self)
-            , transfer_(self_.create_libusb_transfer()) {}
+            , transfer_(self_.create_libusb_transfer())
+            , buffer_(self_.alloc_transfer_buffer())
+            , buffer_is_dev_mem_(self_.dev_mem_available_) {}
 
         TransferWrapper(const TransferWrapper&) = delete;
         TransferWrapper& operator=(const TransferWrapper&) = delete;
@@ -177,11 +187,12 @@ private:
 
         BufferSpanType data() const noexcept override {
             return BufferSpanType{
-                reinterpret_cast<std::byte*>(transfer_->buffer),
-                core::protocol::kProtocolBufferSize};
+                reinterpret_cast<std::byte*>(buffer_), core::protocol::kProtocolBufferSize};
         }
 
         void destroy() noexcept {
+            self_.free_transfer_buffer(buffer_, buffer_is_dev_mem_);
+            buffer_ = nullptr;
             self_.destroy_libusb_transfer(transfer_);
             transfer_ = nullptr;
         }
@@ -190,15 +201,16 @@ private:
         Usb& self_;
 
         libusb_transfer* transfer_;
+        unsigned char* buffer_;
+        bool buffer_is_dev_mem_;
     };
 
     void usb_init(
         uint16_t vendor_id, int32_t product_id, std::string_view serial_filter,
         const ConnectionOptions& options) {
         if (const int ret = libusb_init(&libusb_context_); ret != 0) [[unlikely]] {
-            throw std::runtime_error(
-                std::format(
-                    "Failed to initialize libusb: {} ({})", ret, helper::libusb_errname(ret)));
+            throw std::runtime_error(std::format(
+                "Failed to initialize libusb: {} ({})", ret, helper::libusb_errname(ret)));
         }
         utility::FinalAction exit_libusb{[this]() noexcept { libusb_exit(libusb_context_); }};
 
@@ -209,10 +221,9 @@ private:
 
         if (const int ret = libusb_claim_interface(libusb_device_handle_, kTargetInterface);
             ret != 0) [[unlikely]] {
-            throw std::runtime_error(
-                std::format(
-                    "Failed to claim interface {}: {} ({})", kTargetInterface, ret,
-                    helper::libusb_errname(ret)));
+            throw std::runtime_error(std::format(
+                "Failed to claim interface {}: {} ({})", kTargetInterface, ret,
+                helper::libusb_errname(ret)));
         }
 
         // Libusb successfully initialized
@@ -228,15 +239,13 @@ private:
                 auto* transfer = wrapper->transfer_;
 
                 libusb_fill_bulk_transfer(
-                    transfer, libusb_device_handle_, kOutEndpoint,
-                    new unsigned char[core::protocol::kProtocolBufferSize], 0,
+                    transfer, libusb_device_handle_, kOutEndpoint, wrapper->buffer_, 0,
                     [](libusb_transfer* transfer) {
                         auto* wrapper = static_cast<TransferWrapper*>(transfer->user_data);
                         wrapper->self_.usb_transmit_complete_callback(wrapper);
                     },
                     wrapper, 0);
-                transfer->flags = libusb_transfer_flags::LIBUSB_TRANSFER_FREE_BUFFER
-                                | libusb_transfer_flags::LIBUSB_TRANSFER_ADD_ZERO_PACKET;
+                transfer->flags = libusb_transfer_flags::LIBUSB_TRANSFER_ADD_ZERO_PACKET;
             }
         } catch (...) {
             for (auto& wrapper : transmit_transfers) {
@@ -259,27 +268,37 @@ private:
         }
     }
 
+    // Thin wrapper for RX transfers to track buffer allocation type alongside the transfer.
+    struct RxTransfer {
+        Usb* self;
+        libusb_transfer* transfer;
+        unsigned char* buffer;
+        bool is_dev_mem;
+    };
+
     void init_receive_transfers() {
         for (size_t i = 0; i < kReceiveTransferCount; i++) {
-            auto* transfer = create_libusb_transfer();
+            auto* rx = new RxTransfer{
+                this, create_libusb_transfer(), alloc_transfer_buffer(), dev_mem_available_};
 
             libusb_fill_bulk_transfer(
-                transfer, libusb_device_handle_, kInEndpoint,
-                new unsigned char[core::protocol::kProtocolBufferSize],
+                rx->transfer, libusb_device_handle_, kInEndpoint, rx->buffer,
                 static_cast<int>(core::protocol::kProtocolBufferSize),
                 [](libusb_transfer* transfer) {
-                    static_cast<Usb*>(transfer->user_data)->usb_receive_complete_callback(transfer);
+                    static_cast<RxTransfer*>(transfer->user_data)
+                        ->self->usb_receive_complete_callback(transfer);
                 },
-                this, 0);
-            transfer->flags = libusb_transfer_flags::LIBUSB_TRANSFER_FREE_BUFFER;
+                rx, 0);
+            rx->transfer->flags = 0;
 
-            int ret = libusb_submit_transfer(transfer);
+            int ret = libusb_submit_transfer(rx->transfer);
             if (ret != 0) [[unlikely]] {
-                destroy_libusb_transfer(transfer);
-                throw std::runtime_error(
-                    std::format(
-                        "Failed to submit receive transfer: {} ({})", ret,
-                        helper::libusb_errname(ret)));
+                free_transfer_buffer(rx->buffer, rx->is_dev_mem);
+                destroy_libusb_transfer(rx->transfer);
+                delete rx;
+                throw std::runtime_error(std::format(
+                    "Failed to submit receive transfer: {} ({})", ret,
+                    helper::libusb_errname(ret)));
             }
         }
     }
@@ -299,8 +318,12 @@ private:
     }
 
     void usb_receive_complete_callback(libusb_transfer* transfer) {
+        auto* rx = static_cast<RxTransfer*>(transfer->user_data);
+
         if (stop_handling_events_.load(std::memory_order::relaxed)) [[unlikely]] {
+            free_transfer_buffer(rx->buffer, rx->is_dev_mem);
             destroy_libusb_transfer(transfer);
+            delete rx;
             return;
         }
 
@@ -313,14 +336,15 @@ private:
         int ret = libusb_submit_transfer(transfer);
         if (ret != 0) [[unlikely]] {
             if (ret == LIBUSB_ERROR_NO_DEVICE)
-                logger_.error(
-                    "Failed to re-submit receive transfer: Device disconnected. "
-                    "Terminating...");
+                logger_.error("Failed to re-submit receive transfer: Device disconnected. "
+                              "Terminating...");
             else
                 logger_.error(
                     "Failed to re-submit receive transfer: {} ({}). Terminating...", ret,
                     helper::libusb_errname(ret));
+            free_transfer_buffer(rx->buffer, rx->is_dev_mem);
             destroy_libusb_transfer(transfer);
+            delete rx;
 
             // TODO: Replace abrupt termination with a flag and exception-based error handling
             std::terminate();
@@ -332,6 +356,24 @@ private:
             wrapper->destroy();
             delete wrapper;
         });
+    }
+
+    unsigned char* alloc_transfer_buffer() {
+        if (dev_mem_available_) {
+            auto* p =
+                libusb_dev_mem_alloc(libusb_device_handle_, core::protocol::kProtocolBufferSize);
+            if (p)
+                return p;
+            dev_mem_available_ = false;
+        }
+        return new unsigned char[core::protocol::kProtocolBufferSize];
+    }
+
+    void free_transfer_buffer(unsigned char* buf, bool is_dev_mem) noexcept {
+        if (is_dev_mem)
+            libusb_dev_mem_free(libusb_device_handle_, buf, core::protocol::kProtocolBufferSize);
+        else
+            delete[] buf;
     }
 
     libusb_transfer* create_libusb_transfer() {
@@ -370,6 +412,7 @@ private:
     std::atomic<bool> stop_handling_events_ = false;
 
     utility::RingBuffer<TransferWrapper*> free_transmit_transfers_;
+    bool dev_mem_available_;
     std::mutex transmit_transfer_mutex_;
     std::condition_variable transmit_transfer_cv_;
 

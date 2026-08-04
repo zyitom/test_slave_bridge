@@ -34,6 +34,19 @@ target_link_libraries(can_error_test PRIVATE librmcs-sdk)
 add_executable(can_loopback_latency can_loopback_latency.cpp)
 target_link_libraries(can_loopback_latency PRIVATE librmcs-sdk)
 
+# Host-path-only USB probe: times a control transfer to EP0, so it needs no CAN
+# wiring and no firmware cooperation. The instrument behind HOST_TUNING.md's
+# host-side A/B numbers; not a substitute for can_loopback_latency's board RTT.
+add_executable(usb_ep0_rtt usb_ep0_rtt.cpp)
+target_link_libraries(usb_ep0_rtt PRIVATE librmcs-sdk)
+target_include_directories(usb_ep0_rtt SYSTEM PRIVATE ${LIBUSB_INCLUDE_DIRS})
+
+# USB bulk OUT packet-rate ceiling: sends each record in its own packet so the
+# packet rate can be raised without raising the per-bus CAN frame rate. Separates
+# the USB transaction limit from the CAN wire limit that caps dual_board_test.
+add_executable(usb_packet_rate usb_packet_rate.cpp)
+target_link_libraries(usb_packet_rate PRIVATE librmcs-sdk)
+
 add_executable(can_frame_type_test can_frame_type_test.cpp)
 target_link_libraries(can_frame_type_test PRIVATE librmcs-sdk)
 

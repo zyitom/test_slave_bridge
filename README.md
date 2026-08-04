@@ -3,19 +3,21 @@
 > **文档类型**：背景说明 + 上手指引
 > **适用范围**：整个仓库（host SDK 与全部四块板）
 > **状态**：现行有效
-> **相关文档**：[AGENTS.md](AGENTS.md)（开发约束与文档规范） · [ENV.md](ENV.md)（外部工具下载入口）
+> **相关文档**：[AGENTS.md](AGENTS.md)（开发约束与文档规范） · [ENV.md](ENV.md)（外部工具下载入口） · [HOST_TUNING.md](HOST_TUNING.md)（延迟/吞吐实测与主机调优）
 
 ## 摘要
 
 librmcs 是 [无下位机控制系统 RMCS（RoboMaster Control System）](https://github.com/Alliance-Algorithm/RMCS) 的核心通讯部分。
-本文档面向第一次接触本仓库的人，讲清三件事：**装什么依赖**、**怎么把 host SDK 和固件编出来**、
-**怎么把固件烧进板子**。芯片内部的外设设计、踩坑记录、烧录细节在各板自己的文档里，见文末索引。
+本文档面向第一次接触本仓库的人，讲清四件事：**装什么依赖**、**怎么把 host SDK 和固件编出来**、
+**怎么把固件烧进板子**、**它实测能跑多快**。芯片内部的外设设计、踩坑记录、烧录细节在各板
+自己的文档里，见文末索引；延迟与吞吐的完整测量在 [HOST_TUNING.md](HOST_TUNING.md)。
 
 ## 本文导航
 
 | 你想做什么 | 看哪一节 |
 |---|---|
 | 了解版本状态 | [LibRMCS v3](#librmcs-v3) |
+| **看它能跑多快**（延迟 / 吞吐实测） | **[性能实测速览](#性能实测速览)** |
 | 在 PC 上编 SDK | [Host SDK 编译](#host-sdk-编译) |
 | 编固件 | [固件编译与烧录](#固件编译与烧录) |
 | 第一次烧板子 | [烧录 Bootloader](#烧录-bootloader首次或更新引导) |
@@ -29,6 +31,41 @@ librmcs 是 [无下位机控制系统 RMCS（RoboMaster Control System）](https
 LibRMCS v3 正在开发！目前处于测试阶段，无良好的文档/教程。
 
 您可以访问 [v2](https://github.com/Alliance-Algorithm/librmcs/tree/v2) 分支获取 LibRMCS v2 的最新 stable 版本。
+
+## 性能实测速览
+
+下面是这套链路在**本仓库自带工具**下的实测数字，用来回答"它到底能跑多快、我该期待什么"。
+测量条件、对照数据、每条结论的证据等级全部在 **[HOST_TUNING.md](HOST_TUNING.md)**，
+这里只放结果。**测量条件**：2026-08-04，两块 `hpm5321_dual_can`，`release` 固件，主机已跑过
+`host-tuning.sh` `[实测]`。
+
+**延迟**（1 kHz 控制环占空比，即两次事务之间核会真正空闲）：
+
+| 测什么 | 工具 | min | p50 | p99 | p99.9 |
+|---|---|---|---|---|---|
+| 板级 CAN 单向（A.CAN0 -> B.CAN0，过 USB + 固件 + CAN 线） | `dual_board_test latency` | 77 us | **99 us** | 122 us | 129 us |
+| 纯主机路径 RTT（提交 -> xHCI -> 设备 EP0 -> 中断 -> 唤醒） | `usb_ep0_rtt` | 49 us | **68 us** | 77 us | 83 us |
+
+**吞吐**：
+
+| 测什么 | 上限 | 卡在哪 |
+|---|---|---|
+| CAN-FD 单总线（1M 仲裁 / 5M 数据，8 字节） | **19870 帧/s** | **CAN 线速**（每帧 50.3 us），主机和固件都动不了 |
+| Classic CAN 单总线（1M，8 字节） | **8560 帧/s** | 同上（每帧 116.8 us） |
+| 一块双 CAN 板合计 | 约 39700 帧/s | 两条总线各自独立到顶 |
+| USB bulk 包率，单板 | 约 **56000 包/s** | USB 路径（主机 CPU 只用了 23%） |
+| USB bulk 包率，双板同挂一个控制器 | 约 **105000 包/s** | 上限是**每设备**的，加板子能叠加 |
+
+**动手调之前，先按收益排序看这三条**（细节见 HOST_TUNING.md）：
+
+1. **固件必须是 `release`（`-O3`）构建。** 换成 `debug`（`-Og`）会让板级 p50 从 99 us 涨到
+   120 us——**比全部主机侧调优加起来还大**，而且版本字符串看不出区别。见 8.4。
+2. **主机 `governor=performance`。** 在 1 kHz 占空比下值 16-18 us 的板级 p50；
+   紧凑压测下则完全为零——**别拿压测结论去配置控制环**。见 1.1 / 1.2。
+3. **把事件线程绑到某个 P 核。** 不绑核是最差的一档（p99.9 176 us / max 458 us）。
+   注意绑到**隔离核**相比绑到普通 P 核并无可测收益，`isolcpus` 未必值得占掉一个物理核。见 1.3。
+
+> **除内核 cmdline 外，主机侧设置全部不持久化**，每次重启都要重跑 `sudo ./host-tuning.sh`。
 
 ## Host SDK 编译
 
@@ -122,8 +159,17 @@ App 镜像 `*.dfu` 已带好镜像哈希与 DFU 后缀，`dfu-util` 会按 VID/P
 | c_board    | STM32F407VG  | `0xD401` | `RMCS DFU Bootloader`      |
 | mc02       | STM32H723VG  | `0xD402` | `RMCS DFU Bootloader`      |
 | ch32_board | WCH CH32H417 | `0xD403` | `RMCS Bootloader v<版本号>` |
+| rmcs_board `hpm5321` | HPM5321 | `0xA901` | `RMCS Agent v<版本号>` |
+| rmcs_board `hpm5321_dual_can` | HPM5321 | `0xA902` | 同上 |
+| rmcs_board `hpm6e80ivm1` | HPM6E8Y | `0xA903` | 同上 |
+| rmcs_board `hpm6e8y` | HPM6E8Y | `0xA904` | 同上 |
 
 VID 均为 `0xA11C`。
+
+> **`rmcs_board` 烧录前必须核对板级变体。** `BOARD` 的默认值是 `hpm5321`（PID `0xA901`），
+> 不带 `-DBOARD=<变体>` 编出来的镜像烧到别的变体上会改掉 PID 并配错引脚。
+> **版本字符串区分不出构建类型和变体**——它来自 `git describe`，`debug` 和 `release` 完全一样。
+> 多块同型号板同时在线时用 `dfu-util -S <序列号>` 逐块烧（`dfu-util -l` 列序列号）。
 
 ### ch32_board 的差异
 
