@@ -23,6 +23,8 @@
 #   ./jlink-debug.sh c_board           # c_board bootloader, STM32F407IGH6, SWD
 #   ./jlink-debug.sh hpm6e8y           # ecat bootloader,    HPM6E8Y,       JTAG
 #   ./jlink-debug.sh hpm6e8y-core1     # core1 fieldbus app (no bootloader), JTAG
+#   ./jlink-debug.sh hpm5321           # rmcs_board bootloader, HPM5361 (hpm5321 board),      JTAG
+#   ./jlink-debug.sh hpm5321-dual-can  # rmcs_board bootloader, HPM5361 (hpm5321_dual_can board), JTAG
 #   ./jlink-debug.sh --list            # show the target table and exit
 #
 # Environment overrides (all optional):
@@ -45,7 +47,7 @@ ARM_GDB="${ARM_GDB:-/opt/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi/bin/ar
 RISCV_GDB="${RISCV_GDB:-$HOME/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux/bin/riscv32-unknown-elf-gdb}"
 
 usage() {
-    sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^#\s\?//'
+    sed -n '2,41p' "${BASH_SOURCE[0]}" | sed 's/^#\s\?//'
 }
 
 print_targets() {
@@ -58,6 +60,10 @@ print_targets() {
         firmware/rmcs_board/ecat/build/rmcs_ecat_bootloader/output/rmcs_board_bootloader_hpm6e8y.elf
     printf '%-16s %-18s %-6s %s\n' hpm6e8y-core1 HPM6E8YxGNx_CPU1 JTAG \
         firmware/rmcs_board/ecat/build/rmcs_ecat_core1/output/demo.elf
+    printf '%-16s %-18s %-6s %s\n' hpm5321 HPM5321xEGx JTAG \
+        firmware/rmcs_board/build/bootloader/output/rmcs_board_bootloader_hpm5321.elf
+    printf '%-16s %-18s %-6s %s\n' hpm5321-dual-can HPM5321xEGx JTAG \
+        firmware/rmcs_board/build/bootloader/output/rmcs_board_bootloader_hpm5321_dual_can.elf
 }
 
 RESET_TO_MAIN=0
@@ -111,6 +117,32 @@ hpm6e8y-core1)
     DEFAULT_IFACE="JTAG"
     DEFAULT_ELF="$SCRIPT_DIR/firmware/rmcs_board/ecat/build/rmcs_ecat_core1/output/demo.elf"
     GDB="$RISCV_GDB"
+    ;;
+hpm5321 | hpm5321-dual-can)
+    # hpm5321.yaml / hpm5321_dual_can.yaml declare soc=HPM5361, device=
+    # HPM5361xEGx -- that is the SDK's build target (register-compatible
+    # superset), same relationship as hpm6e8y building against HPM6E80 while
+    # the physical die is an HPM6E00 (see the hpm6e8y case above). The chip
+    # actually soldered on these boards is marked HPM5321IEG1, so the J-Link
+    # device name needs to match the real silicon: HPM5321xEGx (confirmed
+    # against SEGGER's device DB, libjlinkarm). Do not "fix" this back to
+    # HPM5361xEGx from the yaml -- that name is for the SDK, not the debugger.
+    #
+    # RESET_TO_MAIN below does a JTAG-level `monitor reset` + break-at-main, not
+    # a flash `load` -- it works with no NOR flash algorithm at all, unlike the
+    # one-time bootloader programming in flash-dual-bootloader.sh (which needs
+    # OpenOCD's hpm_xpi driver because SEGGER ships no flash loader for this
+    # part's XPI NOR). Do not pass LOAD=1 here; it would need that missing
+    # loader. Program with ./flash-dual-bootloader.sh instead, then attach.
+    DEFAULT_DEVICE="HPM5321xEGx"
+    DEFAULT_IFACE="JTAG"
+    if [[ "$TARGET" == "hpm5321-dual-can" ]]; then
+        DEFAULT_ELF="$SCRIPT_DIR/firmware/rmcs_board/build/bootloader/output/rmcs_board_bootloader_hpm5321_dual_can.elf"
+    else
+        DEFAULT_ELF="$SCRIPT_DIR/firmware/rmcs_board/build/bootloader/output/rmcs_board_bootloader_hpm5321.elf"
+    fi
+    GDB="$RISCV_GDB"
+    RESET_TO_MAIN=1
     ;;
 "")
     echo "error: no target given" >&2

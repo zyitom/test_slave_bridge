@@ -12,6 +12,10 @@
 #   ./ozone-debug.sh hpm6e8y          # HPM6E8Y core0 bootloader, JTAG
 #   ./ozone-debug.sh hpm6e8y app      # HPM6E8Y core0 EtherCAT application, JTAG
 #   ./ozone-debug.sh hpm6e8y-core1    # HPM6E8Y core1 fieldbus application, JTAG
+#   ./ozone-debug.sh hpm5321          # rmcs_board hpm5321 bootloader, JTAG (attach)
+#   ./ozone-debug.sh hpm5321 app      # rmcs_board hpm5321 application, JTAG (attach)
+#   ./ozone-debug.sh hpm5321-dual-can # rmcs_board hpm5321_dual_can bootloader, JTAG (attach)
+#   ./ozone-debug.sh hpm5321-dual-can app # rmcs_board hpm5321_dual_can application, JTAG (attach)
 #   ./ozone-debug.sh --list
 #
 # Omit the image selector to use the project default image. Passing "app" creates
@@ -57,7 +61,7 @@ list_projects() {
 }
 
 usage() {
-    sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^#\s\?//'
+    sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^#\s\?//'
 }
 
 app_elf_for_project() {
@@ -73,6 +77,12 @@ app_elf_for_project() {
         ;;
     hpm6e8y-core1)
         printf '%s\n' "$SCRIPT_DIR/firmware/rmcs_board/ecat/build/rmcs_ecat_core1/output/demo.elf"
+        ;;
+    hpm5321)
+        printf '%s\n' "$SCRIPT_DIR/firmware/rmcs_board/build/app/output/rmcs_board_app_hpm5321.elf"
+        ;;
+    hpm5321-dual-can)
+        printf '%s\n' "$SCRIPT_DIR/firmware/rmcs_board/build/app/output/rmcs_board_app_hpm5321_dual_can.elf"
         ;;
     *)
         return 1

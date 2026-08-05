@@ -205,13 +205,16 @@ USB 与 EtherCAT 为什么落在同一个核(而不是各占一核),以及"USB �
 
 ```bash
 cmake -G Ninja -S firmware/rmcs_board/ecat/core1 -B build-ecat-core1 \
-      -DBOARD=hpm6e00evk -DCMAKE_BUILD_TYPE=debug
+      -DCMAKE_BUILD_TYPE=debug
 cmake --build build-ecat-core1     # 生成 core0/src/sec_core_img.c
 
 cmake -G Ninja -S firmware/rmcs_board/ecat/core0 -B build-ecat-core0 \
-      -DBOARD=hpm6e00evk -DCMAKE_BUILD_TYPE=debug
+      -DCMAKE_BUILD_TYPE=debug
 cmake --build build-ecat-core0     # 产出可烧录的 core0 镜像(内嵌 core1)
 ```
+
+> `BOARD` 不用显式传；两个子项目的 CMakeLists.txt 已设置本仓库板型默认值。
+> 不要传 `hpm6e00evk`，那是 HPM SDK 示例板定义，缺少本仓库的板级头文件。[实测]
 
 ## P1 验证方法
 

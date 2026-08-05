@@ -65,6 +65,13 @@
   再把 `GNURISCV_TOOLCHAIN_PATH`、`WCH_TOOLCHAIN_PATH`、`PATH` 等环境变量指向新的
   安装位置；文档里的路径只当参照。
 - 工具链一律**留在仓库外**，不入库、不做 submodule。
+- **`firmware/mc02` 的两个子模块（`stm32h7xx-hal-driver`、`cmsis-device-h7`）容易被
+  漏掉**：仓库 clone 后若 `git submodule status` 输出以 `-` 开头，先执行：
+  ```bash
+  git submodule status firmware/mc02/bsp/stm32h7xx-hal-driver firmware/mc02/bsp/cmsis-device-h7
+  git submodule update --init firmware/mc02/bsp/stm32h7xx-hal-driver firmware/mc02/bsp/cmsis-device-h7
+  ```
+  否则 `mc02` configure 可能报 `Cannot find source file`。[实测]
 
 各文档中出现机器相关路径的地方标注为 `[前机路径]`，看到这个标记就按本节理解。
 
