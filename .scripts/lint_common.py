@@ -14,6 +14,7 @@ class LintTarget:
     name: str
     project_dir: Path
     folders: List[Path]
+    clang_tidy: bool
 
     @property
     def compile_database(self) -> Path:
@@ -66,5 +67,6 @@ def load_targets(root: Path) -> Tuple[List[str], Dict[str, LintTarget]]:
             name=name,
             project_dir=project_dir,
             folders=folders,
+            clang_tidy=section.get("clang_tidy", True),
         )
     return exclude_dirs, targets

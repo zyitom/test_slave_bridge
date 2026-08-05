@@ -13,7 +13,8 @@ namespace librmcs::firmware::flash {
 // Hash the application slot and compare against the committed record. The image
 // is read through the flash alias, which is directly addressable, so no staging
 // buffer is needed.
-inline void hash_region(uintptr_t address, size_t size, uint8_t (&digest)[crypto::kSha256DigestSize]) {
+inline void
+    hash_region(uintptr_t address, size_t size, uint8_t (&digest)[crypto::kSha256DigestSize]) {
     crypto::Sha256Ctx ctx;
     crypto::sha256_init(&ctx);
     crypto::sha256_update(&ctx, reinterpret_cast<const uint8_t*>(address), size);

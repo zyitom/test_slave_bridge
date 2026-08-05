@@ -20,8 +20,8 @@ namespace librmcs::firmware::flash {
 // and read back, so a power loss mid-download leaves the record absent (or
 // still marked in-progress) and the bootloader refuses to launch a torn image.
 struct Metadata {
-    static constexpr uint32_t kMagicValid = 0x314D4752;      // "RGM1"
-    static constexpr uint32_t kMagicFlashing = 0x30474C46;   // "FLG0"
+    static constexpr uint32_t kMagicValid = 0x314D4752;    // "RGM1"
+    static constexpr uint32_t kMagicFlashing = 0x30474C46; // "FLG0"
 
     uint32_t magic;
     uint32_t image_size;

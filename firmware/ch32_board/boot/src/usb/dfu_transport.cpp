@@ -104,11 +104,9 @@ uint8_t usb_ss_class_setup(void) {
         return usb::reply(&state, sizeof(state));
     }
 
-    case usb::DfuRequest::kClearStatus:
-        return usb::dfu.clear_status() ? usb::kAccept : usb::kStall;
+    case usb::DfuRequest::kClearStatus: return usb::dfu.clear_status() ? usb::kAccept : usb::kStall;
 
-    case usb::DfuRequest::kAbort:
-        return usb::dfu.abort() ? usb::kAccept : usb::kStall;
+    case usb::DfuRequest::kAbort: return usb::dfu.abort() ? usb::kAccept : usb::kStall;
 
     case usb::DfuRequest::kDetach:
         // bitWillDetach = 1: acknowledge, then the main loop resets once the

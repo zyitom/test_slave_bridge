@@ -160,8 +160,7 @@ private:
         return !session_established_;
     }
 
-    bool gpio_analog_data_deserialized_callback(
-        uint8_t, const data::GpioAnalogDataView&) override {
+    bool gpio_analog_data_deserialized_callback(uint8_t, const data::GpioAnalogDataView&) override {
         return !session_established_;
     }
 

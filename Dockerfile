@@ -1,45 +1,21 @@
-FROM ubuntu:24.04 AS builder
+FROM ubuntu:24.04 AS hpm-toolchain
 
-ARG RISCV_GNU_TOOLCHAIN_VERSION=2026.07.15
-
-# Install build dependencies for RISC-V GNU Toolchain
+# Install the tested HPMicro binary toolchain used by rmcs_board.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-    autoconf automake autotools-dev curl python3 python3-pip python3-tomli \
-    libmpc-dev libmpfr-dev libgmp-dev gawk build-essential bison flex \
-    texinfo gperf libtool patchutils bc zlib1g-dev libexpat-dev \
-    git ca-certificates file \
+    binutils ca-certificates curl file \
     && apt-get autoremove -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/*
 
-# Use the tested HPMicro binary on amd64 (the CI and release builds), and keep
-# the source build for arm64 where that binary is not available.
-WORKDIR /src
-ARG TARGETARCH
-RUN if [ "${TARGETARCH}" = "amd64" ]; then \
-        curl -fL \
-            https://github.com/hpmicro/riscv-gnu-toolchain/releases/download/2023.10.18/rv32imac_zicsr_zifencei_multilib_b_ext-linux.tar.gz \
-            -o /tmp/hpm-riscv-toolchain.tar.gz \
-        && tar -xzf /tmp/hpm-riscv-toolchain.tar.gz -C /opt \
-        && mv /opt/rv32imac_zicsr_zifencei_multilib_b_ext-linux /opt/riscv32-none-elf \
-        && rm /tmp/hpm-riscv-toolchain.tar.gz; \
-    else \
-        git clone --branch "${RISCV_GNU_TOOLCHAIN_VERSION}" --depth 1 \
-            https://github.com/riscv-collab/riscv-gnu-toolchain \
-        && cd /src/riscv-gnu-toolchain \
-        && git config submodule.binutils.url \
-            https://github.com/RTEMS/sourceware-mirror-binutils-gdb.git \
-        && git config submodule.gdb.url \
-            https://github.com/RTEMS/sourceware-mirror-binutils-gdb.git \
-        && git config submodule.newlib.url \
-            https://github.com/RTEMS/sourceware-mirror-newlib-cygwin.git \
-        && git submodule update --init --depth 1 binutils newlib gcc gdb \
-        && ./configure --prefix=/opt/riscv32-none-elf --with-arch=rv32gcb --with-abi=ilp32d \
-            --enable-multilib \
-        && make -j$(nproc) newlib; \
-    fi \
-    && find /opt/riscv32-none-elf -type f -exec sh -c 'file "$1" | grep -q "ELF" && strip "$1"' _ {} \;
+ARG HPM_TOOLCHAIN_URL=https://github.com/hpmicro/riscv-gnu-toolchain/releases/download/2023.10.18/rv32imac_zicsr_zifencei_multilib_b_ext-linux.tar.gz
+RUN curl -fL --retry 5 --retry-all-errors \
+        "${HPM_TOOLCHAIN_URL}" -o /tmp/hpm-riscv-toolchain.tar.gz \
+    && tar -xzf /tmp/hpm-riscv-toolchain.tar.gz -C /opt \
+    && mv /opt/rv32imac_zicsr_zifencei_multilib_b_ext-linux /opt/riscv32-none-elf \
+    && rm /tmp/hpm-riscv-toolchain.tar.gz \
+    && find /opt/riscv32-none-elf -type f -exec sh -c \
+        'if file "$1" | grep -q "ELF 64-bit.*x86-64"; then strip "$1"; fi' _ {} \;
 
 # Keep this check in a separate layer so a failed ABI check does not discard the
 # expensive toolchain build cache.
@@ -50,11 +26,59 @@ RUN printf 'int main(void) { return 0; }\n' \
     && test -s /tmp/rv32imac-ilp32-smoke.elf \
     && rm /tmp/rv32imac-ilp32-smoke.elf
 
+FROM ubuntu:24.04 AS wch-toolchain
+
+ARG TARGETARCH
+ARG WCH_TOOLCHAIN_GCC_VERSION=15.2.0
+ARG WCH_TOOLCHAIN_RESOURCE_ID=2030114123741700098
+ARG WCH_TOOLCHAIN_ARCHIVE=MRS_Toolchain_Linux_X64_V240.tar.xz
+ARG WCH_TOOLCHAIN_ARCHIVE_SIZE=411269512
+ARG WCH_TOOLCHAIN_SHA256=1fae593d27e24466f17c2df0fd00f746143f587fe33e912a78e35142fef82a6d
+
+# MounRiver publishes this X64 package through a short-lived signed URL. Pin
+# the immutable resource ID and archive digest, then extract only the GCC15
+# compiler needed by ch32_board; OpenOCD and GUI debuggers stay on the host.
+RUN test "${TARGETARCH}" = "amd64" \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+    ca-certificates curl jq xz-utils \
+    && apt-get autoremove -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* \
+    && download_url="$(curl -fsSL --retry 5 --retry-all-errors \
+        "https://api.mounriver.com/mountriver/api/version/fetchRecentOpenOcdUrl?resourceId=${WCH_TOOLCHAIN_RESOURCE_ID}" \
+        | jq -er '.result | select(type == "string" and length > 0)')" \
+    && case "${download_url}" in \
+        *"/${WCH_TOOLCHAIN_ARCHIVE}?"*) ;; \
+        *) echo "Unexpected MounRiver download URL" >&2; exit 1 ;; \
+    esac \
+    && curl -fL --retry 5 --retry-all-errors \
+        "${download_url}" -o "/tmp/${WCH_TOOLCHAIN_ARCHIVE}" \
+    && test "$(stat -c '%s' "/tmp/${WCH_TOOLCHAIN_ARCHIVE}")" = \
+        "${WCH_TOOLCHAIN_ARCHIVE_SIZE}" \
+    && echo "${WCH_TOOLCHAIN_SHA256}  /tmp/${WCH_TOOLCHAIN_ARCHIVE}" \
+        | sha256sum -c - \
+    && mkdir -p /opt/wch-gcc15 \
+    && tar -xJf "/tmp/${WCH_TOOLCHAIN_ARCHIVE}" -C /opt/wch-gcc15 \
+        --strip-components=2 "Toolchain/RISC-V Embedded GCC15" \
+    && rm "/tmp/${WCH_TOOLCHAIN_ARCHIVE}" \
+    && test "$(/opt/wch-gcc15/bin/riscv32-wch-elf-gcc -dumpfullversion)" = \
+        "${WCH_TOOLCHAIN_GCC_VERSION}"
+
+# Verify the exact ABI required by the CH32H417 build in a separate layer so a
+# failed smoke test does not discard the downloaded toolchain cache.
+RUN printf 'int main(void) { return 0; }\n' \
+        | /opt/wch-gcc15/bin/riscv32-wch-elf-gcc \
+            -march=rv32imafc_zicsr_zifencei -mabi=ilp32f \
+            -specs=nano.specs -x c - -o /tmp/wch-ilp32f-smoke.elf \
+    && /opt/wch-gcc15/bin/riscv32-wch-elf-readelf \
+        -h /tmp/wch-ilp32f-smoke.elf | grep -q 'single-float ABI' \
+    && rm /tmp/wch-ilp32f-smoke.elf
+
 FROM ubuntu:24.04 AS ci
 
 ARG TARGETARCH
-ARG TARGETARCH_UNAME=${TARGETARCH/amd64/x86_64}
-ARG TARGETARCH_UNAME=${TARGETARCH_UNAME/arm64/aarch64}
+ARG TARGETARCH_UNAME=x86_64
 
 # Set bash as the default shell
 SHELL ["/bin/bash", "-c"]
@@ -105,16 +129,21 @@ RUN apt-get update \
     && ln -sf /usr/bin/gcc-14 /usr/bin/${TARGETARCH_UNAME}-linux-gnu-gcc \
     && ln -sf /usr/bin/g++-14 /usr/bin/${TARGETARCH_UNAME}-linux-gnu-g++
 
-# Copy RISC-V toolchain from builder stage
-COPY --from=builder /opt/riscv32-none-elf /opt/riscv32-none-elf
+# Keep the HPM and WCH RISC-V toolchains independent. Their compiler prefixes
+# and CMake selection variables are intentionally different.
+COPY --from=hpm-toolchain /opt/riscv32-none-elf /opt/riscv32-none-elf
+COPY --from=wch-toolchain /opt/wch-gcc15 /opt/wch-gcc15
 ENV GNURISCV_TOOLCHAIN_PATH=/opt/riscv32-none-elf
-ENV PATH="${GNURISCV_TOOLCHAIN_PATH}/bin:${PATH}"
+ENV WCH_TOOLCHAIN_PATH=/opt/wch-gcc15
+ENV WCH_TOOLCHAIN_PREFIX=riscv32-wch-elf-
+ENV PATH="${WCH_TOOLCHAIN_PATH}/bin:${GNURISCV_TOOLCHAIN_PATH}/bin:${PATH}"
 
 # Download and install ARM GNU Toolchain
-RUN VERSION=15.2.rel1 \
-    && wget https://developer.arm.com/-/media/Files/downloads/gnu/${VERSION}/binrel/arm-gnu-toolchain-${VERSION}-${TARGETARCH_UNAME}-arm-none-eabi.tar.xz \
+RUN test "${TARGETARCH}" = "amd64" \
+    && VERSION=15.3.rel1 \
+    && wget -q https://gitlab.arm.com/api/v4/projects/tooling%2Fgnu-toolchains-for-arm/packages/generic/gnu-toolchain/${VERSION}/arm-gnu-toolchain-${VERSION}-${TARGETARCH_UNAME}-arm-none-eabi.tar.xz \
         -O arm-gnu-toolchain.tar.xz \
-    && tar -xvf arm-gnu-toolchain.tar.xz -C /opt/ \
+    && tar -xf arm-gnu-toolchain.tar.xz -C /opt/ \
     && rm arm-gnu-toolchain.tar.xz \
     && mv /opt/arm-gnu-toolchain-${VERSION}-${TARGETARCH_UNAME}-arm-none-eabi /opt/arm-none-eabi
 ENV GNUARM_TOOLCHAIN_PATH=/opt/arm-none-eabi

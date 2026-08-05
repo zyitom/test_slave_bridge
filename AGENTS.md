@@ -33,7 +33,8 @@
 | `ch32_board` | WCH CH32H417（Qingke V3F + V5F 双核） | RISC-V `cmake/toolchain-wch-riscv.cmake` | `ch32_board_app` `ch32_board_boot` `ch32_board_merged` | USB 3.0 SuperSpeed；`boot` 是 V3F 启动核兼 DFU bootloader |
 | `rmcs_board` | HPM6E8Y / HPM5321（Andes） | RISC-V 超级构建 + HPMicro GNU 工具链 | `rmcs_board_app` `rmcs_board_bootloader`；EtherCAT 桥在 `ecat/` | HPM SDK v1.12.0，双核 ECAT 桥 |
 
-> RISC-V 芯片（`ch32_board`、`rmcs_board`）用 `riscv32-unknown-elf-gcc`，**不要**用
+> 两块 RISC-V 板使用相互独立的编译器：`ch32_board` 用 WCH
+> `riscv32-wch-elf-gcc`，`rmcs_board` 用 HPM `riscv32-unknown-elf-gcc`。**不要**用
 > `arm-none-eabi-gcc`；后者只给 STM32（`c_board`、`mc02`）用。
 
 ## 开发机环境路径约定（重要，先读这条再看任何路径）
@@ -43,20 +44,20 @@
 
 - 这些是**上一台开发机上真实可用的安装位置**，不是示例、不是占位符。原样保留是为了
   让换机器的人有一份"确实跑通过"的配置可以照抄。
-- **当前机器上的实际安装情况（2026-08-01 逐条 `ls` 复核，取代 2026-07-27 那份，
+- **当前机器上的实际安装情况（2026-08-05 逐条 `ls` 复核，取代 2026-08-01 那份，
   后者对本机已不准确）**：
 
   | 路径 | 本机 | 说明 |
   |---|---|---|
-  | `~/3rd_party/rv32imac_zicsr_zifencei_multilib_b_ext-linux` | **已装** | **RISC-V 工具链的真实位置**（gcc 13.2.0）。已实测编出 `rmcs_board` 单核 / 核对调 / `ecat` 全部目标 |
-  | `~/3rd_party/hpm` | 部分 | **只有 `HPMicro_Manufacturing_Tool_v0.6.0`**。此前记的"工具链 + hpm_sdk + openocd 都在这里"对本机不成立 |
-  | OpenOCD | **未装** | 全机没有。HPM 板的日常烧录走 USB DFU（`dfu-util`），不需要它；只有给空片烧 bootloader 才需要 |
-  | `~/3rd_party/MRS_Toolchain_Linux_X64_V240` | **不存在** | 本机没有 MounRiver，`ch32_board` 在本机编不了 |
+  | `~/3rd_party/rv32imac_zicsr_zifencei_multilib_b_ext-linux` | **不存在** | HPM GCC 13.2.0 的实际位置是下方 `~/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux` |
+  | `~/3rd_party/hpm` | **已装** | HPM GCC 13.2.0、`hpm_sdk`、HPM OpenOCD 和 `HPMicro_Manufacturing_Tool_v0.6.0` |
+  | OpenOCD | **已装 HPM + WCH 版本** | HPM 版本在 `~/3rd_party/hpm/openocd-build/bin/openocd`；WCH 版本在下方 MRS 目录 |
+  | `~/3rd_party/MRS_Toolchain_Linux_X64_V240` | **已装** | MounRiver V240：WCH GCC15 15.2.0、GCC12 GDB 和 WCH OpenOCD。已实测 GCC15 可生成 CH32H417 的 ilp32f ELF |
   | `~/3rd_party/wch-openocd` | 不存在 | 见 `firmware/ch32_board/AGENTS.md` |
 
-  由此，本机可用的构建/烧录组合是：**host SDK + `rmcs_board` 全部固件 + DFU 烧录**；
-  `ch32_board` 缺工具链，板级调试缺 JTAG。**缺 JTAG 不等于看不到现场**——
-  `rmcs_board` 已有两条走 USB 的带内诊断通道，见
+  由此，本机可用的组合是：**host SDK + `rmcs_board` 全部固件 + `ch32_board` 正式构建 +
+  HPM/WCH OpenOCD + DFU 烧录**。即使现场没有接 JTAG，`rmcs_board` 仍有两条走 USB 的
+  带内诊断通道，见
   `firmware/rmcs_board/AGENTS.md`「板上没有调试器时怎么看现场」。
 
 - **不要凭本节旧措辞断言"本机没有工具链"——先 `ls` 确认。** 路径不存在时也不要删改

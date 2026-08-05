@@ -57,8 +57,6 @@ inline constexpr uintptr_t kBootMailboxAddress = 0x2017'7F00U;
 // Spelled as a reference-returning accessor rather than mc02's `.boot_mailbox`
 // section object: this board's linker scripts are vendored, and adding a section
 // to them would be one more local patch to re-apply on every EVT re-vendor.
-inline BootMailbox& boot_mailbox() {
-    return *reinterpret_cast<BootMailbox*>(kBootMailboxAddress);
-}
+inline BootMailbox& boot_mailbox() { return *reinterpret_cast<BootMailbox*>(kBootMailboxAddress); }
 
 } // namespace librmcs::firmware::utility

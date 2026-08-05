@@ -1,10 +1,8 @@
 # Bare-metal RISC-V toolchain for the WCH CH32H417 (Qingke V5F core).
 #
 # The Qingke V5F implements RV32IMAFC plus WCH's proprietary "xw" compressed
-# extension. We deliberately build WITHOUT xw so that a stock upstream
-# riscv32-unknown-elf GCC can be used (the same multilib toolchain already used
-# for rmcs_board), keeping the whole repo on one unified build. The cost is a
-# small code-size increase; correctness is unaffected.
+# extension. Formal builds use the independent MounRiver GCC15 toolchain but do
+# not enable xw, keeping the generated firmware on the standard RISC-V ISA.
 
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR riscv32)
@@ -18,32 +16,14 @@ list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES WCH_TOOLCHAIN_PATH WCH_TOOLCHAI
 # Locate the cross toolchain. Priority:
 #   1. -DWCH_TOOLCHAIN_PATH=<dir with bin/>
 #   2. environment WCH_TOOLCHAIN_PATH
-#   3. environment GNURISCV_TOOLCHAIN_PATH (repo convention, see rmcs_board)
-#   4. whatever is on PATH
+#   3. riscv32-wch-elf-* on PATH
 if(NOT WCH_TOOLCHAIN_PATH AND DEFINED ENV{WCH_TOOLCHAIN_PATH})
     set(WCH_TOOLCHAIN_PATH "$ENV{WCH_TOOLCHAIN_PATH}")
 endif()
-if(NOT WCH_TOOLCHAIN_PATH AND DEFINED ENV{GNURISCV_TOOLCHAIN_PATH})
-    file(
-        GLOB _wch_tc_dirs
-        "$ENV{GNURISCV_TOOLCHAIN_PATH}/rv32*/bin"
-        "$ENV{GNURISCV_TOOLCHAIN_PATH}/bin"
-    )
-    if(_wch_tc_dirs)
-        list(GET _wch_tc_dirs 0 _wch_tc_bin)
-        cmake_path(GET _wch_tc_bin PARENT_PATH WCH_TOOLCHAIN_PATH)
-    endif()
-endif()
 
-# The tool prefix is not fixed: a stock upstream build uses riscv32-unknown-elf-,
-# while MounRiver's MRS_Toolchain ships several GCCs side by side under
-# Toolchain/, each with its own prefix -- "RISC-V Embedded GCC15" is
-# riscv32-wch-elf- and "RISC-V Embedded GCC12" is riscv-wch-elf-. Probe instead
-# of hardcoding, and let -DWCH_TOOLCHAIN_PREFIX= force one.
-#
-# The MRS "RISC-V Embedded GCC" (no suffix, riscv-none-embed-) is deliberately
-# absent from this list: it is GCC 8.2, which cannot compile the C++23 this
-# repository requires.
+# MounRiver's "RISC-V Embedded GCC15" uses riscv32-wch-elf-. Keep an explicit
+# override for repackaged installations, but never fall back to the HPM
+# riscv32-unknown-elf toolchain used by rmcs_board.
 if(NOT WCH_TOOLCHAIN_PREFIX AND DEFINED ENV{WCH_TOOLCHAIN_PREFIX})
     set(WCH_TOOLCHAIN_PREFIX "$ENV{WCH_TOOLCHAIN_PREFIX}")
 endif()
@@ -51,7 +31,7 @@ endif()
 if(WCH_TOOLCHAIN_PREFIX)
     set(_tc_prefix_candidates "${WCH_TOOLCHAIN_PREFIX}")
 else()
-    set(_tc_prefix_candidates "riscv32-wch-elf-" "riscv-wch-elf-" "riscv32-unknown-elf-")
+    set(_tc_prefix_candidates "riscv32-wch-elf-")
 endif()
 
 set(_tc_prefix "")

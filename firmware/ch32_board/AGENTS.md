@@ -21,47 +21,69 @@ ch32_board 是四块板里**最容易把自己弄进死胡同**的一块，原�
 3. **烧录链路坑多**——读保护、`e339e339` 假数据、`unfreeze` 的位置、halt 顺带复位导致
    读到的 PC 不可信，全部记在 `PITFALLS.md`。
 
+本板的正式构建必须使用 MounRiver 随附的 WCH GCC15，并通过独立的
+`WCH_TOOLCHAIN_PATH` 选择；不得复用 `rmcs_board` 的 HPM 工具链。
+
 本文件给的是**现在该怎么做**（工具链、构建、烧录、调试、当前进度）；**为什么这么做**
 在 `README.md`，**踩过什么坑**在 `PITFALLS.md`。
 
+## 本文导航
+
+| 章节 | 内容 |
+|---|---|
+| [芯片与工具链](#芯片与工具链) | WCH GCC15 隔离规则、版本和 Docker 状态 |
+| [构建](#构建) | app、boot 和 merged 固件的构建命令 |
+| [烧录](#烧录wch-link) | WCH OpenOCD 的烧录顺序与保护态陷阱 |
+| [GDB 调试](#gdb-调试) | WCH GDB 选择和调试连接方式 |
+| [目录结构](#目录结构) | 双核源码和厂商 BSP 的职责边界 |
+| [现状](#现状改代码前须知) | 已验证能力、硬件约束和剩余缺口 |
+
 ## 芯片与工具链
-- MCU：**WCH CH32H417**，RISC-V **双核**（V3F boot/offload + V5F 转发快路径）；卖点是片上 **USB 3.0 SuperSpeed（5 Gbps）** 设备控制器。
-- ISA/工具链：RISC-V bare-metal，`cmake/toolchain-wch-riscv.cmake`（RV32IMAFC/ilp32f，**不启用** WCH 私有 `xw` 扩展）。需 RISC-V GCC（**不是** ARM）。
-- **默认（推荐）**：复用 rmcs_board 的 HPM 工具链，构建前设：
-  ```bash
-  export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm     # [前机路径] -> riscv32-unknown-elf-gcc 13.2
-  ```
-- **也支持 MounRiver `MRS_Toolchain_*`**。工具前缀由 `toolchain-wch-riscv.cmake`
-  自动探测（依次试 `riscv32-wch-elf-` / `riscv-wch-elf-` / `riscv32-unknown-elf-`），
-  `-DWCH_TOOLCHAIN_PREFIX=` 可强制指定。注意 MRS 的 `Toolchain/` 下并排放着三套 GCC，
-  前缀各不相同，`WCH_TOOLCHAIN_PATH` 要指到**具体某一套**（含 `bin/` 的那层），不是
-  `Toolchain/` 本身：
+- MCU：**WCH CH32H417**，RISC-V **双核**（V3F boot/offload + V5F 转发快路径）；
+  卖点是片上 **USB 3.0 SuperSpeed（5 Gbps）** 设备控制器。
+- ISA/工具链：RISC-V bare-metal，`cmake/toolchain-wch-riscv.cmake`（RV32IMAFC/ilp32f，
+  **不启用** WCH 私有 `xw` 扩展）。正式构建使用 MounRiver `MRS_Toolchain_*` 随附的
+  **RISC-V Embedded GCC15**（不是 ARM，也不是 HPM GCC）。
+- **工具链隔离是硬约束**：`ch32_board` 只读取独立的 `WCH_TOOLCHAIN_PATH`，不得把
+  `GNURISCV_TOOLCHAIN_PATH`、`~/3rd_party/hpm` 或 `/opt/riscv32-none-elf` 当作本板的正式
+  编译器。`toolchain-wch-riscv.cmake` 只接受 `riscv32-wch-elf-`（或显式指定的 WCH
+  前缀），不再静默回退到 `riscv32-unknown-elf-`。
+- MounRiver 的 `Toolchain/` 下并排放着三套 GCC，`WCH_TOOLCHAIN_PATH` 必须指向
+  **具体某一套**（含 `bin/` 的那层），不是 `Toolchain/` 本身：
 
   | 目录 | 前缀 | 版本 | 可用性 |
   |---|---|---|---|
   | `RISC-V Embedded GCC` | `riscv-none-embed-` | 8.2.0 | **不可用**，编不了 C++23 |
-  | `RISC-V Embedded GCC12` | `riscv-wch-elf-` | 12.2.0 | 可用 |
-  | `RISC-V Embedded GCC15` | `riscv32-wch-elf-` | 15.2.0 | 可用 |
+  | `RISC-V Embedded GCC12` | `riscv-wch-elf-` | 12.2.0 | 仅保留 GDB 备用，不用于正式编译 |
+  | `RISC-V Embedded GCC15` | `riscv32-wch-elf-` | 15.2.0 | **正式编译器** |
 
   ```bash
-  # 下面的安装位置是 [前机路径]，换机器后改成自己的 MRS 解压目录即可
-  cmake --preset debug -S firmware/ch32_board \
-      -DWCH_TOOLCHAIN_PATH="$HOME/3rd_party/MRS_Toolchain_Linux_X64_V240/Toolchain/RISC-V Embedded GCC15"
+  # 当前机器的安装位置；换机器后改成自己的 MRS 解压目录即可
+  export WCH_TOOLCHAIN_PATH="$HOME/3rd_party/MRS_Toolchain_Linux_X64_V240/Toolchain/RISC-V Embedded GCC15"
+  export WCH_TOOLCHAIN_PREFIX=riscv32-wch-elf-
   ```
-- **为什么默认仍是 HPM 那套**：同一份代码用 MRS GCC15 编出来 app 的 text+data 从
-  113364 B 涨到 124472 B（FLASH 占用 86.5% -> **95.0%**，区域只有 128 KB）。两边都开了
-  `--specs=nano.specs`，差异来自 GCC 13.2/15.2 与各自 newlib 的构建。要用 MRS 编就先
-  确认这个余量能接受。
+- **代码尺寸约束**：MRS GCC15 的 Debug app 当前使用 125332 B，FLASH 占用 **95.62%**
+  （区域只有 128 KB）；Release app 使用 49124 B / **37.48%**。早期 HPM GCC13 Debug
+  构建为 113364 B / 86.5%。选择官方工具链后接受 Debug 体积代价，但每次构建仍必须检查
+  链接器的 FLASH 占用，避免静默越界。[Docker 实测 2026-08-05]
+- **Docker / CI 现状**：`librmcs-ci` 已把 MounRiver V240 的 GCC15 安装到独立目录
+  `/opt/wch-gcc15`，并设置 `WCH_TOOLCHAIN_PATH` / `WCH_TOOLCHAIN_PREFIX`。镜像固定为
+  `linux/amd64`；Docker 构建从官网 API 取得临时签名地址，并校验固定的资源 ID、文件大小
+  和 SHA-256。Lint 和 Release 都会实际构建 `ch32_board`，由 HPM 编译器生成的产物仍不
+  作为正式结果。CH32 当前纳入 clang-format，但 clang-tidy 因 WCH 厂商宏误报而在
+  `.scripts/lint-targets.yml` 中显式禁用。[官网与 Docker 实测 2026-08-05]
 
 ## 构建
 ```bash
-export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm      # [前机路径]
+export WCH_TOOLCHAIN_PATH="$HOME/3rd_party/MRS_Toolchain_Linux_X64_V240/Toolchain/RISC-V Embedded GCC15"
+export WCH_TOOLCHAIN_PREFIX=riscv32-wch-elf-
 cmake --preset debug -S firmware/ch32_board
 cmake --build firmware/ch32_board/build
 # -> build/ch32_board_app.elf   (V5F @0x10000)
 # -> build/ch32_board_boot.elf  (V3F @0x0)
 # -> build/ch32_board_merged.hex  <- 烧这个
 ```
+- 在 `librmcs-ci` / `librmcs-develop` 容器内不需要手动 `export`，镜像已经设置上述变量。
 - preset：`debug` / `release`。target：`ch32_board_app` / `ch32_board_boot` /
   `ch32_board_merged`（默认全建）。**`boot` 既是 V3F 启动核镜像，也是 DFU
   bootloader**——本芯片 V3F 先复位、拥有时钟树、决定要不要唤醒 V5F，这本来就是
@@ -74,9 +96,9 @@ cmake --build firmware/ch32_board/build
 
 > **路径说明**：本节的 OpenOCD 取自 MounRiver 工具链包。前机上曾经单独放过一份
 > `~/3rd_party/wch-openocd`（`README.md` 里保留的就是那个版本的写法），后来改为直接用
-> MRS 包内自带的，所以以 **本节路径为准**。两个路径都是 `[前机路径]`，当前机器都未安装，
-> 含义见[仓库根 AGENTS.md](../../AGENTS.md#开发机环境路径约定重要先读这条再看任何路径)；
-> 换机器后只需把 `OCD=` 指向新装的 MRS 包即可，命令序列不变。
+> MRS 包内自带的，所以以 **本节路径为准**。当前机器已安装本节的 MRS 路径；旧的
+> `~/3rd_party/wch-openocd` 仍不存在。换机器后只需把 `OCD=` 指向新装的 MRS 包即可，
+> 命令序列不变。OpenOCD、Ozone 和 J-Link 在宿主机运行，不由通用开发容器访问 USB。
 
 注意是 **`OpenOCD/OpenOCD/bin`** 两层同名目录，`wch-riscv.cfg` 等 cfg 就和
 `openocd` 放在同一个 `bin/` 里：
@@ -112,15 +134,14 @@ $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg \
 OCD=~/3rd_party/MRS_Toolchain_Linux_X64_V240/OpenOCD/OpenOCD
 $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg -c "init" -c "wch_riscv unfreeze" -c "halt"
 # 另开一个终端
-~/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux/bin/riscv32-unknown-elf-gdb \
+~/3rd_party/MRS_Toolchain_Linux_X64_V240/Toolchain/RISC-V\ Embedded\ GCC12/bin/riscv-wch-elf-gdb \
     firmware/ch32_board/build/ch32_board_app.elf -ex "target extended-remote :3333"
 ```
 - **不要用 `RISC-V Embedded GCC15` 里的 `riscv32-wch-elf-gdb`**：它链的是
   `libpython3.8.so.1.0`，在只装了 python 3.12 的系统上直接 `error while loading
   shared libraries` 起不来。
-- 可用的 gdb 有两个，任选：HPM 那套的 `riscv32-unknown-elf-gdb` **13.2**（推荐，版本最新，
-  能读 GCC 15 默认输出的 DWARF 5），或 MRS `RISC-V Embedded GCC12` 里的
-  `riscv-wch-elf-gdb` **12.1**。gdb 不需要和编译器同源，能解析 RISC-V ELF/DWARF 即可。
+- 使用 MRS `RISC-V Embedded GCC12` 里的 `riscv-wch-elf-gdb` **12.1** 作为调试器。
+  GDB 不需要与编译器同版本，但必须留在 WCH 独立工具包内，不再借用 HPM 工具链。
 - 调试同样受"调试口与 USB 抢线"的限制，见 `PITFALLS.md`：halt 会让主机判 USB 掉线，
   且 `resume` 拉不回来，必须 `reset run`。
 

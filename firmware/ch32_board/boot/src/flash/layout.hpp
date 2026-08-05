@@ -29,8 +29,7 @@ inline constexpr size_t kEraseBlockSizeDualBank = 8U * 1024U;
 
 inline size_t erase_block_size() {
     const auto config = *reinterpret_cast<volatile uint32_t*>(FLASH_CFGR0_BASE);
-    return (config & kFlashConfigDualBankBit) ? kEraseBlockSizeDualBank
-                                              : kEraseBlockSizeSingleBank;
+    return (config & kFlashConfigDualBankBit) ? kEraseBlockSizeDualBank : kEraseBlockSizeSingleBank;
 }
 
 // Partitioning, in alias addresses.
@@ -45,7 +44,7 @@ inline size_t erase_block_size() {
 // here and the linker scripts by accident -- the static_asserts below tie them.
 inline constexpr uintptr_t kBootloaderStartAddress = 0x00000000U;
 inline constexpr uintptr_t kAppStartAddress = 0x00010000U;
-inline constexpr uintptr_t kAppEndAddress = 0x00070000U; // exclusive
+inline constexpr uintptr_t kAppEndAddress = 0x00070000U;      // exclusive
 inline constexpr uintptr_t kMetadataStartAddress = 0x00070000U;
 inline constexpr uintptr_t kMetadataEndAddress = 0x00072000U; // exclusive
 

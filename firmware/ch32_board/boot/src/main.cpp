@@ -147,7 +147,8 @@ void allocate_v5f_irqs() {
     // Read on a serial terminal @921600: RCC->CTLR bit16=HSEON, bit17=HSERDY.
     // If HSERDY(bit17)=1 the crystal started; if HSEON=1 but HSERDY=0 it did not.
     // SysClk far above HSI (e.g. ~100 MHz on V3F) also confirms HSE+PLL are live.
-    printf("V3F boot: SysClk=%u HCLK=%u RCC->CTLR=%08x RCC->CFGR0=%08x [HSEON=b16 HSERDY=b17]\r\n",
+    printf(
+        "V3F boot: SysClk=%u HCLK=%u RCC->CTLR=%08x RCC->CFGR0=%08x [HSEON=b16 HSERDY=b17]\r\n",
         static_cast<unsigned>(SystemCoreClock), static_cast<unsigned>(HCLKClock),
         static_cast<unsigned>(RCC->CTLR), static_cast<unsigned>(RCC->CFGR0));
 
@@ -200,11 +201,12 @@ void allocate_v5f_irqs() {
             NVIC_SystemReset();
         }
 
-        shared().telemetry.emplace_back(TelemetryRecord{
-            .timestamp = 0,
-            .sequence = sequence,
-            .value = 0,
-        });
+        shared().telemetry.emplace_back(
+            TelemetryRecord{
+                .timestamp = 0,
+                .sequence = sequence,
+                .value = 0,
+            });
         Delay_Ms(1);
     }
 }

@@ -7,7 +7,9 @@
 
 ## 摘要
 
-本机（Ubuntu 22.04.5 LTS）已配置完成，`host` / `firmware/ch32_board` 实测可编。
+本文记录全仓库构建依赖和安装参考；当前机器实际已安装的工具以根 `AGENTS.md` 的
+“开发机环境路径约定”为准。`ch32_board` 的正式构建要求独立的 MounRiver WCH GCC15，
+当前机器和 `librmcs-ci` 镜像均已安装。
 
 > **本文不含任何内核调优。** 跑起来之后的主机侧设置——CPU governor、C-state / PM QoS、
 > USB autosuspend、`isolcpus`/`nohz_full`、xHCI 中断优先级、IOMMU、网卡参数——
@@ -70,6 +72,49 @@ export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm
 
 详见 `firmware/ch32_board/AGENTS.md`。
 
+## Docker 构建环境
+
+`zyi024424/librmcs-ci:latest` 是 GitHub Actions 和 Release 共用的 `linux/amd64` 构建
+环境，包含三套互相隔离的交叉工具链：
+
+| 目标 | 容器路径 | 编译器 |
+|---|---|---|
+| STM32 `c_board` / `mc02` | `/opt/arm-none-eabi` | ARM GNU 15.3.rel1 |
+| HPM `rmcs_board` | `/opt/riscv32-none-elf` | HPM GCC 13.2.0 |
+| WCH `ch32_board` | `/opt/wch-gcc15` | MounRiver GCC 15.2.0 |
+
+WCH 工具链来自 MounRiver V240 官方 Linux X64 归档。Docker 构建通过官方 API 获取临时
+签名地址，固定资源 ID `2030114123741700098`、归档大小 `411269512` 字节和 SHA-256
+`1fae593d27e24466f17c2df0fd00f746143f587fe33e912a78e35142fef82a6d`，并且只提取
+`Toolchain/RISC-V Embedded GCC15`。[官网与归档实测 2026-08-05]
+
+本地构建镜像：
+
+```bash
+docker buildx build --platform linux/amd64 --target ci \
+  -t zyi024424/librmcs-ci:latest --load .
+```
+
+当前 Docker 镜像、固件 Release 和 SDK Debian 包都只发布 amd64；不再构建 arm64 变体。
+
+日常开发直接拉取 `zyi024424/librmcs-develop:latest` 并使用仓库的 Dev Container 配置；
+提交 `Dockerfile` 到 `main` 后，`Docker Image CI` 会自动重新构建并推送 `ci` / `develop`
+镜像，成功后再触发 Lint，避免 Lint 提前拉到旧镜像。普通代码提交只拉取镜像执行 Lint
+和编译，不会重建工具链镜像。
+
+### 编译与硬件调试边界
+
+- Docker 负责 CMake、编译、clang-format、已启用目标的 clang-tidy 和生成 ELF/HEX/DFU；
+  GitHub Runner 没有实体板卡，也只执行这些步骤。`ch32_board` 当前强制执行格式与完整编译，
+  但 clang-tidy 因 WCH 厂商宏在调用点产生大量误报而显式禁用，状态会打印在 CI 日志中。
+- Ozone、SEGGER J-Link Software、MounRiver WCH OpenOCD 和连接实体 USB 的 `dfu-util`
+  在宿主机运行。Dev Container 默认不映射 `/dev`，避免 Docker Desktop USB/IP 和特权
+  容器成为日常开发依赖。
+- 镜像内仍安装 `dfu-util`，目的是构建时使用 `dfu-suffix` 生成 DFU 产物，不表示容器负责
+  访问物理 USB。
+- 将来若建立专用原生 Linux 硬件测试机，可另建 hardware-in-the-loop Runner，再按设备
+  白名单映射 USB；不要把该权限加回通用 CI/开发容器。
+
 ## clang-format / clang-tidy
 
 ```bash
@@ -81,18 +126,19 @@ sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang
 > **本机实际装的是 18**（`clang-format-18` / `clang-tidy-18`，无 update-alternatives 条目），
 > 满足上表的"≥ 16"，`.scripts/clang-*-check` 正常工作。上面的命令是推荐版本，不是本机现状。
 
-> `main` 分支本身就有存量格式漂移，lint 在干净 checkout 上也 fail。
-> 判断标准用**增量对比 HEAD**，不看绝对数字。
-
-## 实测可编
+## 构建命令
 
 ```bash
 # host SDK
 cmake --preset linux-debug -S host && cmake --build host/build
 
 # ch32_board
-export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm
+export WCH_TOOLCHAIN_PATH="$HOME/3rd_party/MRS_Toolchain_Linux_X64_V240/Toolchain/RISC-V Embedded GCC15"
+export WCH_TOOLCHAIN_PREFIX=riscv32-wch-elf-
 cmake --preset debug -S firmware/ch32_board && cmake --build firmware/ch32_board/build
 ```
+
+在 `librmcs-ci` / `librmcs-develop` 容器内无需手动导出上述两个 WCH 变量，镜像已经固定为
+`/opt/wch-gcc15` 和 `riscv32-wch-elf-`。
 
 > `RAM: 100.00%` 是正常的，不是溢出。判断是否撑爆看 FLASH。

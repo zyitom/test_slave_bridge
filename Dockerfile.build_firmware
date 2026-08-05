@@ -1,4 +1,4 @@
-FROM qzhhhi/librmcs-ci AS build
+FROM zyi024424/librmcs-ci AS build
 
 SHELL ["/bin/bash", "-c"]
 
@@ -8,14 +8,14 @@ RUN --mount=type=bind,target=/src,source=.,readonly \
     mkdir -p /output; \
     LIBRMCS_PROJECT_VERSION="$(.scripts/generate_version)"; \
     for board in rmcs_board; do \
-        for variant in pro lite; do \
+        for variant in hpm5321 hpm5321_dual_can; do \
             build_dir="/tmp/build-${board}-${variant}"; \
             artifact_name="${board}-${variant}"; \
             cmake --preset release -S "firmware/${board}" -B "${build_dir}" -DBOARD="${variant}"; \
             cmake --build "${build_dir}"; \
-            cp "${build_dir}/bootloader/output/rmcs_board_bootloader.elf" \
+            cp "${build_dir}/bootloader/output/rmcs_board_bootloader_${variant}.elf" \
                 "/output/librmcs-bootloader-${artifact_name}.elf"; \
-            cp "${build_dir}/app/output/rmcs_board_app.dfu" \
+            cp "${build_dir}/app/output/rmcs_board_app_${variant}.dfu" \
                 "/output/librmcs-firmware-${artifact_name}-${LIBRMCS_PROJECT_VERSION}.dfu"; \
         done; \
     done; \
@@ -27,7 +27,17 @@ RUN --mount=type=bind,target=/src,source=.,readonly \
             "/output/librmcs-bootloader-${board}.elf"; \
         cp "${build_dir}/app/${board}_app.dfu" \
             "/output/librmcs-firmware-${board}-${LIBRMCS_PROJECT_VERSION}.dfu"; \
-    done
+    done; \
+    board=ch32_board; \
+    build_dir="/tmp/build-${board}"; \
+    cmake --preset release -S "firmware/${board}" -B "${build_dir}"; \
+    cmake --build "${build_dir}"; \
+    cp "${build_dir}/${board}_boot.elf" \
+        "/output/librmcs-bootloader-${board}.elf"; \
+    cp "${build_dir}/${board}_app.dfu" \
+        "/output/librmcs-firmware-${board}-${LIBRMCS_PROJECT_VERSION}.dfu"; \
+    cp "${build_dir}/${board}_merged.hex" \
+        "/output/librmcs-firmware-${board}-${LIBRMCS_PROJECT_VERSION}.hex"
 
 FROM scratch AS output
 COPY --from=build /output/ /

@@ -37,7 +37,7 @@ inline void force_led_red() noexcept {
     // (diag[0..10]) and app (diag[11..25]) own:
     //   diag[26] marker, diag[27] line, diag[28] file, diag[29] function
     // Resolve the two pointers against the ELF, e.g.
-    //   riscv32-unknown-elf-objdump -s -j .rodata build/ch32_board_app.elf
+    //   riscv32-wch-elf-objdump -s -j .rodata build/ch32_board_app.elf
     // TODO(usb-bringup): drop together with the rest of the diag instrumentation.
     {
         auto* diag = reinterpret_cast<volatile uint32_t*>(0x20170000U);

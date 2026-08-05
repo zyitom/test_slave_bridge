@@ -40,7 +40,7 @@ public:
 
         CAN_InitTypeDef config = {};
         config.CAN_TTCM = DISABLE;
-        config.CAN_ABOM = ENABLE; // auto bus-off recovery
+        config.CAN_ABOM = ENABLE;  // auto bus-off recovery
         config.CAN_AWUM = DISABLE;
         config.CAN_NART = DISABLE; // retransmit on arbitration loss / error
         config.CAN_RFLM = DISABLE; // FIFO overwrites: newest frame wins
@@ -62,8 +62,7 @@ public:
         // change, re-pick BS1/BS2 so that (1 + BS1 + BS2) divides
         // peripheral_clock() / bitrate -- keep the sample point near 80%.
         core::utility::assert_always(prescaler >= 1 && prescaler <= 1024);
-        core::utility::assert_always(
-            can_clock == prescaler * port.bitrate * kQuantaPerBit);
+        core::utility::assert_always(can_clock == prescaler * port.bitrate * kQuantaPerBit);
         config.CAN_Prescaler = static_cast<uint16_t>(prescaler);
         core::utility::assert_always(CAN_Init(can_base_, &config) == CAN_InitStatus_Success);
 

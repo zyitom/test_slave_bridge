@@ -13,7 +13,6 @@ extern "C" {
 #include "firmware/ch32_board/app/src/uart/uart.hpp"
 #include "firmware/ch32_board/app/src/usb/dfu_runtime.hpp"
 #include "firmware/ch32_board/app/src/usb/vendor.hpp"
-
 #include "firmware/ch32_board/boot/src/mailbox.hpp"
 
 int main() { librmcs::firmware::app.init().run(); }

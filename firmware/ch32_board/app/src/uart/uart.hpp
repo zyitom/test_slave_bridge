@@ -1,11 +1,11 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <utility>
-#include <array>
 
 extern "C" {
 #include "ch32h417.h"
@@ -227,7 +227,11 @@ private:
         core::utility::assert_always(
             serializer.write_uart(
                 data_id_,
-                {.uart_data = {receive_buffer_, size}, .idle_delimited = is_idle}, {})
+                {
+                    .uart_data = {receive_buffer_, size},
+                      .idle_delimited = is_idle
+        },
+                {})
             != core::protocol::Serializer::SerializeResult::kInvalidArgument);
     }
 

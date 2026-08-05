@@ -1,16 +1,11 @@
 CompileFlags:
   Add:
     - "--target=arm-none-eabi"
-    - "-isystem/opt/arm-none-eabi/arm-none-eabi/include/c++/15.2.1"
-    - "-isystem/opt/arm-none-eabi/arm-none-eabi/include/c++/15.2.1/arm-none-eabi"
-    - "-isystem/opt/arm-none-eabi/arm-none-eabi/include/c++/15.2.1/backward"
-    - "-isystem/opt/arm-none-eabi/lib/gcc/arm-none-eabi/15.2.1/include-fixed"
+    - "-isystem/opt/arm-none-eabi/arm-none-eabi/include/c++/15.3.1"
+    - "-isystem/opt/arm-none-eabi/arm-none-eabi/include/c++/15.3.1/arm-none-eabi"
+    - "-isystem/opt/arm-none-eabi/arm-none-eabi/include/c++/15.3.1/backward"
+    - "-isystem/opt/arm-none-eabi/lib/gcc/arm-none-eabi/15.3.1/include-fixed"
     - "-isystem/opt/arm-none-eabi/arm-none-eabi/include"
-    - "-isystem/opt/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi/arm-none-eabi/include/c++/15.2.1"
-    - "-isystem/opt/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi/arm-none-eabi/include/c++/15.2.1/arm-none-eabi"
-    - "-isystem/opt/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi/arm-none-eabi/include/c++/15.2.1/backward"
-    - "-isystem/opt/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi/lib/gcc/arm-none-eabi/15.2.1/include-fixed"
-    - "-isystem/opt/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi/arm-none-eabi/include"
 Diagnostics:
   Includes:
     IgnoreHeader:

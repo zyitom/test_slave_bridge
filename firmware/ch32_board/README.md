@@ -135,7 +135,8 @@ firmware/ch32_board/
 ## 构建
 
 ```bash
-export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/hpm     # [前机路径] 复用 rmcs_board 的工具链
+export WCH_TOOLCHAIN_PATH="$HOME/3rd_party/MRS_Toolchain_Linux_X64_V240/Toolchain/RISC-V Embedded GCC15"
+export WCH_TOOLCHAIN_PREFIX=riscv32-wch-elf-
 cmake --preset debug -S firmware/ch32_board
 cmake --build firmware/ch32_board/build
 # -> build/ch32_board_app.elf  （V5F，链接地址 0x10000）
@@ -147,15 +148,17 @@ target：`ch32_board_app`、`ch32_board_boot`、`ch32_board_merged`（默认全�
 `ch32_board_boot` 既是 V3F 启动核镜像，**同时也是** DFU bootloader——两者是同一个程序，
 原因见下面的 [Bootloader / DFU](#bootloader--dfu)。
 
-> 工具链的选择（HPM 那套 vs MounRiver 那套）、各自的 FLASH 占用实测数据，见
-> [AGENTS.md 芯片与工具链](AGENTS.md#芯片与工具链)。`~/3rd_party/hpm` 是 `[前机路径]`，
-> 含义见[仓库根 AGENTS.md](../../AGENTS.md#开发机环境路径约定重要先读这条再看任何路径)。
+> 正式构建固定使用 MounRiver GCC15；旧 HPM 构建仅保留作历史尺寸对照。工具链约束与
+> FLASH 占用实测数据见 [AGENTS.md 芯片与工具链](AGENTS.md#芯片与工具链)。当前机器已
+> 安装上述路径；`librmcs-ci` / `librmcs-develop` 则固定使用
+> `/opt/wch-gcc15`。完整约束见
+> [仓库根 AGENTS.md](../../AGENTS.md#开发机环境路径约定重要先读这条再看任何路径)。
 
 ## 关键移植决策
 
-- **用标准工具链，不用 `xw`。** Qingke V5F 实现的是 RV32IMAFC 加上 WCH 私有的 `xw`
-  压缩扩展。我们按 `-march=rv32imafc_zicsr_zifencei -mabi=ilp32f` 构建，**不带** `xw`，
-  这样 rmcs_board 已经在用的上游标准 GCC 就能编译整个 WCH 库。代价仅仅是代码体积略增。
+- **使用 WCH GCC15，但不启用 `xw`。** Qingke V5F 实现的是 RV32IMAFC 加上 WCH 私有的
+  `xw` 压缩扩展。我们仍按 `-march=rv32imafc_zicsr_zifencei -mabi=ilp32f` 构建，避免
+  让仓库代码依赖私有 ISA；编译器来源与 ISA 选择是两件独立的事。
 - **双核，USB 放在 V5F 上。** `-DRun_Core=Run_Core_V3FandV5F`；两个镜像合并成一个 flash
   产物（`ch32_board_merged.hex`，V3F 在 `0x0`、V5F 在 `0x10000`）。V3F 是启动核：它拥有
   时钟树（它的 `SystemInit` 会使能 HSE，而 V5F 那份 `system_ch32h417.c` **不会**），
@@ -197,7 +200,7 @@ warning: argument to 'interrupt' attribute is not '"user"', '"supervisor"', or '
 `__attribute__((interrupt))` 处理函数。**换工具链之后务必复验**：
 
 ```bash
-riscv32-unknown-elf-objdump -d --disassemble=USBSS_LINK_IRQHandler \
+riscv32-wch-elf-objdump -d --disassemble=USBSS_LINK_IRQHandler \
     build/ch32_board_app.elf | tail -3    # 结尾必须是 mret
 ```
 

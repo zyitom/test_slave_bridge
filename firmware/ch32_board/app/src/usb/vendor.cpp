@@ -66,7 +66,7 @@ bool tx_write(const uint8_t* data, size_t size) {
     // TODO(usb-bringup): temporary, pairs with the EP1 OUT counters.
     {
         auto* diag = reinterpret_cast<volatile uint32_t*>(0x20170000u);
-        diag[23]++;             // uplink packets armed
+        diag[23]++; // uplink packets armed
         diag[24] = size;
     }
     return true;
@@ -128,11 +128,11 @@ void usb_ss_ep1_out_complete(void) {
     // the raw registers so the assumption can be checked against hardware.
     {
         auto* diag = reinterpret_cast<volatile uint32_t*>(0x20170000u);
-        diag[15]++;                                       // EP1 OUT completions
+        diag[15]++; // EP1 OUT completions
         diag[16] = nump;
         diag[17] = offset;
         diag[18] = last_packet_size;
-        diag[19] = USBSSD->EP1_RX.UEP_RX_DMA;             // as read after the transfer
+        diag[19] = USBSSD->EP1_RX.UEP_RX_DMA;                    // as read after the transfer
         diag[20] = reinterpret_cast<uint32_t>(USBSS_EP1_Rx_Buf); // armed base, for comparison
         diag[21] = size;
         // First bytes actually landed in the buffer base, so a wrong start

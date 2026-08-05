@@ -239,6 +239,10 @@ def main() -> int:
     overall_rc = 0
 
     for name, target in targets.items():
+        if not target.clang_tidy:
+            print(f"clang-tidy: {name}: disabled by lint-targets.yml", flush=True)
+            continue
+
         files = collect_source_files(
             target.folders, root=root, exclude_dirs=exclude_dirs
         )
