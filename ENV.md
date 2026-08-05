@@ -1,21 +1,30 @@
 # 构建环境
 
 > **文档类型**：现行规范
-> **适用范围**：全仓库，**只管"怎么把代码编出来"**
+> **适用范围**：全仓库构建环境与开发机调试工具安装
 > **状态**：现行有效
 > **相关文档**：[README.md](README.md) · `firmware/<board>/AGENTS.md` · **[HOST_TUNING.md](HOST_TUNING.md)（运行环境：内核 / USB / 网卡调优，不在本文）**
 
 ## 摘要
 
-本文记录全仓库构建依赖和安装参考；当前机器实际已安装的工具以根 `AGENTS.md` 的
-“开发机环境路径约定”为准。`ch32_board` 的正式构建要求独立的 MounRiver WCH GCC15，
-当前机器和 `librmcs-ci` 镜像均已安装。
+本文记录全仓库构建依赖，以及只在宿主机安装的硬件调试工具；当前机器实际已安装的工具
+以根 `AGENTS.md` 的“开发机环境路径约定”为准。`ch32_board` 的正式构建要求独立的
+MounRiver WCH GCC15，当前机器和 `librmcs-ci` 镜像均已安装。
 
 > **本文不含任何内核调优。** 跑起来之后的主机侧设置——CPU governor、C-state / PM QoS、
 > USB autosuspend、`isolcpus`/`nohz_full`、xHCI 中断优先级、IOMMU、网卡参数——
 > 全部在 **[HOST_TUNING.md](HOST_TUNING.md)**，配可执行的 `host-tuning.sh`。
 > 那些设置**除内核 cmdline 外都不持久化，每次重启要重跑**，和本文的"装一次就好"是
 > 两回事，所以分开两份文档。
+
+## 本文导航
+
+| 章节 | 内容 |
+|---|---|
+| [版本要求](#版本要求) | 编译器、构建工具和基础依赖 |
+| [Docker 构建环境](#docker-构建环境) | CI / Dev Container 的工具链和职责边界 |
+| [宿主机调试工具](#宿主机调试工具可选不进-docker) | J-Link、Ozone 与 WCH-LinkE 的安装边界 |
+| [构建命令](#构建命令) | host SDK 与 CH32 的常用命令 |
 
 ## 版本要求
 
@@ -114,6 +123,35 @@ docker buildx build --platform linux/amd64 --target ci \
   访问物理 USB。
 - 将来若建立专用原生 Linux 硬件测试机，可另建 hardware-in-the-loop Runner，再按设备
   白名单映射 USB；不要把该权限加回通用 CI/开发容器。
+
+## 宿主机调试工具（可选，不进 Docker）
+
+SEGGER 工具只安装在需要连接实体调试器的 Linux x86_64 开发机上：
+
+- J-Link Software：<https://www.segger.com/downloads/jlink/JLink_Linux_x86_64.deb>
+- Ozone：<https://www.segger.com/downloads/jlink/Ozone_Linux_x86_64.deb>
+
+J-Link 下载页要求用户在网页中接受 SEGGER Terms of Use；对该地址直接执行 `curl` / `wget`
+会得到许可确认 HTML，而不是 `.deb`，因此不要把下载写进 Dockerfile 或无人值守 CI。
+Ozone 当前可以从固定入口直接取得 `.deb`，但它是依赖实体 J-Link 的 GUI 调试器，也只在
+宿主机安装。用浏览器下载后执行（版本号按实际文件名替换）：
+
+```bash
+cd ~/Downloads
+sudo apt install ./JLink_Linux_V948_x86_64.deb
+sudo apt install ./Ozone_Linux_V350a_x86_64.deb
+dpkg-query -W jlink ozone
+```
+
+安装后，`./jlink-debug.sh` 提供命令行 J-Link GDB Server 流程，`./ozone-debug.sh` 打开
+仓库中预设的 Ozone 工程；可用 `--list` 查看目标。它们用于 `c_board`、`mc02` 和
+`rmcs_board`，**不用于 `ch32_board`**。
+
+CH32H417 的当前官方/已验证链路是 **WCH-LinkE + MounRiver WCH OpenOCD + WCH GDB**。
+[SEGGER 当前支持设备页](https://www.segger.com/supported-devices/jlink/)在 WCH 下只列出
+CH32F1 / CH32F2，没有 CH32H417；本机 J-Link V9.48 设备库也没有该芯片。因此现阶段不能
+用 J-Link/Ozone 替代 WCH-LinkE。[官网与本机实测 2026-08-05] MounRiver 的 SDI 配置、
+烧录命令和双核注意事项见 `firmware/ch32_board/AGENTS.md`。
 
 ## clang-format / clang-tidy
 

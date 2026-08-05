@@ -24,7 +24,17 @@ if(LIBRMCS_SOURCE_PATH_MAP_COMPILE_OPTIONS)
 endif()
 
 set(CH32_BSP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/bsp")
-set(CH32_WCH_ROOT "${CH32_BSP_ROOT}/wch")
+
+# WCH standard peripheral library, a submodule pinned to the ch32h417-evt subset
+# of openwch/ch32h417 (currently V1.5). Unmodified vendor code; our USBSS patches
+# live in bsp/usb/ instead. See bsp/PROVENANCE.md.
+set(CH32_WCH_ROOT "${CH32_BSP_ROOT}/ch32h417-evt/wch")
+if(NOT EXISTS "${CH32_WCH_ROOT}/Core/core_riscv.c")
+    message(FATAL_ERROR
+        "WCH peripheral library missing at ${CH32_WCH_ROOT}. "
+        "Run: git submodule update --init --depth 1 "
+        "firmware/ch32_board/bsp/ch32h417-evt")
+endif()
 
 # CH32H417 is a dual-core part: the V3F core boots at flash 0x0 and wakes the
 # V5F core at 0x10000. Both cores are the same Qingke family (RV32IMAFC + F), so

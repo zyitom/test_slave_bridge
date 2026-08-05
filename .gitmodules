@@ -25,3 +25,7 @@
 [submodule "firmware/mc02/bsp/cmsis-device-h7"]
 	path = firmware/mc02/bsp/cmsis-device-h7
 	url = https://github.com/STMicroelectronics/cmsis-device-h7.git
+[submodule "firmware/ch32_board/bsp/ch32h417-evt"]
+	path = firmware/ch32_board/bsp/ch32h417-evt
+	url = https://github.com/zyitom/ch32h417-evt.git
+	shallow = true

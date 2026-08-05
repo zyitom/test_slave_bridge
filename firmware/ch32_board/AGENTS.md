@@ -100,16 +100,38 @@ cmake --build firmware/ch32_board/build
 > `~/3rd_party/wch-openocd` 仍不存在。换机器后只需把 `OCD=` 指向新装的 MRS 包即可，
 > 命令序列不变。OpenOCD、Ozone 和 J-Link 在宿主机运行，不由通用开发容器访问 USB。
 
-注意是 **`OpenOCD/OpenOCD/bin`** 两层同名目录，`wch-riscv.cfg` 等 cfg 就和
-`openocd` 放在同一个 `bin/` 里：
+本板按当前官方配置和仓库实测必须使用 **WCH-LinkE**。MounRiver 的 `wch-riscv.cfg` 与
+`wch-dual-core.cfg` 都固定为 `adapter driver wlinke`、`transport select sdi`，还依赖
+`wch_riscv unfreeze` 等 WCH 扩展；它不是通用的 J-Link SWD/JTAG 链路。仓库的 J-Link / Ozone
+配置因此不包含 `ch32_board`，当前安装的 J-Link V9.48 设备库也没有 CH32H417 条目。
+[MounRiver 配置与本机实测 2026-08-05]
+
+> **这份 OpenOCD 是 WCH 从主线 0.11 分叉的私有版本，主线和发行版的 openocd 一律不能
+> 替代**——`apt install openocd` 装到的东西第一行 `adapter driver wlinke` 就报错，因为
+> 主线 0.12 的 72 个 adapter 驱动里没有 wlink/sdi 任何一个。而它的**源码未公开**
+> （`openwch/openocd_wch` 只有 2023 年的 Windows 二进制，早于本芯片；源码要发邮件到
+> support@mounriver.com 索取），Linux 版**唯一来源**就是 MounRiver 工具链包。
+>
+> 因为不可替代且无法重建，**已归档入库**：`tools/openocd-wch/`（对仓库根"工具链留在
+> 仓库外"通则的有意例外，理由见该目录 README，**不要按通则清掉**）。x86-64 Linux
+> only，依赖宿主 `libusb-1.0.so.0`；其他平台装 MounRiver 对应包。
+> [本机实测 2026-08-06]
+
+用入库的那份（推荐，路径稳定）：
 ```bash
-OCD=~/3rd_party/MRS_Toolchain_Linux_X64_V240/OpenOCD/OpenOCD
+OCD=firmware/ch32_board/tools/openocd-wch
 $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg \
     -c "init" -c "wch_riscv unfreeze" -c "halt" \
     -c "program firmware/ch32_board/build/ch32_board_merged.hex verify" \
     -c "reset run" -c "exit"
 ```
-- 这份是 OpenOCD `0.11.0+dev-snapshot (2026-02-28)`，三个 cfg（`wch-riscv` /
+
+或用 MRS 包内的原始位置。注意是 **`OpenOCD/OpenOCD/bin`** 两层同名目录，
+`wch-riscv.cfg` 等 cfg 就和 `openocd` 放在同一个 `bin/` 里：
+```bash
+OCD=~/3rd_party/MRS_Toolchain_Linux_X64_V240/OpenOCD/OpenOCD
+```
+- 两处是同一份 `0.11.0+dev-snapshot (2026-02-28)`，三个 cfg（`wch-riscv` /
   `wch-dual-core` / `wch-arm`）与旧版同名同用法，下面所有注意事项照旧适用。
 - **`wch_riscv unfreeze` 必须在 `init` 之后、`halt` 之前**。夹到 `halt` 后面它会静默失效，
   症状是 `program` 报 `Read-Protect Status Currently Enabled` 或
@@ -131,7 +153,7 @@ $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg \
 ## GDB 调试
 先让 openocd 挂着当 gdb server（把上面 `program`/`exit` 换成常驻）：
 ```bash
-OCD=~/3rd_party/MRS_Toolchain_Linux_X64_V240/OpenOCD/OpenOCD
+OCD=firmware/ch32_board/tools/openocd-wch
 $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg -c "init" -c "wch_riscv unfreeze" -c "halt"
 # 另开一个终端
 ~/3rd_party/MRS_Toolchain_Linux_X64_V240/Toolchain/RISC-V\ Embedded\ GCC12/bin/riscv-wch-elf-gdb \
@@ -148,7 +170,17 @@ $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg -c "init" -c "wch_riscv unfreeze" -c 
 ## 目录结构
 - `app/src/`：V5F 上的 C++ librmcs 转发层（`app.cpp` 提供 `main()`，替换被排除的 WCH demo `app/User/main.c`）；`can/ uart/ usb/ timer/ led/ utility/`。
 - `boot/src/`：V3F 启动/卸载核。它 **拥有整棵时钟树**（`SystemInit` 开 HSE，V5F 那份 `system_ch32h417.c` 不开），唤醒 V5F，然后跑共享 SRAM mailbox 的 offload 循环。
-- `bsp/wch/`：vendored WCH 标准外设库。`bsp/usb/`：vendored CH372Device USBSS 设备栈。`bsp/syscalls.c`：newlib stub。
+- `bsp/ch32h417-evt/`：WCH 标准外设库 **submodule**（[`zyitom/ch32h417-evt`](https://github.com/zyitom/ch32h417-evt)，
+  上游 `openwch/ch32h417` V1.5 的精简子集），零本地改动、只读。CMake 只认
+  `CH32_WCH_ROOT` 一个变量，未 init 时直接 `FATAL_ERROR` 提示 `git submodule update`。
+  `wch/Peripheral/` 是**完整 38 个外设驱动**，所以上新外设（sdio / eth / i2c…）不用动
+  submodule，include 头文件即可。`examples/` 是官方示例源码（不参与构建），上新外设前
+  先看那里——WCH 的 demo 常常是 RM 之外唯一的可运行参考。芯片手册按上游做法只给链接
+  不入库，链接在 submodule 的 README。
+- `bsp/usb/`：vendored CH372Device USBSS 设备栈，**有本地 patch 所以留在树内**（那些文件
+  调用 `app/src/usb/vendor.cpp` 的符号）。submodule 里的 `usb/` 是纯净基线，
+  `diff -r bsp/usb bsp/ch32h417-evt/usb` 的每个 hunk 都必须对应一个
+  `LIBRMCS LOCAL PATCH` 标记。`bsp/syscalls.c`：newlib stub。
 - `bsp/` 与 `app/User/` 下厂商代码视为第三方（只读）；已有的 local patch 一律标 `LIBRMCS LOCAL PATCH` 并登记在 `bsp/PROVENANCE.md`，改动前先读那份清单。
 - 无 CubeMX，不适用 CubeMX 纪律。
 

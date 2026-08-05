@@ -1,36 +1,79 @@
 # ch32_board BSP provenance
 
-WCH does **not** ship a git-based SDK for the CH32H417. The only distribution is
-the per-chip **EVT** ("Evaluation board ToolKit") zip from <https://wch-ic.com>.
-There is no upstream repository to submodule (unlike `hpm_sdk`, which is the
-`zyitom/hpm_sdk` fork submodule), so the WCH standard peripheral library is
-**vendored in-tree** under `bsp/wch/` and pinned here.
+WCH does not ship a CMake/Kconfig-style SDK for the CH32H417 the way HPMicro
+ships `hpm_sdk` — the vendor deliverable is the per-chip **EVT** ("Evaluation
+board ToolKit") package: a standard peripheral library plus MounRiver example
+projects, with no build-system abstraction. We supply our own CMake glue.
 
-Treat `bsp/wch/` and `bsp/usb/` as third-party: do not hand-edit except to
-re-vendor a newer EVT (see procedure below). Our own code lives in `app/` and
-`bsp/syscalls.c`.
+The EVT package **is** published as a git repository, however:
+<https://github.com/openwch/ch32h417> (one repo per chip; ~182 MB, mostly
+evaluation-board PDFs, schematics and LVGL demo bitmaps). WCH bumps the whole
+tree at once — commit messages are literally `V1.4`, `V1.5` — roughly five
+releases per year, with no tags.
+
+The peripheral library therefore comes in as a **submodule**,
+`bsp/ch32h417-evt` → [`zyitom/ch32h417-evt`](https://github.com/zyitom/ch32h417-evt),
+a 2.6 MB subset of that upstream (`wch/` = `EVT/EXAM/SRC/`, `usb/` =
+`CH372Device/Common/`) carrying no local modifications. A subset repo rather than
+a fork because our USBSS patches are deletions and rewrites — see the patch list
+below — which would conflict with upstream on every whole-tree bump; and because
+`git rm` of the unwanted 180 MB would not shrink a clone, the blobs stay in
+history.
+
+`bsp/usb/` stays **vendored in-tree** precisely because it is patched: those
+files call into `app/src/usb/vendor.cpp`, so they do not belong in a third-party
+repo. The submodule's own pristine `usb/` copy is the diff baseline:
+
+```bash
+diff -r firmware/ch32_board/bsp/usb firmware/ch32_board/bsp/ch32h417-evt/usb
+```
+
+Treat `bsp/ch32h417-evt/` (read-only, submodule) and `bsp/usb/` as third-party:
+do not hand-edit except to re-vendor (see procedure below). Our own code lives in
+`app/` and `bsp/syscalls.c`.
 
 ## Source
 
 | | |
 |---|---|
-| Package | CH32H417EVT |
+| Upstream repo | <https://github.com/openwch/ch32h417> |
+| Version | **V1.5**, commit `0d9a5a7b2` (merge `a0a56fa83`, 2026-04-13) |
+| Submodule | `zyitom/ch32h417-evt` @ `f83b427` |
 | Publisher | Nanjing Qinheng Microelectronics (WCH) |
-| Package date | 2026.04 |
-| Local copy | `~/Downloads/CH32H417EVT/EVT` |
+| Equivalent zip | CH32H417EVT, package date 2026.04 |
 | Target core | Qingke V5F (RV32IMAFC + WCH `xw`, built without `xw`) |
+
+Verified 2026-08-05: all 88 files under the previous in-tree `bsp/wch/` were
+byte-identical to upstream V1.5 (line endings aside — the zip ships CRLF, both
+git repos LF), so the swap to a submodule changed no compiled input.
 
 ## Vendored trees and their EVT source paths
 
-| In-repo path | EVT source path |
+| In-repo path | Upstream path |
 |---|---|
-| `bsp/wch/Core/` | `EVT/EXAM/SRC/Core/` |
-| `bsp/wch/Peripheral/` | `EVT/EXAM/SRC/Peripheral/` |
-| `bsp/wch/Debug/` | `EVT/EXAM/SRC/Debug/` |
-| `bsp/wch/Startup/` | `EVT/EXAM/SRC/Startup/` |
-| `bsp/wch/Ld/` | `EVT/EXAM/SRC/Ld/` |
-| `bsp/usb/` | `EVT/EXAM/USBSS/DEVICE/CH372Device/Common/` |
+| `bsp/ch32h417-evt/wch/Core/` | `EVT/EXAM/SRC/Core/` |
+| `bsp/ch32h417-evt/wch/Peripheral/` | `EVT/EXAM/SRC/Peripheral/` |
+| `bsp/ch32h417-evt/wch/Debug/` | `EVT/EXAM/SRC/Debug/` |
+| `bsp/ch32h417-evt/wch/Startup/` | `EVT/EXAM/SRC/Startup/` |
+| `bsp/ch32h417-evt/wch/Ld/` | `EVT/EXAM/SRC/Ld/` |
+| `bsp/ch32h417-evt/examples/` | `EVT/EXAM/` minus `SRC/`, LVGL, IDE project files |
+| `bsp/usb/` (patched) | `EVT/EXAM/USBSS/DEVICE/CH372Device/Common/` |
 | `app/User/` (seed) | `EVT/EXAM/USBSS/DEVICE/CH372Device/V5F/User/` |
+
+`wch/Peripheral/` carries the **complete** set of 38 vendor drivers, so bringing up
+a peripheral we have not touched yet (sdio, eth, i2c, …) needs no submodule change —
+just include its header. The 47 category directories under upstream `EVT/EXAM/` are
+not additional drivers; they are 390 MounRiver example projects that all reference
+the one shared `SRC/Peripheral/`. Those demo **sources** are in `examples/` as a
+usage reference — WCH's demos are frequently the only worked example beyond the RM,
+which is how the EP1 chained-DMA receive-length semantics got sorted out. Neither
+`examples/` nor the vendor PDFs it keeps are build inputs.
+
+The submodule's `manuals/` holds the datasheet (DS0 V1.8, 2026-05-14) and reference
+manual (RM V1.7, 2026-04-10). These do **not** come from the EVT package —
+upstream's `Datasheet/` directory ships download links only — so they are versioned
+in the submodule README and will need refreshing when WCH revises them; official
+download links are there too.
 
 ## Pinned file versions (from each file's WCH header)
 
@@ -123,13 +166,36 @@ behaviour and USB 2.0 host support.
 
 ## Re-vendoring procedure (when a newer EVT is released)
 
-1. Download the new `CH32H417EVT` zip from wch-ic.com; unzip to a scratch dir.
-2. Re-copy the trees per the table above **over** `bsp/wch/` and `bsp/usb/`.
-   Do NOT copy `bsp/syscalls.c` or anything under `app/` (those are ours).
-3. `git diff -- firmware/ch32_board/bsp` and review: WCH bumps individual file
-   versions independently, so most files stay byte-identical. Pay attention to
-   `core_riscv.*`, `startup_*.S`, `Ld/V5F/Link_v5f.ld`, and any peripheral we
-   drive (can/usart/dma/gpio/rcc/tim/usbss).
-4. Update the version table above from the new file headers.
-5. Rebuild; re-check the interrupt-return risk documented in `README.md` if
-   `startup_*.S` or the USBSS IT files changed.
+Two stages: refresh the submodule repo, then re-apply our `bsp/usb/` patches.
+
+**Stage 1 — in `zyitom/ch32h417-evt`** (see its README for the copy commands):
+pull the new upstream, overwrite `wch/` and `usb/`, `git diff` and review, update
+its version table, commit, push.
+
+**Stage 2 — in librmcs:**
+
+1. Bump the submodule pointer and update the Source table above.
+2. Diff the new pristine stack against our patched copy and re-apply each entry
+   from the patch list — nothing else in `bsp/usb/` may change:
+
+   ```bash
+   git submodule update --remote firmware/ch32_board/bsp/ch32h417-evt
+   diff -r firmware/ch32_board/bsp/usb firmware/ch32_board/bsp/ch32h417-evt/usb
+   ```
+
+   Every hunk in that output must correspond to a `LIBRMCS LOCAL PATCH` marker.
+   An unexplained hunk means either a patch was lost or upstream moved code under
+   one.
+3. Review the `wch/` side for `core_riscv.*`, `startup_*.S`, `Ld/V5F/Link_v5f.ld`
+   and any peripheral we drive (can / usart / dma / gpio / rcc / tim / usbss).
+   WCH bumps individual file versions independently, so most files stay identical
+   even across a whole-tree release.
+4. Rebuild and check the linker's FLASH usage — the Debug app sits at ~96 % of
+   128 KB, so a vendor growth can silently overflow.
+5. Re-verify the interrupt-return invariant if `startup_*.S` or the USBSS IT
+   files changed (see `README.md` and `PITFALLS.md`):
+
+   ```bash
+   riscv32-wch-elf-objdump -d --disassemble=USBSS_LINK_IRQHandler \
+       build/ch32_board_app.elf | tail -4    # must end in mret, not ret
+   ```

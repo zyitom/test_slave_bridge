@@ -54,10 +54,12 @@
   | OpenOCD | **已装 HPM + WCH 版本** | HPM 版本在 `~/3rd_party/hpm/openocd-build/bin/openocd`；WCH 版本在下方 MRS 目录 |
   | `~/3rd_party/MRS_Toolchain_Linux_X64_V240` | **已装** | MounRiver V240：WCH GCC15 15.2.0、GCC12 GDB 和 WCH OpenOCD。已实测 GCC15 可生成 CH32H417 的 ilp32f ELF |
   | `~/3rd_party/wch-openocd` | 不存在 | 见 `firmware/ch32_board/AGENTS.md` |
+  | `/opt/SEGGER/JLink_V948` | **已装** | SEGGER J-Link Software V9.48，用于 STM32 / HPM 的宿主机调试；不支持当前 CH32H417 链路 |
+  | `/opt/SEGGER/Ozone_V340j` | **已装** | SEGGER Ozone V3.40j，仓库 `ozone/` 工程的 GUI 调试器；不用于 `ch32_board` |
 
   由此，本机可用的组合是：**host SDK + `rmcs_board` 全部固件 + `ch32_board` 正式构建 +
-  HPM/WCH OpenOCD + DFU 烧录**。即使现场没有接 JTAG，`rmcs_board` 仍有两条走 USB 的
-  带内诊断通道，见
+  HPM/WCH OpenOCD + SEGGER J-Link/Ozone + DFU 烧录**。即使现场没有接 JTAG，
+  `rmcs_board` 仍有两条走 USB 的带内诊断通道，见
   `firmware/rmcs_board/AGENTS.md`「板上没有调试器时怎么看现场」。
 
 - **不要凭本节旧措辞断言"本机没有工具链"——先 `ls` 确认。** 路径不存在时也不要删改
@@ -66,6 +68,9 @@
   再把 `GNURISCV_TOOLCHAIN_PATH`、`WCH_TOOLCHAIN_PATH`、`PATH` 等环境变量指向新的
   安装位置；文档里的路径只当参照。
 - 工具链一律**留在仓库外**，不入库、不做 submodule。
+  **唯一例外**：`firmware/ch32_board/tools/openocd-wch/`（WCH 私有 fork 的 OpenOCD，
+  CH32H417 调试链路无可替代，源码未公开、Linux 版只有 MounRiver 包一个来源，所以归档
+  入库）。判据是"不可替代且无法重建"——能重下或有等价替代的工具链一律不入库。
 - **`firmware/mc02` 的两个子模块（`stm32h7xx-hal-driver`、`cmsis-device-h7`）容易被
   漏掉**：仓库 clone 后若 `git submodule status` 输出以 `-` 开头，先执行：
   ```bash

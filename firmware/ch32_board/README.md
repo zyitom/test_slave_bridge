@@ -123,8 +123,8 @@ CH372 demo 把数据当成**纯硬件 DMA 回环**转发：EP1-OUT 直接链到 
 firmware/ch32_board/
   cmake/toolchain-wch-riscv.cmake  # 裸机 RV32IMAFC/ilp32f，不启用 WCH 的 'xw'
   cmake/merge_hex.cmake            # V3F@0x0 + V5F@0x10000 -> 合成单个 .hex
-  bsp/wch/                         # vendored WCH 标准外设库（Core/Peripheral/Debug/Startup/Ld）
-  bsp/usb/                         # vendored CH372Device USBSS 设备栈
+  bsp/ch32h417-evt/                # submodule: WCH 标准外设库（零改动，见 bsp/PROVENANCE.md）
+  bsp/usb/                         # vendored CH372Device USBSS 设备栈（有本地 patch）
   bsp/syscalls.c                   # newlib stub（_write/_sbrk 由 debug.c 提供）
   app/User/                        # V5F app 核的 system_、ch32h417_it、conf
   app/src/                         # librmcs C++ 转发 app（V5F）

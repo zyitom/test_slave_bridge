@@ -3,9 +3,11 @@
 # Flash the ch32_board application over USB DFU.
 #
 # Prerequisite: the V3F boot core image (which IS the DFU bootloader on this
-# part) is already in flash. It is only reachable with a WCH-Link:
+# part) is already in flash. It is only reachable with a WCH-LinkE, using the
+# archived WCH OpenOCD fork (a mainline openocd cannot drive this part -- see
+# firmware/ch32_board/tools/openocd-wch/README.md):
 #
-#   OCD=~/3rd_party/MRS_Toolchain_Linux_X64_V240/OpenOCD/OpenOCD
+#   OCD=firmware/ch32_board/tools/openocd-wch
 #   $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg \
 #       -c "init" -c "wch_riscv unfreeze" -c "halt" \
 #       -c "program firmware/ch32_board/build/ch32_board_merged.hex verify" \
