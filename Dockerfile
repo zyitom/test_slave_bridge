@@ -1,5 +1,7 @@
 FROM ubuntu:24.04 AS builder
 
+ARG RISCV_GNU_TOOLCHAIN_VERSION=2026.07.15
+
 # Install build dependencies for RISC-V GNU Toolchain
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -13,13 +15,28 @@ RUN apt-get update \
 
 # Build RISC-V toolchain from source
 WORKDIR /src
-RUN git clone --depth 1 https://github.com/riscv-collab/riscv-gnu-toolchain \
+RUN git clone --branch "${RISCV_GNU_TOOLCHAIN_VERSION}" --depth 1 \
+        https://github.com/riscv-collab/riscv-gnu-toolchain \
     && cd /src/riscv-gnu-toolchain \
     && git submodule update --init --depth 1 binutils newlib gcc gdb \
     && ./configure --prefix=/opt/riscv32-none-elf --with-arch=rv32gcb --with-abi=ilp32d \
+        --enable-multilib \
     && make -j$(nproc) newlib \
     && ./.github/dedup-dir.sh /opt/riscv32-none-elf/ \
-    && find /opt/riscv32-none-elf -type f -exec sh -c 'file "$1" | grep -q "ELF" && strip "$1"' _ {} \;
+    && find /opt/riscv32-none-elf -type f -exec sh -c 'file "$1" | grep -q "ELF" && strip "$1"' _ {} \; \
+    && printf 'int main(void) { return 0; }\n' \
+        | /opt/riscv32-none-elf/bin/riscv32-unknown-elf-gcc \
+            -march=rv32imac -mabi=ilp32 -specs=nano.specs -x c - \
+            -o /tmp/rv32imac-ilp32-smoke.elf \
+    && /opt/riscv32-none-elf/bin/riscv32-unknown-elf-readelf \
+        -h /tmp/rv32imac-ilp32-smoke.elf | grep -q 'soft-float ABI' \
+    && printf 'int main(void) { return 0; }\n' \
+        | /opt/riscv32-none-elf/bin/riscv32-unknown-elf-gcc \
+            -march=rv32imafc_zicsr_zifencei -mabi=ilp32f \
+            -specs=nano.specs -x c - -o /tmp/rv32imafc-ilp32f-smoke.elf \
+    && /opt/riscv32-none-elf/bin/riscv32-unknown-elf-readelf \
+        -h /tmp/rv32imafc-ilp32f-smoke.elf | grep -q 'single-float ABI' \
+    && rm /tmp/rv32imac-ilp32-smoke.elf /tmp/rv32imafc-ilp32f-smoke.elf
     
 
 FROM ubuntu:24.04 AS ci
