@@ -78,8 +78,7 @@ int main(void) {
          * cable insertion after boot and transient link loss recover without a
          * power cycle. The PDI IRQ preempts this thread-context MDIO poll. */
         const uint32_t now_ms = HW_GetTimer();
-        if ((uint32_t)(now_ms - last_phy_link_poll_ms)
-            >= RMCS_ECAT_PHY_LINK_POLL_INTERVAL_MS) {
+        if ((uint32_t)(now_ms - last_phy_link_poll_ms) >= RMCS_ECAT_PHY_LINK_POLL_INTERVAL_MS) {
             last_phy_link_poll_ms = now_ms;
             (void)board_ecat_refresh_internal_phy_link();
         }

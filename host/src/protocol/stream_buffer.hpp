@@ -196,8 +196,7 @@ public:
         return {begin, size};
     }
 
-    bool try_stage_cyclic_can(
-        data::DataId field_id, const data::CanDataView& view) noexcept {
+    bool try_stage_cyclic_can(data::DataId field_id, const data::CanDataView& view) noexcept {
         if (!cyclic_enabled())
             return false;
         if (!buffer_ && !init_buffer())
@@ -252,9 +251,7 @@ private:
         return *reinterpret_cast<transport::Transport*>(transport_and_flags_ & ~kCyclicFlag);
     }
 
-    bool cyclic_enabled() const noexcept {
-        return (transport_and_flags_ & kCyclicFlag) != 0;
-    }
+    bool cyclic_enabled() const noexcept { return (transport_and_flags_ & kCyclicFlag) != 0; }
 
     static constexpr std::uintptr_t kCyclicFlag = 1;
     std::uintptr_t transport_and_flags_;

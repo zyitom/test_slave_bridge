@@ -23,10 +23,10 @@
 #include "core/src/utility/assert.hpp"
 #include "core/src/utility/immovable.hpp"
 #include "firmware/rmcs_board/app/src/can/can_port.hpp"
-#include "firmware/rmcs_board/app/src/utility/ring_buffer.hpp"
 #include "firmware/rmcs_board/app/src/led/led.hpp"
 #include "firmware/rmcs_board/app/src/link/uplink.hpp"
 #include "firmware/rmcs_board/app/src/utility/lazy.hpp"
+#include "firmware/rmcs_board/app/src/utility/ring_buffer.hpp"
 
 namespace librmcs::firmware::can {
 

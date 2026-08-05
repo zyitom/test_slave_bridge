@@ -128,8 +128,10 @@ public:
 
         int ret = libusb_submit_transfer(transfer);
         if (ret != 0) [[unlikely]] {
-            throw std::runtime_error(std::format(
-                "Failed to submit transmit transfer: {} ({})", ret, helper::libusb_errname(ret)));
+            throw std::runtime_error(
+                std::format(
+                    "Failed to submit transmit transfer: {} ({})", ret,
+                    helper::libusb_errname(ret)));
         }
 
         // If success: Ownership is transferred to libusb
@@ -209,8 +211,9 @@ private:
         uint16_t vendor_id, int32_t product_id, std::string_view serial_filter,
         const ConnectionOptions& options) {
         if (const int ret = libusb_init(&libusb_context_); ret != 0) [[unlikely]] {
-            throw std::runtime_error(std::format(
-                "Failed to initialize libusb: {} ({})", ret, helper::libusb_errname(ret)));
+            throw std::runtime_error(
+                std::format(
+                    "Failed to initialize libusb: {} ({})", ret, helper::libusb_errname(ret)));
         }
         utility::FinalAction exit_libusb{[this]() noexcept { libusb_exit(libusb_context_); }};
 
@@ -221,9 +224,10 @@ private:
 
         if (const int ret = libusb_claim_interface(libusb_device_handle_, kTargetInterface);
             ret != 0) [[unlikely]] {
-            throw std::runtime_error(std::format(
-                "Failed to claim interface {}: {} ({})", kTargetInterface, ret,
-                helper::libusb_errname(ret)));
+            throw std::runtime_error(
+                std::format(
+                    "Failed to claim interface {}: {} ({})", kTargetInterface, ret,
+                    helper::libusb_errname(ret)));
         }
 
         // Libusb successfully initialized
@@ -296,9 +300,10 @@ private:
                 free_transfer_buffer(rx->buffer, rx->is_dev_mem);
                 destroy_libusb_transfer(rx->transfer);
                 delete rx;
-                throw std::runtime_error(std::format(
-                    "Failed to submit receive transfer: {} ({})", ret,
-                    helper::libusb_errname(ret)));
+                throw std::runtime_error(
+                    std::format(
+                        "Failed to submit receive transfer: {} ({})", ret,
+                        helper::libusb_errname(ret)));
             }
         }
     }
@@ -336,8 +341,9 @@ private:
         int ret = libusb_submit_transfer(transfer);
         if (ret != 0) [[unlikely]] {
             if (ret == LIBUSB_ERROR_NO_DEVICE)
-                logger_.error("Failed to re-submit receive transfer: Device disconnected. "
-                              "Terminating...");
+                logger_.error(
+                    "Failed to re-submit receive transfer: Device disconnected. "
+                    "Terminating...");
             else
                 logger_.error(
                     "Failed to re-submit receive transfer: {} ({}). Terminating...", ret,

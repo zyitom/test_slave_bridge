@@ -37,8 +37,8 @@ using XcoreDiagRing = XcoreRing<kXcoreDiagRingSize>;
 // Producer side (core1). Returns the number of bytes accepted; a short return
 // means the ring was full and the remainder was dropped. Safe from any context
 // on core1: XcoreRing is SPSC and core1 is the only producer.
-inline std::size_t xcore_diag_write(
-    XcoreDiagRing& ring, const char* text, std::size_t size) noexcept {
+inline std::size_t
+    xcore_diag_write(XcoreDiagRing& ring, const char* text, std::size_t size) noexcept {
     // try_push is all-or-nothing, so push byte-wise to degrade gracefully into
     // a partial message instead of dropping the whole line.
     std::size_t written = 0;
@@ -53,8 +53,8 @@ inline std::size_t xcore_diag_write(
 
 // Consumer side (core0). Drains up to the buffer size and returns the count.
 // Call from the main loop and hand the bytes to the console.
-inline std::size_t xcore_diag_drain(
-    XcoreDiagRing& ring, char* buffer, std::size_t capacity) noexcept {
+inline std::size_t
+    xcore_diag_drain(XcoreDiagRing& ring, char* buffer, std::size_t capacity) noexcept {
     return ring.pop({reinterpret_cast<std::byte*>(buffer), capacity});
 }
 

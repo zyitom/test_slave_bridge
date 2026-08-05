@@ -33,15 +33,13 @@ static_assert(
     RMCS_PD_CHUNK_SIZE == native::kHybridPdSize,
     "SSC/ESI process data size must equal the hybrid PDO (352 bytes)");
 static_assert(
-    native::kHybridMailboxRegionSize
-        == native::kHybridMailboxCount * native::kNativeMailboxSize,
+    native::kHybridMailboxRegionSize == native::kHybridMailboxCount * native::kNativeMailboxSize,
     "hybrid fixed region must contain all 28 native-format slots");
 static_assert(
     native::kHybridStreamChunkSize == librmcs::ecat::kHybridPdChunkSize,
     "hybrid stream chunk must equal the 12-byte-payload pd_stream chunk");
 static_assert(
-    native::kHybridMailboxCount * native::kNativeRecordSize
-        <= ecat::kXcoreMailboxDownRingSize,
+    native::kHybridMailboxCount * native::kNativeRecordSize <= ecat::kXcoreMailboxDownRingSize,
     "one complete hybrid downlink batch must fit the cross-core ring");
 
 // Byte offsets of the two regions inside the PDO image.
@@ -74,8 +72,8 @@ void drain_uplink_records() {
         for (std::size_t offset = 0; offset + native::kNativeRecordSize <= got;
              offset += native::kNativeRecordSize) {
             const auto* record = reinterpret_cast<const std::uint8_t*>(buffer + offset);
-            const std::uint16_t current_epoch = static_cast<std::uint16_t>(
-                channel->link_epoch.load(std::memory_order::acquire));
+            const std::uint16_t current_epoch =
+                static_cast<std::uint16_t>(channel->link_epoch.load(std::memory_order::acquire));
             if (native::native_record_epoch(record) != current_epoch)
                 continue;
             const std::uint8_t bus = record[native::kNativeRecordBusOffset];
@@ -147,13 +145,12 @@ void rmcs_pd_on_outputs(const uint8_t* pd) {
     // failed push consumes no seq, so the entire batch is retried next cycle.
     std::uint8_t records[native::kHybridMailboxCount * native::kNativeRecordSize];
     std::size_t record_count = 0;
-    const std::uint16_t link_epoch = static_cast<std::uint16_t>(
-        channel->link_epoch.load(std::memory_order::acquire));
+    const std::uint16_t link_epoch =
+        static_cast<std::uint16_t>(channel->link_epoch.load(std::memory_order::acquire));
     const std::uint8_t* mailboxes = pd + kMailboxOffset;
     for (std::size_t mailbox_index = 0; mailbox_index < native::kHybridMailboxCount;
          ++mailbox_index) {
-        const std::uint8_t* mailbox =
-            mailboxes + mailbox_index * native::kNativeMailboxSize;
+        const std::uint8_t* mailbox = mailboxes + mailbox_index * native::kNativeMailboxSize;
         const std::uint8_t seq = mailbox[native::kNativeSeqOffset];
         if (seq == 0 || seq == last_down_seq[mailbox_index])
             continue;
@@ -170,12 +167,10 @@ void rmcs_pd_on_outputs(const uint8_t* pd) {
     }
 
     const std::size_t batch_size = record_count * native::kNativeRecordSize;
-    const std::span<const std::byte> batch{
-        reinterpret_cast<const std::byte*>(records), batch_size};
+    const std::span<const std::byte> batch{reinterpret_cast<const std::byte*>(records), batch_size};
     if (!batch.empty() && channel->mailbox_down.try_push(batch)) {
         for (std::size_t record_index = 0; record_index < record_count; ++record_index) {
-            const std::uint8_t* record =
-                records + record_index * native::kNativeRecordSize;
+            const std::uint8_t* record = records + record_index * native::kNativeRecordSize;
             const std::size_t mailbox_index =
                 record[native::kNativeRecordBusOffset] * native::kHybridSlotsPerBus
                 + record[native::kNativeRecordSlotOffset];
@@ -212,9 +207,7 @@ bool rmcs_pd_uplink_pending(void) {
     return endpoint.ready_to_advance() && channel->up.readable() != 0;
 }
 
-size_t rmcs_pd_downlink_free(void) {
-    return ecat::kXcoreDownRingSize - channel->down.readable();
-}
+size_t rmcs_pd_downlink_free(void) { return ecat::kXcoreDownRingSize - channel->down.readable(); }
 
 size_t rmcs_pd_push_downlink(const uint8_t* data, size_t len) {
     if (len == 0)

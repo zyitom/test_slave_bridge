@@ -33,9 +33,9 @@ namespace internal {
 class UartDescriptors {
     static constexpr UartDescriptor kArray[]{
         UartDescriptor{data::DataId::kUartDbus, data::DataId::kUartDbusConfig},
-        UartDescriptor{data::DataId::kUart1, data::DataId::kUart1Config},
-        UartDescriptor{data::DataId::kUart2, data::DataId::kUart2Config},
-        UartDescriptor{data::DataId::kUart3, data::DataId::kUart3Config},
+        UartDescriptor{   data::DataId::kUart1,    data::DataId::kUart1Config},
+        UartDescriptor{   data::DataId::kUart2,    data::DataId::kUart2Config},
+        UartDescriptor{   data::DataId::kUart3,    data::DataId::kUart3Config},
     };
 
 public:

@@ -86,8 +86,9 @@ void rmcs_pd_on_outputs(const uint8_t* pd) {
         record[native::kNativeRecordBusOffset] = bus;
         std::memcpy(
             record + native::kNativeRecordMailboxOffset, mailbox, native::kNativeMailboxSize);
-        if (channel->down.try_push(std::span<const std::byte>{
-                reinterpret_cast<const std::byte*>(record), native::kNativeRecordSize})) {
+        if (channel->down.try_push(
+                std::span<const std::byte>{
+                    reinterpret_cast<const std::byte*>(record), native::kNativeRecordSize})) {
             last_down_seq[bus] = seq;
         }
     }
@@ -102,9 +103,7 @@ bool rmcs_pd_uplink_pending(void) { return channel->up.readable() != 0; }
 
 // --- USB shuttle (unused in this variant; kept for link compatibility) -------
 
-size_t rmcs_pd_downlink_free(void) {
-    return ecat::kXcoreDownRingSize - channel->down.readable();
-}
+size_t rmcs_pd_downlink_free(void) { return ecat::kXcoreDownRingSize - channel->down.readable(); }
 
 size_t rmcs_pd_push_downlink(const uint8_t* data, size_t len) {
     if (len == 0)

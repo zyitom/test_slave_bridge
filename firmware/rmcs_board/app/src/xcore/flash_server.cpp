@@ -4,24 +4,24 @@
 // unit is empty for them (the app CMakeLists globs it in either way).
 #if defined(LIBRMCS_APP_RELEASE_CORE1) && LIBRMCS_APP_RELEASE_CORE1
 
-#include <cstdint>
+# include <cstdint>
 
-#include <board.h>
-#include <hpm_clock_drv.h>
-#include <hpm_common.h>
-#include <hpm_csr_regs.h>
-#include <hpm_interrupt.h>
-#include <hpm_l1c_drv.h>
-#include <hpm_mbx_drv.h>
-#include <hpm_romapi.h>
-#include <hpm_soc.h>
+# include <board.h>
+# include <hpm_clock_drv.h>
+# include <hpm_common.h>
+# include <hpm_csr_regs.h>
+# include <hpm_interrupt.h>
+# include <hpm_l1c_drv.h>
+# include <hpm_mbx_drv.h>
+# include <hpm_romapi.h>
+# include <hpm_soc.h>
 
-#include "firmware/rmcs_board/app/src/xcore/secondary_core.hpp"
-#include "firmware/rmcs_board/ecat/common/xcore_channel.hpp"
+# include "firmware/rmcs_board/app/src/xcore/secondary_core.hpp"
+# include "firmware/rmcs_board/ecat/common/xcore_channel.hpp"
 
-#if !defined(BOARD_ECAT_FLASH_EMULATE_EEPROM_ADDR)
-# error "flash_server needs BOARD_ECAT_FLASH_EMULATE_EEPROM_ADDR; core1 releases are hpm6e8y only"
-#endif
+# if !defined(BOARD_ECAT_FLASH_EMULATE_EEPROM_ADDR)
+#  error "flash_server needs BOARD_ECAT_FLASH_EMULATE_EEPROM_ADDR; core1 releases are hpm6e8y only"
+# endif
 
 namespace librmcs::firmware::xcore {
 namespace {
@@ -58,8 +58,8 @@ ecat::XcoreFlashRpc* g_rpc = nullptr;
 // ATTR_RAMFUNC is hardening on top. noinline is what makes it real: inlined into
 // the caller these bodies inherit the caller's section, and the attribute would
 // be silently defeated. Verify with `objdump -h`: they must appear in .fast.
-ATTR_RAMFUNC __attribute__((noinline)) hpm_stat_t program_masked(
-    std::uint32_t offset, const std::uint32_t* source, std::uint32_t size) {
+ATTR_RAMFUNC __attribute__((noinline)) hpm_stat_t
+    program_masked(std::uint32_t offset, const std::uint32_t* source, std::uint32_t size) {
     const std::uint32_t flags = disable_global_irq(CSR_MSTATUS_MIE_MASK);
     const hpm_stat_t status = rom_xpi_nor_program(
         BOARD_APP_XPI_NOR_XPI_BASE, xpi_xfer_channel_auto, &g_nor_config, source, offset, size);
@@ -81,8 +81,7 @@ void invalidate_range(std::uint32_t address, std::uint32_t size) {
     l1c_dc_invalidate(start, end - start);
 }
 
-ecat::XcoreFlashStatus execute(
-    ecat::XcoreFlashOp op, std::uint32_t address, std::uint32_t size) {
+ecat::XcoreFlashStatus execute(ecat::XcoreFlashOp op, std::uint32_t address, std::uint32_t size) {
     if (!g_available)
         return ecat::XcoreFlashStatus::kUnavailable;
 
@@ -97,9 +96,8 @@ ecat::XcoreFlashStatus execute(
         // 2-byte-aligned pointers, so staging through the channel removes an
         // unaligned access the SDK port layer has always had.
         const auto* source = reinterpret_cast<const std::uint32_t*>(g_rpc->payload);
-        const hpm_stat_t status =
-            program_masked(address - static_cast<std::uint32_t>(BOARD_FLASH_BASE_ADDRESS),
-                source, size);
+        const hpm_stat_t status = program_masked(
+            address - static_cast<std::uint32_t>(BOARD_FLASH_BASE_ADDRESS), source, size);
         if (status != status_success)
             return ecat::XcoreFlashStatus::kFlashError;
         invalidate_range(address, size);
@@ -117,8 +115,7 @@ ecat::XcoreFlashStatus execute(
         return ecat::XcoreFlashStatus::kOk;
     }
     case ecat::XcoreFlashOp::kNone:
-    default:
-        return ecat::XcoreFlashStatus::kBadOp;
+    default: return ecat::XcoreFlashStatus::kBadOp;
     }
 }
 
@@ -173,12 +170,10 @@ void flash_server_init() {
     // runs masked and exactly once -- and only here, never on core1.
     std::uint32_t sector_size = 0;
     const std::uint32_t flags = disable_global_irq(CSR_MSTATUS_MIE_MASK);
-    hpm_stat_t status =
-        rom_xpi_nor_auto_config(BOARD_APP_XPI_NOR_XPI_BASE, &g_nor_config, &option);
+    hpm_stat_t status = rom_xpi_nor_auto_config(BOARD_APP_XPI_NOR_XPI_BASE, &g_nor_config, &option);
     if (status == status_success)
         status = rom_xpi_nor_get_property(
-            BOARD_APP_XPI_NOR_XPI_BASE, &g_nor_config, xpi_nor_property_sector_size,
-            &sector_size);
+            BOARD_APP_XPI_NOR_XPI_BASE, &g_nor_config, xpi_nor_property_sector_size, &sector_size);
     restore_global_irq(flags & CSR_MSTATUS_MIE_MASK);
 
     g_available = (status == status_success) && (sector_size == kSectorSize);

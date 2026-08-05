@@ -40,19 +40,17 @@ void hybrid_link_init(XcoreChannel& channel) { g_channel = &channel; }
 namespace librmcs::firmware::link {
 
 bool hybrid_fixed_active() {
-    return g_channel != nullptr
-        && g_channel->usb_active.load(std::memory_order::acquire) == 0;
+    return g_channel != nullptr && g_channel->usb_active.load(std::memory_order::acquire) == 0;
 }
 
 bool hybrid_can_uplink(std::size_t bus, const data::CanDataView& data) {
-    if (g_channel == nullptr || bus >= native::kNativeBusCount
-        || data.is_extended_can_id || data.is_remote_transmission
-        || data.can_id > 0x7FFU || data.can_data.size() > native::kNativeMaxDataSize) {
+    if (g_channel == nullptr || bus >= native::kNativeBusCount || data.is_extended_can_id
+        || data.is_remote_transmission || data.can_id > 0x7FFU
+        || data.can_data.size() > native::kNativeMaxDataSize) {
         return false;
     }
 
-    const std::uint32_t link_epoch =
-        g_channel->link_epoch.load(std::memory_order::acquire);
+    const std::uint32_t link_epoch = g_channel->link_epoch.load(std::memory_order::acquire);
     if (g_channel->usb_active.load(std::memory_order::acquire) != 0)
         return false;
 
@@ -81,12 +79,12 @@ bool hybrid_can_uplink(std::size_t bus, const data::CanDataView& data) {
 
     // A full ring also falls back to the reliable stream in can.cpp; advance
     // the round-robin slot only after a successful publish.
-    if (!g_channel->mailbox_up.try_push(std::span<const std::byte>{
-            reinterpret_cast<const std::byte*>(record), native::kNativeRecordSize})) {
+    if (!g_channel->mailbox_up.try_push(
+            std::span<const std::byte>{
+                reinterpret_cast<const std::byte*>(record), native::kNativeRecordSize})) {
         return false;
     }
-    g_next_uplink_slot[bus] =
-        static_cast<std::uint8_t>((slot + 1U) % native::kHybridSlotsPerBus);
+    g_next_uplink_slot[bus] = static_cast<std::uint8_t>((slot + 1U) % native::kHybridSlotsPerBus);
     return true;
 }
 

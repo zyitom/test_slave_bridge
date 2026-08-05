@@ -51,8 +51,8 @@ public:
     // Optional cyclic CAN sideband used by the explicit EtherCAT hybrid API.
     // Ordinary USB/SOEM/stream buffers keep the default `false` behavior, so
     // their protocol bytes and reliable event semantics are unchanged.
-    virtual bool try_stage_cyclic_can(
-        data::DataId field_id, const data::CanDataView& view) noexcept {
+    virtual bool
+        try_stage_cyclic_can(data::DataId field_id, const data::CanDataView& view) noexcept {
         (void)field_id;
         (void)view;
         return false;
@@ -158,8 +158,8 @@ public:
     // Optional direct receive path paired with try_stage_cyclic_can(). The
     // callback is invoked on the same transport cycle thread as receive(), so a
     // hybrid transport never calls the Handler concurrently from two threads.
-    virtual void receive_cyclic_can(
-        std::function<void(data::DataId, const data::CanDataView&)> callback) {
+    virtual void
+        receive_cyclic_can(std::function<void(data::DataId, const data::CanDataView&)> callback) {
         (void)callback;
     }
 

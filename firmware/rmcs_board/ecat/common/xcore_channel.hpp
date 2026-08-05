@@ -106,7 +106,7 @@ enum class XcoreFlashStatus : std::uint32_t {
     kOk = 0,
     kUnavailable = 1, // core0 never brought the NOR up
     kBadOp = 2,
-    kBadRange = 3, // outside the emulated-EEPROM window, or misaligned
+    kBadRange = 3,    // outside the emulated-EEPROM window, or misaligned
     kFlashError = 4,
 };
 

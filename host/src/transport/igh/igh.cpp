@@ -357,8 +357,7 @@ public:
         if (mode == "hybrid") {
             hybrid_mode_ = true;
         } else if (mode != "stream") {
-            throw std::runtime_error{
-                "unknown RMCS_ECAT_MODE (expected stream or hybrid)"};
+            throw std::runtime_error{"unknown RMCS_ECAT_MODE (expected stream or hybrid)"};
         }
 
         // Frames in flight. 1 is stop-and-wait and stays the default because
@@ -406,10 +405,8 @@ public:
         if (hybrid_mode_) {
             pdo_entry_count = kHybridPdoEntryCount;
             for (unsigned i = 0; i < kHybridFixedEntryCount; ++i) {
-                out_entries[i] = {
-                    kHybridOutputFixedIndex, static_cast<uint8_t>(i + 1), 32};
-                in_entries[i] = {
-                    kHybridInputFixedIndex, static_cast<uint8_t>(i + 1), 32};
+                out_entries[i] = {kHybridOutputFixedIndex, static_cast<uint8_t>(i + 1), 32};
+                in_entries[i] = {kHybridInputFixedIndex, static_cast<uint8_t>(i + 1), 32};
             }
             for (unsigned i = 0; i < kHybridStreamEntryCount; ++i) {
                 out_entries[kHybridFixedEntryCount + i] = {
@@ -447,8 +444,7 @@ public:
 
         const uint16_t output_base_index =
             hybrid_mode_ ? kHybridOutputFixedIndex : kOutputEntryIndex;
-        const uint16_t input_base_index =
-            hybrid_mode_ ? kHybridInputFixedIndex : kInputEntryIndex;
+        const uint16_t input_base_index = hybrid_mode_ ? kHybridInputFixedIndex : kInputEntryIndex;
         // Registering the same PDO entry in a second domain is what allocates
         // the second FMMU pair: ec_slave_config_prepare_fmmu() only reuses an
         // FMMU when domain AND sync manager match. Offsets are per-domain.
@@ -478,8 +474,8 @@ public:
             PdChannel& channel = channels_[i];
             channel.process_data = ecrt_domain_data(channel.domain);
             if (!channel.process_data)
-                throw std::runtime_error{std::format(
-                    "ecrt_domain_data returned null after activate for channel {}", i)};
+                throw std::runtime_error{
+                    std::format("ecrt_domain_data returned null after activate for channel {}", i)};
             channel.outputs = reinterpret_cast<std::byte*>(channel.process_data + off_out[i]);
             channel.inputs = reinterpret_cast<std::byte*>(channel.process_data + off_in[i]);
             channel.stream_outputs =
@@ -501,8 +497,8 @@ public:
         logger_.info(
             R"(EtherCAT (IgH) {} link up (interface hint "{}"): {}B PDO, {}B stream chunk, )"
             R"(pipeline depth {}, vendor 0x{:08X} product 0x{:08X})",
-            hybrid_mode_ ? "hybrid" : "stream", ifname, process_data_size(),
-            stream_chunk_size(), pipeline_depth_, kVendorId, kProductCode);
+            hybrid_mode_ ? "hybrid" : "stream", ifname, process_data_size(), stream_chunk_size(),
+            pipeline_depth_, kVendorId, kProductCode);
 
         if (options.thread_setup) {
             std::atomic<bool> thread_setup_done{false};
@@ -661,8 +657,8 @@ private:
         // Swapping is the only cycle-thread operation on the hand-off state.
         // If the producer publishes between the load and exchange, the
         // exchange simply takes that newer bank, preserving latest-wins.
-        const std::uint32_t published = cyclic_middle_state_.exchange(
-            cyclic_consumer_bank_, std::memory_order_acq_rel);
+        const std::uint32_t published =
+            cyclic_middle_state_.exchange(cyclic_consumer_bank_, std::memory_order_acq_rel);
         cyclic_consumer_bank_ = published & kCyclicBankIndexMask;
         const CyclicBatch& pending = cyclic_banks_[cyclic_consumer_bank_];
 
@@ -683,8 +679,7 @@ private:
                 std::byte* destination = cyclic_output_image_.data() + offset;
                 const std::byte* source = pending.image.data() + offset;
                 std::memcpy(
-                    destination + ecat::kNativeMetaOffset,
-                    source + ecat::kNativeMetaOffset,
+                    destination + ecat::kNativeMetaOffset, source + ecat::kNativeMetaOffset,
                     ecat::kNativeMailboxSize - ecat::kNativeMetaOffset);
 
                 std::uint8_t seq = cyclic_output_seq_[mailbox_index];
@@ -712,8 +707,8 @@ private:
         // Recovery is off the healthy hot path. Serialize with producers, take
         // and discard the currently published bank, then reset the live image.
         const std::scoped_lock guard{cyclic_producer_mutex_};
-        const std::uint32_t published = cyclic_middle_state_.exchange(
-            cyclic_consumer_bank_, std::memory_order_acq_rel);
+        const std::uint32_t published =
+            cyclic_middle_state_.exchange(cyclic_consumer_bank_, std::memory_order_acq_rel);
         cyclic_consumer_bank_ = published & kCyclicBankIndexMask;
         cyclic_output_image_.fill(std::byte{0});
         if (reset_sequences)
@@ -736,32 +731,27 @@ private:
     }
 
     void deliver_cyclic_inputs(const PdChannel& channel) {
-        if (!hybrid_mode_
-            || !cyclic_receive_callback_registered_.load(std::memory_order_acquire)) {
+        if (!hybrid_mode_ || !cyclic_receive_callback_registered_.load(std::memory_order_acquire)) {
             return;
         }
 
         for (std::size_t mailbox_index = 0; mailbox_index < ecat::kHybridMailboxCount;
              ++mailbox_index) {
-            const std::byte* mailbox =
-                channel.inputs + mailbox_index * ecat::kNativeMailboxSize;
-            const std::uint8_t seq =
-                static_cast<std::uint8_t>(mailbox[ecat::kNativeSeqOffset]);
+            const std::byte* mailbox = channel.inputs + mailbox_index * ecat::kNativeMailboxSize;
+            const std::uint8_t seq = static_cast<std::uint8_t>(mailbox[ecat::kNativeSeqOffset]);
             if (seq == 0 || seq == cyclic_input_seq_[mailbox_index])
                 continue;
             cyclic_input_seq_[mailbox_index] = seq;
 
-            const std::uint8_t meta =
-                static_cast<std::uint8_t>(mailbox[ecat::kNativeMetaOffset]);
+            const std::uint8_t meta = static_cast<std::uint8_t>(mailbox[ecat::kNativeMetaOffset]);
             const std::uint8_t length = ecat::native_meta_length(meta);
             if (length > ecat::kNativeMaxDataSize)
                 continue;
 
-            const std::uint32_t can_id =
-                static_cast<std::uint8_t>(mailbox[ecat::kNativeIdOffset])
-                | static_cast<std::uint32_t>(
-                      static_cast<std::uint8_t>(mailbox[ecat::kNativeIdOffset + 1]))
-                      << 8;
+            const std::uint32_t can_id = static_cast<std::uint8_t>(mailbox[ecat::kNativeIdOffset])
+                                       | static_cast<std::uint32_t>(static_cast<std::uint8_t>(
+                                             mailbox[ecat::kNativeIdOffset + 1]))
+                                             << 8;
             const data::CanDataView view{
                 .can_id = can_id,
                 .can_data = {mailbox + ecat::kNativeDataOffset, length},
@@ -769,8 +759,7 @@ private:
                 .is_extended_can_id = false,
                 .is_remote_transmission = false,
             };
-            cyclic_receive_callback_(
-                can_data_id(mailbox_index / ecat::kHybridSlotsPerBus), view);
+            cyclic_receive_callback_(can_data_id(mailbox_index / ecat::kHybridSlotsPerBus), view);
         }
     }
 
@@ -956,8 +945,7 @@ private:
                     // is therefore a reset signature even if the cached AL
                     // state changed SAFEOP -> OP too quickly to observe.
                     const bool peer_reset =
-                        slave_left_op_
-                        || static_cast<std::uint8_t>(channel.stream_inputs[1]) == 0;
+                        slave_left_op_ || static_cast<std::uint8_t>(channel.stream_inputs[1]) == 0;
                     if (peer_reset) {
                         reset_endpoint();
                         transmit_ring_.clear();
@@ -1072,8 +1060,7 @@ private:
         ec_slave_config_state_t slave_state{};
         if (ecrt_slave_config_state(slave_config_, &slave_state) != 0)
             return;
-        if (!slave_state.online || !slave_state.operational
-            || slave_state.al_state != kAlStateOp) {
+        if (!slave_state.online || !slave_state.operational || slave_state.al_state != kAlStateOp) {
             if (slave_left_op_)
                 return;
 

@@ -97,8 +97,7 @@ constexpr uint8_t kEpnumDataOut = 0x01;
 constexpr uint8_t kEpnumDataIn = 0x81;
 constexpr uint16_t kBulkMaxPacket = 512;
 
-constexpr size_t kConfigTotalLen =
-    TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN + TUD_DFU_RT_DESC_LEN;
+constexpr size_t kConfigTotalLen = TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN + TUD_DFU_RT_DESC_LEN;
 
 constexpr uint8_t kConfigurationDescriptor[] = {
     TUD_CONFIG_DESCRIPTOR(
@@ -156,8 +155,7 @@ char* write_hex_u16(uint16_t value, char* buffer) {
 }
 
 uint32_t runtime_ms() {
-    const uint64_t ticks_per_ms =
-        static_cast<uint64_t>(clock_get_frequency(clock_mchtmr0)) / 1000U;
+    const uint64_t ticks_per_ms = static_cast<uint64_t>(clock_get_frequency(clock_mchtmr0)) / 1000U;
     return static_cast<uint32_t>(mchtmr_get_count(HPM_MCHTMR) / ticks_per_ms);
 }
 
@@ -189,9 +187,7 @@ void request_reboot_to_bootloader() {
     dcd_sof_enable(0, true);
 }
 
-[[noreturn]] void reboot_to_bootloader() {
-    librmcs::firmware::boot::BootMailbox::reboot();
-}
+[[noreturn]] void reboot_to_bootloader() { librmcs::firmware::boot::BootMailbox::reboot(); }
 
 void poll_dfu_runtime_reboot() {
     if (!g_dfu_runtime_reboot_requested)

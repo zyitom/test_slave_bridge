@@ -29,7 +29,7 @@ inline constexpr std::size_t kHybridSlotsPerBus = 7;
 inline constexpr std::size_t kHybridMailboxCount = kNativeBusCount * kHybridSlotsPerBus;
 inline constexpr std::size_t kHybridMailboxRegionOffset = 0;
 inline constexpr std::size_t kHybridMailboxRegionSize =
-    kHybridMailboxCount * kNativeMailboxSize; // 336
+    kHybridMailboxCount * kNativeMailboxSize;                                      // 336
 inline constexpr std::size_t kHybridStreamRegionOffset = kHybridMailboxRegionSize; // 336
 inline constexpr std::size_t kHybridStreamChunkSize = 16;
 inline constexpr std::size_t kHybridPdSize =

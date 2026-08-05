@@ -4,29 +4,29 @@
 // is empty for them (the SDK globs it in either way).
 #if defined(LIBRMCS_APP_RELEASE_CORE1) && LIBRMCS_APP_RELEASE_CORE1
 
-#include <cstddef>
-#include <cstdint>
+# include <cstddef>
+# include <cstdint>
 
-#include <board.h>
-#include <hpm_clock_drv.h>
-#include <hpm_debug_console.h>
-#include <hpm_mbx_drv.h>
-#include <hpm_soc.h>
+# include <board.h>
+# include <hpm_clock_drv.h>
+# include <hpm_debug_console.h>
+# include <hpm_mbx_drv.h>
+# include <hpm_soc.h>
 
 extern "C" {
 // The SDK sample helper carries no extern "C" guard of its own (it is only ever
 // consumed from C sources), and it relies on uint8_t/uint32_t already being
 // declared, so it has to follow the headers above inside this block.
-#include <multicore_common.h>
+# include <multicore_common.h>
 }
 
-#include "core/include/librmcs/data/datas.hpp"
-#include "core/src/protocol/protocol.hpp"
-#include "core/src/protocol/serializer.hpp"
-#include "firmware/rmcs_board/app/src/link/uplink.hpp"
-#include "firmware/rmcs_board/app/src/timer/timer.hpp"
-#include "firmware/rmcs_board/ecat/common/xcore_channel.hpp"
-#include "firmware/rmcs_board/ecat/common/xcore_diag.hpp"
+# include "core/include/librmcs/data/datas.hpp"
+# include "core/src/protocol/protocol.hpp"
+# include "core/src/protocol/serializer.hpp"
+# include "firmware/rmcs_board/app/src/link/uplink.hpp"
+# include "firmware/rmcs_board/app/src/timer/timer.hpp"
+# include "firmware/rmcs_board/ecat/common/xcore_channel.hpp"
+# include "firmware/rmcs_board/ecat/common/xcore_diag.hpp"
 
 namespace librmcs::firmware::xcore {
 namespace {
@@ -102,7 +102,7 @@ bool wait_for_core1_eeprom(std::uint32_t timeout_ms) {
     return true;
 }
 
-#if defined(LIBRMCS_APP_DIAG_OVER_USB) && LIBRMCS_APP_DIAG_OVER_USB
+# if defined(LIBRMCS_APP_DIAG_OVER_USB) && LIBRMCS_APP_DIAG_OVER_USB
 
 // Relay core1's diagnostic text to the host as UART0 uplink frames.
 //
@@ -133,16 +133,19 @@ void relay_diagnostics_over_usb() {
 
     (void)link::uplink_serializer().write_uart(
         static_cast<core::protocol::FieldId>(data::DataId::kUart0),
-        {.uart_data = {reinterpret_cast<const std::byte*>(text), size}, .idle_delimited = true});
+        {
+            .uart_data = {reinterpret_cast<const std::byte*>(text), size},
+              .idle_delimited = true
+    });
 }
 
-#endif
+# endif
 
 void poll_diagnostics() {
-#if defined(LIBRMCS_APP_DIAG_OVER_USB) && LIBRMCS_APP_DIAG_OVER_USB
+# if defined(LIBRMCS_APP_DIAG_OVER_USB) && LIBRMCS_APP_DIAG_OVER_USB
     relay_diagnostics_over_usb();
     return;
-#else
+# else
     // Never block the main loop for a log byte. console_send_byte() busy-waits
     // on THR-empty (~87 us per byte at 115200 baud), so draining a burst of
     // core1 boot messages through it would stall tud_task() and the CAN/UART
@@ -161,7 +164,7 @@ void poll_diagnostics() {
             return;
         }
     }
-#endif
+# endif
 }
 
 } // namespace librmcs::firmware::xcore

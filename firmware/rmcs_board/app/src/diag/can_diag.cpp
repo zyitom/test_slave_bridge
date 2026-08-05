@@ -1,22 +1,23 @@
 #include "firmware/rmcs_board/app/src/diag/can_diag.hpp"
+
 #include "firmware/rmcs_board/app/src/uart/uart.hpp"
 
 #if defined(LIBRMCS_APP_CAN_DIAG) && LIBRMCS_APP_CAN_DIAG
 
-#include <atomic>
-#include <cstring>
+# include <atomic>
+# include <cstring>
 
-#include <hpm_common.h>
-#include <hpm_mcan_drv.h>
-#include <hpm_mcan_regs.h>
-#include <hpm_plic_drv.h>
-#include <hpm_soc.h>
+# include <hpm_common.h>
+# include <hpm_mcan_drv.h>
+# include <hpm_mcan_regs.h>
+# include <hpm_plic_drv.h>
+# include <hpm_soc.h>
 
-#include "board_app.hpp"
-#include "core/include/librmcs/data/datas.hpp"
-#include "core/src/protocol/protocol.hpp"
-#include "core/src/protocol/serializer.hpp"
-#include "firmware/rmcs_board/app/src/link/uplink.hpp"
+# include "board_app.hpp"
+# include "core/include/librmcs/data/datas.hpp"
+# include "core/src/protocol/protocol.hpp"
+# include "core/src/protocol/serializer.hpp"
+# include "firmware/rmcs_board/app/src/link/uplink.hpp"
 
 namespace librmcs::firmware::diag {
 namespace {
@@ -52,8 +53,8 @@ std::byte* put_u32(std::byte* cursor, std::uint32_t value) {
 // The claim register is deliberately never read: reading it performs a claim and
 // would itself steal an interrupt. Pending and enable are plain reads.
 std::uint32_t plic_pending_word(std::size_t word) {
-    const auto* const base = reinterpret_cast<volatile std::uint32_t*>(
-        HPM_PLIC_BASE + HPM_PLIC_PENDING_OFFSET);
+    const auto* const base =
+        reinterpret_cast<volatile std::uint32_t*>(HPM_PLIC_BASE + HPM_PLIC_PENDING_OFFSET);
     return base[word];
 }
 
@@ -61,8 +62,8 @@ std::uint32_t plic_pending_word(std::size_t word) {
 // decides whether an interrupt asserted while the gateway is in service can be
 // lost outright, so it is worth having in the record rather than assumed.
 std::uint32_t plic_trigger_word(std::size_t word) {
-    const auto* const base = reinterpret_cast<volatile std::uint32_t*>(
-        HPM_PLIC_BASE + HPM_PLIC_TRIGGER_TYPE_OFFSET);
+    const auto* const base =
+        reinterpret_cast<volatile std::uint32_t*>(HPM_PLIC_BASE + HPM_PLIC_TRIGGER_TYPE_OFFSET);
     return base[word];
 }
 
@@ -176,7 +177,10 @@ void poll(std::uint32_t tick) {
     // record sequence numbers is itself a symptom worth seeing on the host.
     (void)link::uplink_serializer().write_uart(
         static_cast<core::protocol::FieldId>(data::DataId::kUart0),
-        {.uart_data = {record, kRecordSize}, .idle_delimited = true});
+        {
+            .uart_data = {record, kRecordSize},
+              .idle_delimited = true
+    });
 }
 
 } // namespace librmcs::firmware::diag

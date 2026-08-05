@@ -65,8 +65,7 @@ inline constexpr std::size_t kPdChunkHeaderSize = 4;
 inline constexpr std::size_t kPdChunkPayloadSize = 44;
 inline constexpr std::size_t kPdChunkSize = kPdChunkHeaderSize + kPdChunkPayloadSize;
 inline constexpr std::size_t kHybridPdChunkPayloadSize = 12;
-inline constexpr std::size_t kHybridPdChunkSize =
-    kPdChunkHeaderSize + kHybridPdChunkPayloadSize;
+inline constexpr std::size_t kHybridPdChunkSize = kPdChunkHeaderSize + kHybridPdChunkPayloadSize;
 
 // In-flight chunks per direction. 2 is exactly enough for one-chunk-per-frame
 // cadence (the ack for chunk k returns while chunk k+1 is on the wire); a
@@ -163,8 +162,7 @@ public:
             may_stage_ = false;
         } else if (frame_credit && count_ < kPdWindow) {
             Slot& slot = slots_[(head_ + count_) % kPdWindow];
-            slot.len = static_cast<std::uint16_t>(
-                transmit_ring.pop({slot.payload, payload_size}));
+            slot.len = static_cast<std::uint16_t>(transmit_ring.pop({slot.payload, payload_size}));
             if (slot.len != 0) {
                 tx_seq_ = next_seq(tx_seq_);
                 slot.seq = tx_seq_;

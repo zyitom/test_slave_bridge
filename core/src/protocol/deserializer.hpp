@@ -45,7 +45,8 @@ public:
     [[nodiscard]] virtual bool gpio_analog_read_config_deserialized_callback(
         uint8_t channel_index, const data::GpioReadConfigView& data) = 0;
 
-    virtual void accelerometer_deserialized_callback(const data::ImuAccelerometerDataView& data) = 0;
+    virtual void
+        accelerometer_deserialized_callback(const data::ImuAccelerometerDataView& data) = 0;
 
     virtual void gyroscope_deserialized_callback(const data::ImuGyroscopeDataView& data) = 0;
 

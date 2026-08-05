@@ -118,8 +118,7 @@ int main() {
             view.is_remote_transmission = false;
             view.can_id = can_id;
             view.can_data = {
-                reinterpret_cast<const std::byte*>(mailbox + native::kNativeDataOffset),
-                length};
+                reinterpret_cast<const std::byte*>(mailbox + native::kNativeDataOffset), length};
             can::can_array[bus]->handle_downlink(view);
         }
 
@@ -147,8 +146,9 @@ int main() {
                     std::memcpy(
                         mailbox + native::kNativeDataOffset, view.can_data.data(),
                         view.can_data.size());
-                while (!channel.up.try_push(std::span<const std::byte>{
-                    reinterpret_cast<const std::byte*>(record), native::kNativeRecordSize})) {}
+                while (!channel.up.try_push(
+                    std::span<const std::byte>{
+                        reinterpret_cast<const std::byte*>(record), native::kNativeRecordSize})) {}
                 published = true;
             }
         }
@@ -275,9 +275,8 @@ int main() {
         // Host -> CAN (mailboxes): forward each downlink record to its bus, the
         // same transmit path the native variant uses.
         const std::size_t got = channel.mailbox_down.pop(mailbox_buffer);
-        const bool discard_mailboxes =
-            channel.usb_active.load(std::memory_order::acquire) != 0
-            || !ecat::host_link->session_established();
+        const bool discard_mailboxes = channel.usb_active.load(std::memory_order::acquire) != 0
+                                    || !ecat::host_link->session_established();
         for (std::size_t offset = 0; offset + native::kNativeRecordSize <= got;
              offset += native::kNativeRecordSize) {
             // Keep consuming while USB owns the link or the protocol session is
@@ -286,10 +285,9 @@ int main() {
             // a handover that occurs partway through this batch.
             const auto* record = reinterpret_cast<const std::uint8_t*>(mailbox_buffer + offset);
             const std::uint16_t record_epoch = native::native_record_epoch(record);
-            const std::uint16_t current_epoch = static_cast<std::uint16_t>(
-                channel.link_epoch.load(std::memory_order::acquire));
-            if (discard_mailboxes
-                || channel.usb_active.load(std::memory_order::acquire) != 0
+            const std::uint16_t current_epoch =
+                static_cast<std::uint16_t>(channel.link_epoch.load(std::memory_order::acquire));
+            if (discard_mailboxes || channel.usb_active.load(std::memory_order::acquire) != 0
                 || record_epoch != current_epoch) {
                 continue;
             }
@@ -313,13 +311,12 @@ int main() {
             view.is_remote_transmission = false;
             view.can_id = can_id;
             view.can_data = {
-                reinterpret_cast<const std::byte*>(mailbox + native::kNativeDataOffset),
-                length};
+                reinterpret_cast<const std::byte*>(mailbox + native::kNativeDataOffset), length};
             // Narrow the handover race once more immediately before touching
             // CAN. A record that passed the first check but was superseded
             // while being decoded is dropped instead of crossing ownership.
-            const std::uint16_t final_epoch = static_cast<std::uint16_t>(
-                channel.link_epoch.load(std::memory_order::acquire));
+            const std::uint16_t final_epoch =
+                static_cast<std::uint16_t>(channel.link_epoch.load(std::memory_order::acquire));
             if (!ecat::host_link->session_established()
                 || channel.usb_active.load(std::memory_order::acquire) != 0
                 || record_epoch != final_epoch) {

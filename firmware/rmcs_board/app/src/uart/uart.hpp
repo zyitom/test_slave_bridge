@@ -67,8 +67,7 @@ public:
         // merely expected to be idle.
         TxBuffer::abort_transmit();
 
-        const hpm_stat_t status =
-            uart_set_baudrate(uart_base_, *data.baudrate, uart_clock_hz_);
+        const hpm_stat_t status = uart_set_baudrate(uart_base_, *data.baudrate, uart_clock_hz_);
         // Unconditionally, and before anything else touches the port:
         // uart_set_baudrate() sets DLAB up front but returns early WITHOUT
         // clearing it when its solver rejects the baudrate, so on that path the

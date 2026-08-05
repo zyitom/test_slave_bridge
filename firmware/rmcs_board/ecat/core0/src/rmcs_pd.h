@@ -25,9 +25,9 @@ extern "C" {
  * keep 48.
  */
 #if defined(RMCS_ECAT_HYBRID_PD) && RMCS_ECAT_HYBRID_PD
-#define RMCS_PD_CHUNK_SIZE (352U)
+# define RMCS_PD_CHUNK_SIZE (352U)
 #else
-#define RMCS_PD_CHUNK_SIZE (48U)
+# define RMCS_PD_CHUNK_SIZE (48U)
 #endif
 
 /* Construct and publish the shared-memory channel. Must be called BEFORE

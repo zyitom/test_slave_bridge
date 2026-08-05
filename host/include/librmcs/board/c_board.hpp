@@ -8,8 +8,8 @@
 #include <librmcs/data/datas.hpp>
 #include <librmcs/protocol/handler.hpp>
 #include <librmcs/spec/c_board/can.hpp>
-#include <librmcs/spec/c_board/uart.hpp>
 #include <librmcs/spec/c_board/gpio.hpp>
+#include <librmcs/spec/c_board/uart.hpp>
 #include <librmcs/spec/gpio.hpp>
 
 namespace librmcs::board {
@@ -89,7 +89,8 @@ public:
         void gyroscope_receive_callback(const librmcs::data::ImuGyroscopeDataView& data) override {
             (void)data;
         }
-        void temperature_receive_callback(const librmcs::data::ImuTemperatureDataView& data) override {
+        void temperature_receive_callback(
+            const librmcs::data::ImuTemperatureDataView& data) override {
             (void)data;
         }
 

@@ -19,18 +19,18 @@
 
 #if defined(LIBRMCS_APP_RELEASE_CORE1) && LIBRMCS_APP_RELEASE_CORE1
 
-#include <algorithm>
-#include <cstddef>
-#include <cstdint>
-#include <span>
+# include <algorithm>
+# include <cstddef>
+# include <cstdint>
+# include <span>
 
-#include <class/vendor/vendor_device.h>
-#include <device/usbd.h>
+# include <class/vendor/vendor_device.h>
+# include <device/usbd.h>
 
-#include "core/src/utility/assert.hpp"
-#include "firmware/rmcs_board/app/src/link/host_session.hpp"
-#include "firmware/rmcs_board/app/src/utility/lazy.hpp"
-#include "firmware/rmcs_board/ecat/common/xcore_channel.hpp"
+# include "core/src/utility/assert.hpp"
+# include "firmware/rmcs_board/app/src/link/host_session.hpp"
+# include "firmware/rmcs_board/app/src/utility/lazy.hpp"
+# include "firmware/rmcs_board/ecat/common/xcore_channel.hpp"
 
 namespace librmcs::firmware::xcore {
 

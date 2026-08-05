@@ -23,8 +23,7 @@ volatile bool g_dfu_runtime_reboot_requested = false;
 volatile uint32_t g_dfu_runtime_reboot_requested_ms = 0U;
 
 uint32_t runtime_ms() {
-    const uint64_t ticks_per_ms =
-        static_cast<uint64_t>(clock_get_frequency(clock_mchtmr0)) / 1000U;
+    const uint64_t ticks_per_ms = static_cast<uint64_t>(clock_get_frequency(clock_mchtmr0)) / 1000U;
     return static_cast<uint32_t>(mchtmr_get_count(HPM_MCHTMR) / ticks_per_ms);
 }
 

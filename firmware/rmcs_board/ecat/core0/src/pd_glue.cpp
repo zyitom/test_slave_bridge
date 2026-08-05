@@ -75,9 +75,7 @@ bool rmcs_pd_uplink_pending(void) {
     return endpoint.ready_to_advance() && channel->up.readable() != 0;
 }
 
-size_t rmcs_pd_downlink_free(void) {
-    return ecat::kXcoreDownRingSize - channel->down.readable();
-}
+size_t rmcs_pd_downlink_free(void) { return ecat::kXcoreDownRingSize - channel->down.readable(); }
 
 size_t rmcs_pd_push_downlink(const uint8_t* data, size_t len) {
     if (len == 0)

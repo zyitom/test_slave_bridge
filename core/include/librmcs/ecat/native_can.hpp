@@ -65,8 +65,7 @@ inline constexpr std::uint16_t native_record_epoch(const std::uint8_t* record) n
          | static_cast<std::uint16_t>(record[kNativeRecordEpochOffset + 1]) << 8;
 }
 
-inline constexpr void native_record_set_epoch(
-    std::uint8_t* record, std::uint16_t epoch) noexcept {
+inline constexpr void native_record_set_epoch(std::uint8_t* record, std::uint16_t epoch) noexcept {
     record[kNativeRecordEpochOffset] = static_cast<std::uint8_t>(epoch);
     record[kNativeRecordEpochOffset + 1] = static_cast<std::uint8_t>(epoch >> 8);
 }

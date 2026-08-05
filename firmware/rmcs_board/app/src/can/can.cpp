@@ -287,7 +287,7 @@ void Can::handle_interrupt_flags(uint32_t flags) {
     if (flags & MCAN_INT_RXFIFO0_NEW_MSG) [[likely]] {
         // Drain the FIFO completely: RF0N is a status bit, not a counter, so
         // one interrupt may stand for several buffered frames.
-#if defined(RMCS_ECAT_HYBRID_PD) && RMCS_ECAT_HYBRID_PD
+# if defined(RMCS_ECAT_HYBRID_PD) && RMCS_ECAT_HYBRID_PD
         if (!link::hybrid_fixed_active()) {
             // USB owns the shared stream: preserve the original serializer path
             // byte-for-byte, including extended/RTR frames and timestamps.
@@ -310,8 +310,7 @@ void Can::handle_interrupt_flags(uint32_t flags) {
                 if (!valid)
                     continue;
                 if (link::hybrid_can_uplink(
-                        static_cast<size_t>(data_id_)
-                            - static_cast<size_t>(data::DataId::kCan0),
+                        static_cast<size_t>(data_id_) - static_cast<size_t>(data::DataId::kCan0),
                         view)) {
                     forwarded = true;
                 } else if (link::uplink_enabled()) {
@@ -321,7 +320,7 @@ void Can::handle_interrupt_flags(uint32_t flags) {
             if (forwarded)
                 link::hybrid_uplink_notify();
         }
-#else
+# else
         if (link::uplink_enabled()) {
             auto& serializer = link::uplink_serializer();
             while (handle_uplink(data_id_, serializer)) {}
@@ -329,7 +328,7 @@ void Can::handle_interrupt_flags(uint32_t flags) {
             mcan_rx_message_t rx;
             while (mcan_read_rxfifo(can_base_, 0, &rx) == status_success) {}
         }
-#endif
+# endif
     }
 #endif
     // Native variant: RX FIFO0 is drained by the core1 poll loop, and the

@@ -7,10 +7,10 @@
 #include <librmcs/board/common.hpp>
 #include <librmcs/data/datas.hpp>
 #include <librmcs/protocol/handler.hpp>
-#include <librmcs/spec/mc02/can.hpp>
-#include <librmcs/spec/mc02/uart.hpp>
 #include <librmcs/spec/gpio.hpp>
+#include <librmcs/spec/mc02/can.hpp>
 #include <librmcs/spec/mc02/gpio.hpp>
+#include <librmcs/spec/mc02/uart.hpp>
 
 namespace librmcs::board {
 
@@ -98,7 +98,8 @@ public:
             (void)data;
         }
         // mc02 firmware does not report IMU temperature; kept to satisfy the interface.
-        void temperature_receive_callback(const librmcs::data::ImuTemperatureDataView& data) override {
+        void temperature_receive_callback(
+            const librmcs::data::ImuTemperatureDataView& data) override {
             (void)data;
         }
 

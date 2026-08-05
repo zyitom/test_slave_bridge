@@ -2,14 +2,14 @@
 
 #if defined(LIBRMCS_APP_RELEASE_CORE1) && LIBRMCS_APP_RELEASE_CORE1
 
-#include <atomic>
-#include <cstddef>
-#include <cstdint>
+# include <atomic>
+# include <cstddef>
+# include <cstdint>
 
-#include "core/src/protocol/serializer.hpp"
-#include "firmware/rmcs_board/app/src/link/uplink.hpp"
-#include "firmware/rmcs_board/app/src/xcore/secondary_core.hpp"
-#include "firmware/rmcs_board/ecat/common/xcore_channel.hpp"
+# include "core/src/protocol/serializer.hpp"
+# include "firmware/rmcs_board/app/src/link/uplink.hpp"
+# include "firmware/rmcs_board/app/src/xcore/secondary_core.hpp"
+# include "firmware/rmcs_board/ecat/common/xcore_channel.hpp"
 
 namespace librmcs::firmware::link {
 

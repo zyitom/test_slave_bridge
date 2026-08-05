@@ -65,7 +65,8 @@ public:
         void gyroscope_receive_callback(const librmcs::data::ImuGyroscopeDataView& data) override {
             (void)data;
         }
-        void temperature_receive_callback(const librmcs::data::ImuTemperatureDataView& data) override {
+        void temperature_receive_callback(
+            const librmcs::data::ImuTemperatureDataView& data) override {
             (void)data;
         }
 
