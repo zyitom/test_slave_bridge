@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <span>
 
 // Shared between the rmcs_board EtherCAT firmware (core0 PDO callbacks) and
 // the host transports (soem.cpp / igh.cpp); both sides run the same symmetric

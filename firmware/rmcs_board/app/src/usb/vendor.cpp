@@ -73,8 +73,6 @@ extern "C" {
 // family.c (which this project does not build), so bind it here in app code
 // instead of patching the SDK's dcd_hpm.c -- this keeps the hpm_sdk submodule
 // pristine across version bumps. dcd_int_handler is tinyusb's device ISR entry.
-void dcd_int_handler(uint8_t rhport);
-
 SDK_DECLARE_EXT_ISR_M(IRQn_USB0, rmcs_usb0_isr)
 void rmcs_usb0_isr(void) { dcd_int_handler(0); }
 

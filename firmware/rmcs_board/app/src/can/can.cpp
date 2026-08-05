@@ -90,6 +90,9 @@ void Can::try_transmit() {
 
         if (mcan_transmit_via_txfifo_nonblocking(can_base_, &frame, nullptr) != status_success)
             return; // FIFO full; the rest stays queued for the next pass
+        // The queue API transfers ownership to the callback; discarding the
+        // completed frame intentionally does not require moving from it.
+        // NOLINTNEXTLINE(cppcoreguidelines-rvalue-reference-param-not-moved)
         transmit_buffer_.pop_front([](QueuedFrame&&) noexcept {});
     }
 }
@@ -149,7 +152,8 @@ bool Can::read_uplink(data::CanDataView& data, uint8_t storage[8], bool& valid) 
         && ts_value.is_64bit) {
         const auto sec = static_cast<uint32_t>(ts_value.ts_64bit >> 32);
         const auto ns = static_cast<uint32_t>(ts_value.ts_64bit);
-        data.timestamp_us = sec * (1'000'000'000U / kTsNsPerUs) + (sec * 2U) / 3U + ns / kTsNsPerUs;
+        data.timestamp_us =
+            (sec * (1'000'000'000U / kTsNsPerUs)) + ((sec * 2U) / 3U) + (ns / kTsNsPerUs);
     }
 
     valid = true;

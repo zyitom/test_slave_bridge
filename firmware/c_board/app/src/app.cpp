@@ -1,5 +1,7 @@
 #include "firmware/c_board/app/src/app.hpp"
 
+#include <cstdint>
+
 #include <can.h>
 #include <device/usbd.h>
 #include <dma.h>
@@ -35,6 +37,7 @@ namespace librmcs::firmware {
 // and run location in CCM (_sccmram.._eccmram). The F4 startup code only copies
 // .data and clears .bss, so the App constructor stands in for the .ccmram copy.
 extern "C" {
+// NOLINTNEXTLINE(readability-identifier-naming)
 extern uint32_t _siccmram, _sccmram, _eccmram;
 }
 
@@ -44,6 +47,9 @@ App::App() {
     // Copy hot CPU-only forwarding state (serializer + USB batch buffers + CAN TX
     // rings) into zero-wait CCM before any of those globals are used. The M4 has
     // no data cache, so the writes land directly; interrupts are masked here.
+    // The destination must remain writable; this clang-tidy check does not
+    // account for the increment-and-store expression in the loop body.
+    // NOLINTNEXTLINE(misc-const-correctness)
     for (uint32_t *dst = &_sccmram, *src = &_siccmram; dst < &_eccmram;)
         *dst++ = *src++;
 

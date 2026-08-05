@@ -81,9 +81,10 @@ public:
         return true;
     }
 
-private:
+protected:
     void session_activated_callback() override { transmitted_size_ = 0; }
 
+private:
     size_t transmitted_size_ = 0;
 };
 

@@ -224,18 +224,18 @@ public:
 constexpr size_t kUartCount = std::size(board::kUartPorts);
 
 ATTR_PLACE_AT(LIBRMCS_DMA_BUFFER_SECTION)
-inline constinit Uart::RxStorage uart_rx_storage_[kUartCount]{};
+inline constinit Uart::RxStorage uart_rx_storage[kUartCount]{};
 ATTR_PLACE_AT(LIBRMCS_DMA_BUFFER_SECTION)
-inline constinit Uart::TxStorage uart_tx_storage_[kUartCount]{};
+inline constinit Uart::TxStorage uart_tx_storage[kUartCount]{};
 
 inline Uart::Uart(UartPort port, size_t storage_index)
     : TxBuffer(
           reinterpret_cast<UART_Type*>(port.base), port.dma_src_tx,
-          uart_tx_storage_[storage_index].data.data(), &uart_tx_storage_[storage_index].descriptor)
+          uart_tx_storage[storage_index].data.data(), &uart_tx_storage[storage_index].descriptor)
     , RxBuffer(
           reinterpret_cast<UART_Type*>(port.base), port.dma_src_rx,
-          uart_rx_storage_[storage_index].data.data(),
-          uart_rx_storage_[storage_index].descriptors.data())
+          uart_rx_storage[storage_index].data.data(),
+          uart_rx_storage[storage_index].descriptors.data())
     , data_id_(port.data_id)
     , config_data_id_(port.config_data_id)
     , uart_base_(reinterpret_cast<UART_Type*>(port.base))
@@ -247,14 +247,15 @@ inline Uart::Uart(UartPort port, size_t storage_index)
 
 namespace internal {
 
-template <std::size_t I>
+template <std::size_t index>
 consteval Uart::Lazy make_uart() {
-    return Uart::Lazy{board::kUartPorts[I], I};
+    return Uart::Lazy{board::kUartPorts[index], index};
 }
 
-template <std::size_t... I>
-consteval std::array<Uart::Lazy, sizeof...(I)> make_uart_array(std::index_sequence<I...>) {
-    return {make_uart<I>()...};
+template <std::size_t... indices>
+consteval std::array<Uart::Lazy, sizeof...(indices)>
+    make_uart_array(std::index_sequence<indices...>) {
+    return {make_uart<indices>()...};
 }
 
 } // namespace internal

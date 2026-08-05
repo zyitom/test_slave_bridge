@@ -34,8 +34,7 @@ public:
         uint16_t usb_vid, int32_t usb_pid, std::string_view serial_filter,
         const ConnectionOptions& options)
         : logger_(logging::get_logger())
-        , free_transmit_transfers_(kTransmitTransferCount)
-        , dev_mem_available_(false) {
+        , free_transmit_transfers_(kTransmitTransferCount) {
 
         usb_init(usb_vid, usb_pid, serial_filter, options);
         utility::FinalAction rollback_on_failure{[this]() noexcept {
@@ -283,7 +282,11 @@ private:
     void init_receive_transfers() {
         for (size_t i = 0; i < kReceiveTransferCount; i++) {
             auto* rx = new RxTransfer{
-                this, create_libusb_transfer(), alloc_transfer_buffer(), dev_mem_available_};
+                .self = this,
+                .transfer = create_libusb_transfer(),
+                .buffer = alloc_transfer_buffer(),
+                .is_dev_mem = dev_mem_available_,
+            };
 
             libusb_fill_bulk_transfer(
                 rx->transfer, libusb_device_handle_, kInEndpoint, rx->buffer,
@@ -418,7 +421,7 @@ private:
     std::atomic<bool> stop_handling_events_ = false;
 
     utility::RingBuffer<TransferWrapper*> free_transmit_transfers_;
-    bool dev_mem_available_;
+    bool dev_mem_available_ = false;
     std::mutex transmit_transfer_mutex_;
     std::condition_variable transmit_transfer_cv_;
 

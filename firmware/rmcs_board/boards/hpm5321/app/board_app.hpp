@@ -29,7 +29,7 @@ bool usb_use_high_speed();
 // CAN ports in logical order (CAN0, CAN1, ...). CAN0 is the DM (Damiao) motor
 // bus and runs CAN-FD; this board has no other CAN.
 constexpr CanPort kCanPorts[] = {
-    {HPM_MCAN0_BASE, IRQn_MCAN0, CanMode::kClassic},
+    {.base = HPM_MCAN0_BASE, .irq_num = IRQn_MCAN0, .mode = CanMode::kClassic},
 };
 
 uint32_t init_can(MCAN_Type* ptr);
@@ -56,8 +56,16 @@ constexpr clock_name_t kMchtmrClockName = clock_mchtmr0;
 // UART ports in logical order. This board has a single data UART (UART2) and no
 // DBUS receiver.
 constexpr UartPort kUartPorts[] = {
-    {HPM_UART2_BASE, IRQn_UART2, HPM_DMA_SRC_UART2_TX, HPM_DMA_SRC_UART2_RX,
-     data::DataId::kUart0, data::DataId::kUart0Config, 921600, parity_none},
+    {
+        .base = HPM_UART2_BASE,
+        .irq_num = IRQn_UART2,
+        .dma_src_tx = HPM_DMA_SRC_UART2_TX,
+        .dma_src_rx = HPM_DMA_SRC_UART2_RX,
+        .data_id = data::DataId::kUart0,
+        .config_data_id = data::DataId::kUart0Config,
+        .baudrate = 921600,
+        .parity = parity_none,
+    },
 };
 
 uint32_t init_uart(UART_Type* ptr);

@@ -36,7 +36,7 @@ inline constexpr std::size_t kHybridPdSize =
     kHybridMailboxRegionSize + kHybridStreamChunkSize; // 352
 
 constexpr std::size_t hybrid_mailbox_index(std::size_t bus, std::size_t slot) {
-    return bus * kHybridSlotsPerBus + slot;
+    return (bus * kHybridSlotsPerBus) + slot;
 }
 
 constexpr std::size_t hybrid_mailbox_offset(std::size_t bus, std::size_t slot) {

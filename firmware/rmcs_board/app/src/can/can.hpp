@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -225,7 +226,9 @@ public:
                 return false;
             if (rx.canfd_frame && rx.dlc > 8) [[unlikely]]
                 continue; // drained but unforwardable; keep draining
-            const size_t length = rx.rtr ? 0U : (rx.dlc > 8U ? 8U : rx.dlc);
+            size_t length = 0;
+            if (!rx.rtr)
+                length = std::min<size_t>(rx.dlc, 8U);
             out.is_fdcan = rx.canfd_frame;
             out.is_extended_can_id = rx.use_ext_id;
             out.is_remote_transmission = rx.rtr;
@@ -327,14 +330,15 @@ constexpr data::DataId kCanDataIds[] = {
 
 namespace internal {
 
-template <std::size_t I>
+template <std::size_t index>
 consteval Can::Lazy make_can() {
-    return Can::Lazy{kCanDataIds[I], board::kCanPorts[I], I};
+    return Can::Lazy{kCanDataIds[index], board::kCanPorts[index], index};
 }
 
-template <std::size_t... I>
-consteval std::array<Can::Lazy, sizeof...(I)> make_can_array(std::index_sequence<I...>) {
-    return {make_can<I>()...};
+template <std::size_t... indices>
+consteval std::array<Can::Lazy, sizeof...(indices)>
+    make_can_array(std::index_sequence<indices...>) {
+    return {make_can<indices>()...};
 }
 
 } // namespace internal

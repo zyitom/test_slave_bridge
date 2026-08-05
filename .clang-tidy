@@ -46,6 +46,7 @@ Checks: >
   -hicpp-signed-bitwise,
 
   misc-*,
+  -misc-include-cleaner,
   -misc-multiple-inheritance,
   -misc-non-private-member-variables-in-classes,
   -misc-use-internal-linkage,
@@ -70,6 +71,7 @@ Checks: >
   -readability-function-cognitive-complexity,
   -readability-identifier-length,
   -readability-implicit-bool-conversion,
+  -readability-inconsistent-declaration-parameter-name,
   -readability-inconsistent-ifelse-braces,
   -readability-isolate-declaration,
   -readability-magic-numbers,

@@ -22,6 +22,9 @@ public:
 
     GpioLed() { board::init_led_pins(); }
 
+    // This mirrors the stateful LED backend interface even though this GPIO
+    // implementation does not need instance data.
+    // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
     bool set_value(uint8_t red, uint8_t green, uint8_t blue) {
         board::kLedRedPin.set_active(red >= kOnThreshold);
         board::kLedGreenPin.set_active(green >= kOnThreshold);

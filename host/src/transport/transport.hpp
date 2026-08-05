@@ -158,6 +158,8 @@ public:
     // Optional direct receive path paired with try_stage_cyclic_can(). The
     // callback is invoked on the same transport cycle thread as receive(), so a
     // hybrid transport never calls the Handler concurrently from two threads.
+    // Implementations take ownership of these callbacks and move them into storage.
+    // NOLINTBEGIN(performance-unnecessary-value-param)
     virtual void
         receive_cyclic_can(std::function<void(data::DataId, const data::CanDataView&)> callback) {
         (void)callback;
@@ -167,6 +169,7 @@ public:
     // same receive thread and must not block it; Handler uses it to invalidate
     // the protocol session and lets its keepalive thread establish a new one.
     virtual void on_link_restart(std::function<void()> callback) { (void)callback; }
+    // NOLINTEND(performance-unnecessary-value-param)
 };
 
 namespace usb {

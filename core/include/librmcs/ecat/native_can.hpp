@@ -37,14 +37,12 @@ inline constexpr std::size_t kNativeDataOffset = 4;
 inline constexpr std::uint8_t kNativeMetaFdBit = 0x80U;
 inline constexpr std::uint8_t kNativeMetaLenMask = 0x0FU;
 
-inline constexpr std::uint8_t native_meta(bool is_fdcan, std::uint8_t length) {
+constexpr std::uint8_t native_meta(bool is_fdcan, std::uint8_t length) {
     return static_cast<std::uint8_t>(
         (is_fdcan ? kNativeMetaFdBit : 0U) | (length & kNativeMetaLenMask));
 }
-inline constexpr bool native_meta_is_fdcan(std::uint8_t meta) {
-    return (meta & kNativeMetaFdBit) != 0U;
-}
-inline constexpr std::uint8_t native_meta_length(std::uint8_t meta) {
+constexpr bool native_meta_is_fdcan(std::uint8_t meta) { return (meta & kNativeMetaFdBit) != 0U; }
+constexpr std::uint8_t native_meta_length(std::uint8_t meta) {
     return static_cast<std::uint8_t>(meta & kNativeMetaLenMask);
 }
 
@@ -60,12 +58,12 @@ inline constexpr std::size_t kNativeRecordSlotOffset = 1;
 inline constexpr std::size_t kNativeRecordEpochOffset = 2;
 inline constexpr std::size_t kNativeRecordMailboxOffset = 4;
 
-inline constexpr std::uint16_t native_record_epoch(const std::uint8_t* record) noexcept {
+constexpr std::uint16_t native_record_epoch(const std::uint8_t* record) noexcept {
     return static_cast<std::uint16_t>(record[kNativeRecordEpochOffset])
          | static_cast<std::uint16_t>(record[kNativeRecordEpochOffset + 1]) << 8;
 }
 
-inline constexpr void native_record_set_epoch(std::uint8_t* record, std::uint16_t epoch) noexcept {
+constexpr void native_record_set_epoch(std::uint8_t* record, std::uint16_t epoch) noexcept {
     record[kNativeRecordEpochOffset] = static_cast<std::uint8_t>(epoch);
     record[kNativeRecordEpochOffset + 1] = static_cast<std::uint8_t>(epoch >> 8);
 }
