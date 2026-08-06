@@ -113,3 +113,9 @@ target_link_libraries(imu_dbus_check PRIVATE librmcs-sdk)
 
 add_executable(mc02_can_diag mc02_can_diag.cpp)
 target_link_libraries(mc02_can_diag PRIVATE librmcs-sdk)
+
+add_executable(mc02_tinyusb_probe mc02_tinyusb_probe.cpp)
+target_link_libraries(mc02_tinyusb_probe PRIVATE librmcs-sdk)
+
+add_executable(mc02_dual_can_probe mc02_dual_can_probe.cpp)
+target_link_libraries(mc02_dual_can_probe PRIVATE librmcs-sdk)

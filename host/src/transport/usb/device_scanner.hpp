@@ -245,13 +245,17 @@ private:
         }
 
         const std::string_view product_string{product_buf, static_cast<size_t>(n)};
+        constexpr uint16_t mc02_product_id = 0xD402;
         constexpr uint16_t hpm6e8y_product_id = 0xA904;
         constexpr std::string_view agent_product = "RMCS Agent v" LIBRMCS_PROJECT_VERSION_STRING;
+        constexpr std::string_view mc02_product = "RMCS Slave v" LIBRMCS_PROJECT_VERSION_STRING;
         constexpr std::string_view ethercat_bridge_product =
             "RMCS EtherCAT Bridge v" LIBRMCS_PROJECT_VERSION_STRING;
-        const bool product_matches = product_string == agent_product
-                                  || (info.descriptor.idProduct == hpm6e8y_product_id
-                                      && product_string == ethercat_bridge_product);
+        const bool product_matches =
+            product_string == agent_product
+            || (info.descriptor.idProduct == mc02_product_id && product_string == mc02_product)
+            || (info.descriptor.idProduct == hpm6e8y_product_id
+                && product_string == ethercat_bridge_product);
         if (!product_matches) {
             if (warn_only_when_mismatch) {
                 logging::get_logger().warn(

@@ -1,5 +1,7 @@
 #include "librmcs/protocol/handler.hpp"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -40,11 +42,11 @@ public:
         : callback_(callback)
         , deserializer_(*this)
         , expected_session_nonce_(generate_session_nonce())
+        , expected_session_start_ack_(make_session_start_ack(expected_session_nonce_))
         , transport_(std::move(transport)) {
         // USB bulk completions and EtherCAT callbacks are both arbitrary
         // slices of one reliable byte stream, not protocol-field boundaries.
-        transport_->receive(
-            [this](std::span<const std::byte> buffer) { deserializer_.feed(buffer); });
+        transport_->receive([this](std::span<const std::byte> buffer) { receive_stream(buffer); });
         transport_->receive_cyclic_can([this](data::DataId id, const data::CanDataView& data) {
             (void)can_deserialized_callback(id, data);
         });
@@ -53,6 +55,8 @@ public:
             // protocol field. The callback runs on the transport receive
             // thread, so it is serialized with deserializer_.feed().
             deserializer_.finish_transfer();
+            awaiting_session_start_ack_ = true;
+            session_start_ack_window_size_ = 0;
             {
                 // Pair the state change with the condition-variable mutex so
                 // the keepalive thread cannot miss the restart notification.
@@ -214,6 +218,55 @@ public:
     }
 
 private:
+    static constexpr size_t kSessionStartAckSize = sizeof(core::protocol::FieldHeaderExtended)
+                                                 + sizeof(core::protocol::SessionHeader)
+                                                 - sizeof(core::protocol::FieldHeader);
+
+    static std::array<std::byte, kSessionStartAckSize> make_session_start_ack(uint32_t nonce) {
+        std::array<std::byte, kSessionStartAckSize> ack{};
+        core::protocol::FieldHeaderExtended::Ref field{ack.data()};
+        field.set<core::protocol::FieldHeaderExtended::Id>(core::protocol::FieldId::kExtend);
+        field.set<core::protocol::FieldHeaderExtended::IdExtended>(
+            core::protocol::FieldId::kSession);
+
+        core::protocol::SessionHeader::Ref session{
+            ack.data() + sizeof(core::protocol::FieldHeaderExtended)
+            - sizeof(core::protocol::FieldHeader)};
+        session.set<core::protocol::SessionHeader::Type>(data::SessionType::kStartAck);
+        session.set<core::protocol::SessionHeader::Nonce>(nonce);
+        return ack;
+    }
+
+    // A reopened transport may still complete queued bytes from the previous
+    // session. Only this Handler's nonce identifies a safe field boundary.
+    void receive_stream(std::span<const std::byte> buffer) {
+        if (!awaiting_session_start_ack_) {
+            deserializer_.feed(buffer);
+            return;
+        }
+
+        for (size_t i = 0; i < buffer.size(); ++i) {
+            if (session_start_ack_window_size_ < session_start_ack_window_.size()) {
+                session_start_ack_window_[session_start_ack_window_size_++] = buffer[i];
+            } else {
+                std::ranges::move(
+                    session_start_ack_window_.begin() + 1, session_start_ack_window_.end(),
+                    session_start_ack_window_.begin());
+                session_start_ack_window_.back() = buffer[i];
+            }
+
+            if (session_start_ack_window_size_ != session_start_ack_window_.size()
+                || session_start_ack_window_ != expected_session_start_ack_) {
+                continue;
+            }
+
+            awaiting_session_start_ack_ = false;
+            deserializer_.feed(session_start_ack_window_);
+            deserializer_.feed(buffer.subspan(i + 1));
+            return;
+        }
+    }
+
     [[nodiscard]] bool session_established() const {
         return session_established_.load(std::memory_order_acquire);
     }
@@ -333,6 +386,10 @@ private:
     uint64_t session_start_ack_count_ = 0;
     uint64_t session_keepalive_ack_count_ = 0;
     uint32_t expected_session_nonce_ = 0;
+    std::array<std::byte, kSessionStartAckSize> expected_session_start_ack_{};
+    std::array<std::byte, kSessionStartAckSize> session_start_ack_window_{};
+    size_t session_start_ack_window_size_ = 0;
+    bool awaiting_session_start_ack_ = true;
 
     std::unique_ptr<transport::Transport> transport_;
 

@@ -64,6 +64,16 @@ target_link_libraries(mc02_app PRIVATE
     tinyusb_app
 )
 
+option(LIBRMCS_APP_IMU_ENABLE "Enable BMI088 initialization and runtime sampling" ON)
+if(LIBRMCS_APP_IMU_ENABLE)
+    target_compile_definitions(mc02_app PRIVATE LIBRMCS_APP_IMU_ENABLE=1)
+endif()
+
+option(LIBRMCS_APP_USB_DWC2_DMA "Use the DWC2 device controller internal DMA" OFF)
+if(LIBRMCS_APP_USB_DWC2_DMA)
+    target_compile_definitions(tinyusb_app PUBLIC LIBRMCS_APP_USB_DWC2_DMA=1)
+endif()
+
 # Same switch and same default as rmcs_board's: OFF, because it adds counters to
 # the CAN forwarding hot path and occupies DataId::kUart0 on the uplink.
 option(LIBRMCS_APP_CAN_DIAG "Emit CAN telemetry on the kUart0 uplink" OFF)

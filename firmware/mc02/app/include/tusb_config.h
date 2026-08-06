@@ -30,6 +30,15 @@ extern "C" {
 
 #define CFG_TUSB_OS OPT_OS_NONE
 
+#ifdef LIBRMCS_APP_USB_DWC2_DMA
+# define CFG_TUD_DWC2_DMA_ENABLE 1
+
+// All device-transfer buffers are linked into the MPU non-cacheable AXI SRAM
+// region. Keep TinyUSB's cache-line alignment while avoiding redundant cache
+// maintenance on each 64-byte transfer.
+# define CFG_DWC2_MEM_UNCACHED_REGIONS {.start = 0x24000000U, .end = 0x2401FFFFU},
+#endif
+
 //--------------------------------------------------------------------
 // DEVICE CONFIGURATION
 //--------------------------------------------------------------------

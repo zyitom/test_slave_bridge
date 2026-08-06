@@ -74,7 +74,7 @@ App::App() {
 
     RCC_PeriphCLKInitTypeDef usb_clk = {};
     usb_clk.PeriphClockSelection = RCC_PERIPHCLK_USB;
-    usb_clk.UsbClockSelection    = RCC_USBCLKSOURCE_HSI48;
+    usb_clk.UsbClockSelection = RCC_USBCLKSOURCE_HSI48;
     if (HAL_RCCEx_PeriphCLKConfig(&usb_clk) != HAL_OK)
         Error_Handler();
     HAL_PWREx_EnableUSBVoltageDetector();
@@ -98,7 +98,9 @@ App::App() {
     MX_FDCAN2_Init();
     MX_FDCAN3_Init();
     MX_SPI6_Init();
+#ifdef LIBRMCS_APP_IMU_ENABLE
     MX_SPI2_Init();
+#endif
     MX_UART5_Init();
     MX_TIM1_Init();
     MX_TIM2_Init();
@@ -120,9 +122,11 @@ App::App() {
     uart::uart2.init();
     uart::uart3.init();
     uart::uart_dbus.init();
+#ifdef LIBRMCS_APP_IMU_ENABLE
     spi::bmi088::accelerometer.init();
     spi::bmi088::gyroscope.init();
     spi::bmi088::temperature.init();
+#endif
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
@@ -139,10 +143,12 @@ App::App() {
 
         gpio::gpio->poll_periodic_input_samples();
 
+#ifdef LIBRMCS_APP_IMU_ENABLE
         // Promote a due temperature probe to pending, then service at most one
         // BMI088 SPI read (gyro > accel > temperature) per iteration.
         spi::bmi088::temperature->poll_pending_probe();
         spi::bmi088::service_pending_reads();
+#endif
 
         // LED animation; non-blocking unless colour changes (one SPI frame per
         // change, ~330 us at the WS2812 bit rate). Polled here so no ISR context
