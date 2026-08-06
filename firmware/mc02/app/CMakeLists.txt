@@ -6,7 +6,6 @@ set(MC02_APP_TINYUSB_COMMON_SOURCES
     "${MC02_APP_TINYUSB_ROOT}/src/tusb.c"
     "${MC02_APP_TINYUSB_ROOT}/src/common/tusb_fifo.c"
     "${MC02_APP_TINYUSB_ROOT}/src/device/usbd.c"
-    "${MC02_APP_TINYUSB_ROOT}/src/device/usbd_control.c"
     "${MC02_APP_TINYUSB_ROOT}/src/portable/synopsys/dwc2/dwc2_common.c"
     "${MC02_APP_TINYUSB_ROOT}/src/portable/synopsys/dwc2/dcd_dwc2.c"
 )

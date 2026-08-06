@@ -132,6 +132,13 @@ edits, all marked `LIBRMCS LOCAL PATCH`:
    the application configuration described in 4. Both images share the same
    VID/PID; the product string and this protocol byte are what tell them apart.
 
+6. `usb_desc.c`: `bcdDFUVersion` in both DFU functional descriptors is `0x0110`
+   (1.1), not the CH372 demo's value. This tracks TinyUSB, which the other three
+   boards use: `TUD_DFU_RT_DESCRIPTOR` / `TUD_DFU_DESCRIPTOR` emitted `0x0101`
+   through TinyUSB 0.20.0 and `0x0110` from 0.21.0 on. Keeping the two in step is
+   the whole point of the hand-written copy - if the submodule is ever moved back
+   to a pre-0.21.0 tag, revert these two words to `0x01, 0x01`.
+
 Everything else in `usb_desc.c` (device / BOS / HS / FS descriptors) is
 unmodified WCH. Note the HS/FS configuration descriptors still describe the demo
 layout: with `LIBRMCS_USBSS_HS_FALLBACK=0` they are unreachable, and the DFU

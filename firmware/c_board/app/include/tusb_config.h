@@ -46,9 +46,13 @@ extern "C" {
 #define CFG_TUD_DFU_RUNTIME 1
 #define CFG_TUD_DFU         0
 
-#define CFG_TUD_VENDOR_EPSIZE 64
+#define CFG_TUD_VENDOR_RX_EPSIZE 64
+#define CFG_TUD_VENDOR_TX_EPSIZE 64
 
-// Direct mode to match the existing per-packet framing behavior.
+// Direct mode to match the existing per-packet framing behavior: zeroing both FIFO
+// sizes makes TinyUSB derive CFG_TUD_VENDOR_TXRX_BUFFERED == 0, so tud_vendor_n_write()
+// submits each packet straight to the endpoint and a zero-length write becomes a ZLP.
+// Note this also compiles out the FIFO-only API (tud_vendor_n_read/_write_flush/...).
 #define CFG_TUD_VENDOR_RX_BUFSIZE 0
 #define CFG_TUD_VENDOR_TX_BUFSIZE 0
 

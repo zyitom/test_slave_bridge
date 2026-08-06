@@ -269,7 +269,10 @@ const uint8_t SS_ConfigDescriptor[ ] =
     0x00, 0x02,                                             // wTransferSize: 512 == DEF_USBSSD_UEP0_SIZE,
                                                             //   so one DNLOAD block is exactly one
                                                             //   control-OUT packet
-    0x01, 0x01,                                             // bcdDFUVersion: 1.01
+    0x10, 0x01,                                             // bcdDFUVersion: 1.1 -- matches what
+                                                            //   TinyUSB's TUD_DFU_DESCRIPTOR emits
+                                                            //   on the other boards (0x0110 since
+                                                            //   TinyUSB 0.21.0; it was 0x0101 before)
 };
 
 #else
@@ -354,7 +357,10 @@ const uint8_t SS_ConfigDescriptor[ ] =
     0x09,                                                   // bmAttributes: CAN_DOWNLOAD | WILL_DETACH
     0xe8, 0x03,                                             // wDetachTimeOut: 1000ms
     0x00, 0x04,                                             // wTransferSize: 1024
-    0x01, 0x01,                                             // bcdDFUVersion: 1.01
+    0x10, 0x01,                                             // bcdDFUVersion: 1.1 -- matches what
+                                                            //   TinyUSB's TUD_DFU_RT_DESCRIPTOR emits
+                                                            //   on the other boards (0x0110 since
+                                                            //   TinyUSB 0.21.0; it was 0x0101 before)
 };
 
 #endif /* LIBRMCS_DFU_DEVICE */

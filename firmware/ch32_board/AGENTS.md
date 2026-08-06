@@ -225,6 +225,10 @@ $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg -c "init" -c "wch_riscv unfreeze" -c 
   已实测：halt 核 5 秒（主机判 USB 掉线）后调试器仍能连上，旧固件此处必断。
   设成 1 可恢复原厂行为并支持 USB 2.0 主机，代价是回退时丢调试口。
 - CAN/USART 的 GPIO 引脚在 `app/src/board_app.cpp` 里仍是占位值，待按原理图确定。
+- **目标板是 Petros CH32H417M Alef Breakout**（不是官方 EVB），座子用 J 编号：
+  `J1`=USB3.0-A、`J2`=Pico 40 脚排针、`J3`=DF12 板对板、`J4`=1x06（调试+串口）。
+  **板上没有第二个 USB 座**，USB 数据面和 SWD 共用 PB8/PB9，所以**烧录必须拔 USB 线**，
+  没有"走另一个口"的退路。详见 [PITFALLS.md 1.4](PITFALLS.md#14-usb3-座子里有两套线但不能同时用)。
 - **DFU 相关的两条硬约束**：
   1. 描述符按 `LIBRMCS_DFU_DEVICE` 在 `bsp/usb/usb_desc.c` 里二选一（app=0、
      boot=1），boot 那份是 DFU-mode（单接口、无端点、`bInterfaceProtocol=0x02`、

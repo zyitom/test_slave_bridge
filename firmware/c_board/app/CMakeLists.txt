@@ -7,7 +7,6 @@ set(C_BOARD_APP_TINYUSB_COMMON_SOURCES
     "${C_BOARD_APP_TINYUSB_ROOT}/src/tusb.c"
     "${C_BOARD_APP_TINYUSB_ROOT}/src/common/tusb_fifo.c"
     "${C_BOARD_APP_TINYUSB_ROOT}/src/device/usbd.c"
-    "${C_BOARD_APP_TINYUSB_ROOT}/src/device/usbd_control.c"
     "${C_BOARD_APP_TINYUSB_ROOT}/src/portable/synopsys/dwc2/dwc2_common.c"
     "${C_BOARD_APP_TINYUSB_ROOT}/src/portable/synopsys/dwc2/dcd_dwc2.c"
 )

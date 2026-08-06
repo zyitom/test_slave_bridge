@@ -96,11 +96,17 @@ public:
 
         const auto target_size = std::min(data.size() - transmitted_size_, kMaxPacketSize);
 
+        const auto* src = reinterpret_cast<const uint8_t*>(data.data() + transmitted_size_);
+
         if (target_size) {
-            const auto* src = reinterpret_cast<const uint8_t*>(data.data() + transmitted_size_);
             core::utility::assert_debug(tud_vendor_n_write(0, src, target_size) == target_size);
         } else {
-            core::utility::assert_debug(tud_vendor_n_write_zlp(0));
+            // Terminate a batch whose length is an exact multiple of the endpoint size.
+            // In non-buffered vendor mode (RX/TX_BUFSIZE == 0) TinyUSB submits a
+            // zero-length write straight to the endpoint as a ZLP. The return value is 0
+            // both on success and on a failed endpoint claim, so there is nothing to
+            // assert; write_available() above already confirmed the endpoint is idle.
+            tud_vendor_n_write(0, src, 0);
         }
 
         transmitted_size_ += target_size;

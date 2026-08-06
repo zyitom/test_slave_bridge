@@ -148,7 +148,10 @@ app 区不会卡住取指。
 
    > **已完成**：2026-07-26 按芯片手册 RM 27.2.4 修正（`UEP_RX_DMA` 自增）并实测确认。
 
-2. **GPIO 引脚**（CAN、USART）在 `board_app.cpp` 里是占位值——需按 EVT 原理图确定。
+2. **GPIO 引脚**（CAN、USART）在 `board_app.cpp` 里是占位值——需按原理图确定。
+
+   > **2026-08-05 更新**：目标板已换成 Petros CH32H417M Alef Breakout，要对的是那块板的
+   > 原理图而非 EVT 包里的 `CH32H417SCH.pdf`。详见 [README.md 尚未完成](README.md#尚未完成)。
 3. **CAN 位时序与定时器分频**都以 `SystemCoreClock` 为基准——需确认 CAN/TIM 的内核时钟
    分频系数。
 4. **UART 目前是中断模式**；DMA + 空闲线检测属于推迟的优化项（需要 DMAMUX 的请求映射）。

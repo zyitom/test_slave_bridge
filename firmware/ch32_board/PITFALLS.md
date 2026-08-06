@@ -14,7 +14,19 @@
 按现象查，多数情况能省掉重新排查的几小时。
 
 **标注约定**：**[RM]** = 已在参考手册 `~/Downloads/CH32H417RM.PDF`（`[前机路径]`）中找到
-依据；**[EVT]** = 依据 EVT 例程/板级手册；**[实测]** = 只有板上实验证据，手册未覆盖。
+依据；**[EVT]** = 依据 EVT 例程/板级手册；**[原理图]** = 依据板卡原理图；
+**[实测]** = 只有板上实验证据，手册未覆盖。
+
+> **当前在用的板子（2026-08-05 起）**：**Petros CH32H417M Alef Breakout**
+> （`petros_ch32h417m_alef_breakout.kicad_sch`，Rev 1V0，2026-04-21，XPU Labs &
+> AnalogLamb），MCU 为 `U1 = CH32H417MEU6`。座子用 **J 编号**：`J1` = USB3.0-A、
+> `J2` = 树莓派 Pico 40 脚兼容排针、`J3` = `DF12NB(3.0)-40DP-0.5V(51)` 板对板、
+> `J4` = 1x06 排针（调试 + 串口复合）。
+>
+> **本文早期（2026-07-25/26）条目里的 `P1` / `P2` / `P10` 座子编号来自官方 EVB**
+> （`CH32H417SCH.pdf`），与当前板子对不上，已就地更正为 J 编号并标注差异。**电气结论
+> 本身不受影响**——两块板的 PB8/PB9 复用关系一致，实测结论继续有效。官方 EVB 的编号
+> 作为历史记录保留在各条的括注里。
 
 ## 本文导航
 
@@ -39,8 +51,9 @@
 **现象**：固件跑起来一两秒后调试器就连不上（`failed to connect with riscvchip`），
 按 NRST 无效，只有断电才能恢复。
 
-**原因**：原理图 `CH32H417SCH.pdf` 上这两个脚标的是 `PB8/USB2DP/SWCLK`、
-`PB9/USB2DM/SWDIO`。厂商 USB 栈在 SuperSpeed 链路训练超时约 1.5 秒后会自动回退到
+**原因**：原理图上这两个脚标的是 `PB8/USB2DP/SWCLK`、
+`PB9/USB2DM/SWDIO`（官方 EVB `CH32H417SCH.pdf` 与当前 Petros breakout 一致）。
+厂商 USB 栈在 SuperSpeed 链路训练超时约 1.5 秒后会自动回退到
 USB 2.0（`TIM12_IRQHandler` → `USBSS_Device_Init(DISABLE)` + `USBHS_Device_Init(ENABLE)`），
 一旦切过去这两个脚就归 USB2 PHY，调试接口当场消失。
 
@@ -66,11 +79,21 @@ USB 2.0（`TIM12_IRQHandler` → `USBSS_Device_Init(DISABLE)` + `USBHS_Device_In
 - 参考手册 **9.3.2.1（AFIO_PCFR1，`SW_CFG[2:0]`，bit 26:24）**：「SWD（SDI）是访问内核的
   调试接口。**系统复位后总是作为 SWD 端口**」，`0xx` 启用、`100` 关闭作为 GPIO。
   即复位默认是 SWD，固件不主动放弃就不会丢。
-- **原理图 `CH32H417SCH.pdf` 第 3 页**（`U1 = CH32H417MEU6`，就是本板）：
-  82 脚 `PB8/USB2DP/SWCLK` 网络名 `USB_UD_p`，同一根线上另标 `SWCLK`；83 脚同理。
-  `P1`（USB3.0-A 座）的 `Dp`/`Dn` 就是 `USB_UD_p`/`USB_UD_n`，`P2`（DEBUG HEADER 6）
-  的 2/3 脚也是这两个网络。**同一个电气节点，中间没有串阻、没有跳线、没有模拟开关。**
-  `P1` 的 VBUS 经 `F1`(2A 保险丝) 直接上 +5V 轨。
+- **原理图**（`U1 = CH32H417MEU6`）：MCU 82/83 脚的引脚名直接印着
+  `PB8/USB2DP/SWCLK`、`PB9/USB2DM/SWDIO`，网络名分别是 `UD_P` / `UD_N`。
+  `J1`（USB3.0-A 座）的 3 脚 `D+` / 2 脚 `D-` 就是这两个网络，`J4`（1x06 排针）的
+  **4 脚 `UD_P` / 3 脚 `UD_N`** 也接在同一对网络上。**同一个电气节点，中间没有串阻、
+  没有跳线、没有模拟开关。**
+
+  > **2026-08-05 按当前 breakout 原理图更正 [原理图]**：早期条目写的是"`P1`（USB3.0-A）
+  > 的 `Dp`/`Dn`、`P2`（DEBUG HEADER 6）的 2/3 脚、`P1` 的 VBUS 经 `F1`(2A 保险丝)"，
+  > 那是官方 EVB 的编号。当前 Petros breakout 上：座子是 `J1`/`J4`，J4 上的调试线在
+  > **3/4 脚**（不是 2/3），**没有保险丝**——`J1` 的 VBUS 经 `D1`（防倒灌二极管）到
+  > `VSYS`，再经 `U2 = CJA1117B-3.3` LDO 出 `3V3`。**引脚复用这个核心结论两块板一致。**
+
+- **`R2`(1.5K) 不是 D+ 上拉，别看错了** [原理图]。它一端接 `3V3`、另一端串
+  `D2`(RED LED) 到地，是**电源指示灯的限流电阻**，和 USB 没有任何关系。这块板上
+  `UD_P`/`UD_N` 从 J1 到 MCU 之间**什么元件都没有**，是纯粹的直连。
 
 ### 1.2 「SS 模式就安全」是错的表述
 
@@ -102,9 +125,15 @@ USB 2.0（`TIM12_IRQHandler` → `USBSS_Device_Init(DISABLE)` + `USBHS_Device_In
 
 2. **插着线烧录必然失败**（见 [3.10](#310-usb3-线插着就烧不了与固件无关-实测)）。
 
-**操作纪律**：拔线烧录 → 插线测试。要长期同时有数据口和调试口，走 Type-C（P10，
-`OTG_FS` → PA11/PA12，引脚不相交）。自己画板时把 USB3 座的 USB2 D+/D- 串 0Ω 或不接
-（我们 `HS_FALLBACK=0` 本来就不用），官方 EVB 没留这个余地。
+**操作纪律**：拔线烧录 → 插线测试。
+
+> **2026-08-05 更正 [原理图]**：早期这里写"要长期同时有数据口和调试口，走 Type-C
+> （P10，`OTG_FS` → PA11/PA12，引脚不相交）"——**当前 Petros breakout 上没有这个座子**，
+> 详见 [1.4](#14-usb3-座子里有两套线但不能同时用)。在这块板上"拔线烧录"不是可选纪律，
+> 是**唯一选择**。真要第二个 USB 口，从 J2 的 29/31 脚（`GP_A11`/`GP_A12`）飞线自接。
+
+自己画板时把 USB3 座的 USB2 D+/D- 串 0Ω 或不接（我们 `HS_FALLBACK=0` 本来就不用），
+官方 EVB 和这块 breakout 都没留这个余地。
 
 ### 1.3 幻影低速设备会拖垮主机端口，进而挡掉热插拔 **[实测]**
 
@@ -120,17 +149,26 @@ USB 2.0（`TIM12_IRQHandler` → `USBSS_Device_Init(DISABLE)` + `USBHS_Device_In
 
 ### 1.4 USB3 座子里有两套线，但不能同时用
 
-一个 USB3.0-A 座（P2）同时接出：
-- `USBHS_DM/DP` → PB8/PB9（USB 2.0 High Speed）
-- `USBSS_RXP/RXN`、`USBSS_TXP/TXN` → 专用 SerDes 脚（USB 3.0 SuperSpeed）
+一个 USB3.0-A 座（**J1**）同时接出：
+- `D+`/`D-`（网络 `UD_P`/`UD_N`）→ PB8/PB9（USB 2.0）
+- `SSRX+/-`、`SSTX+/-`（网络 `SSRX_P/N`、`SSTX_P/N`，经 `C23`/`C24` 100nF AC 耦合）
+  → 专用 SerDes 脚 84-87（USB 3.0 SuperSpeed）
 
 USB 3.0 规范规定设备要么 SS 模式要么 USB2 模式，主机只枚举一次。SS 枚举成功时厂商栈
 会主动 `USBHS_Device_Init(DISABLE)`。**SS 模式下 D+/D- 完全闲置**，这正是能一边跑
 5 Gbps 一边用调试器的原因。（这句话的适用边界见
 [1.2](#12-ss-模式就安全是错的表述)。）
 
-板上另有 Type-C 座（P10）接 `OTG_FS_DP/DM` → PA11/PA12，是**独立的第三个 USB 控制器**
-（Full Speed）。真要同时有数据面 + 调试/DFU 接口，走这个口。
+> **2026-08-05 更正 [原理图]**：早期条目把这个座子写作 `P2`，那是官方 EVB 编号；
+> 当前 breakout 上是 `J1`。同时早期写的"板上另有 Type-C 座（P10）接 `OTG_FS_DP/DM`
+> → PA11/PA12，真要同时有数据面 + 调试/DFU 接口就走这个口"——**当前这块 breakout 上
+> 不成立，没有第三个 USB 座子**。全板只有 J1(USB3.0-A)、J2(Pico 排针)、J3(板对板)、
+> J4(1x06)，`PA11`/`PA12` 只作为普通 GPIO 引到 J2 的 **29 脚(`GP_A11`) / 31 脚
+> (`GP_A12`)**，没有接任何 USB 座。
+>
+> **后果**：在这块板上 USB 数据面和调试口共用同一组物理线，**没有退路**，
+> [1.2](#12-ss-模式就安全是错的表述) 结尾的"走 Type-C"那条建议在此板不可用。要另开一路
+> USB，只能从 J2 的 29/31 脚飞线自接 USB 座（PA11/PA12 = `OTG_FS_DP/DM`，Full Speed）。
 
 ### 1.5 VBUS 会阻止 WCH-Link 给板子断电
 
@@ -138,6 +176,11 @@ USB 3.0 规范规定设备要么 SS 模式要么 USB2 模式，主机只枚举�
 所有依赖上电复位（POR）的恢复手段全部失效。
 
 要真正 POR：两根线都拔掉，或只留 WCH-Link 供电（板子吃 Link 的 3V3，拔 Link 即断电）。
+
+**当前 breakout 的供电链** [原理图]：`J1` VBUS → `D1`（防倒灌二极管）→ `VSYS`
+→ `U2 = CJA1117B-3.3` LDO → `3V3`。**没有保险丝**（官方 EVB 那道 `F1` 2A 保险丝在这块
+板上不存在）。`VBUS`/`VSYS`/`3V3` 三条轨同时引到 `J2` 的 40/39/36 脚，所以**从 J2 供电
+也会让板子活着**——排查"以为断电了其实没断"时，J2 上挂的东西也要算进去。
 
 ---
 

@@ -293,8 +293,12 @@ app 会断开 SS 链路、写 boot mailbox 然后 park；**真正执行复位的
   经 DFU 推过一次镜像。首先要盯的两点：擦写动作发生在 USBSS 中断里；V3F 镜像是从 RAM
   执行的（`Link_v3f.ld` 会把它拷到 `0x20100000`），这正是自烧录安全的前提——两点都需
   上板确认。
-- **CAN 与 USART 的 GPIO 引脚映射**在 `app/src/board_app.cpp` 里还是占位值；需按 EVT
-  原理图（`EVT/PUB/CH32H417SCH.pdf`）确定。
+- **CAN 与 USART 的 GPIO 引脚映射**在 `app/src/board_app.cpp` 里还是占位值。
+  > **2026-08-05 更新**：目标板已换成 **Petros CH32H417M Alef Breakout**
+  > （见 [PITFALLS.md 文档头](PITFALLS.md#摘要)），所以要对的是**这块板的原理图**
+  > （`petros_ch32h417m_alef_breakout.kicad_sch`），不再是 EVT 包里的
+  > `EVT/PUB/CH32H417SCH.pdf`。这块 breakout 把大部分 GPIO 引到 `J2`（Pico 40 脚）
+  > 和 `J3`（DF12 板对板），选引脚时要从这两个座子实际引出的脚里挑。
 - **CAN 位时序与定时器分频**都是以 `SystemCoreClock` 为基准推出来的；需上板确认 CAN/TIM
   的内核时钟分频系数。
 - SS 速度测试（WCH 随 CH372 demo 提供了一个主机侧速度测试工具）。

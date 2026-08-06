@@ -44,7 +44,7 @@ void poll_dfu_runtime_reboot() {
 // TinyUSB device callbacks
 extern "C" {
 
-void tud_vendor_rx_cb(uint8_t itf, const uint8_t* buffer, uint16_t size) {
+void tud_vendor_rx_cb(uint8_t itf, const uint8_t* buffer, uint32_t size) {
     if (itf != 0) [[unlikely]]
         return;
 
