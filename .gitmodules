@@ -22,4 +22,3 @@
 [submodule "firmware/ch32_board/bsp/ch32h417-evt"]
 	path = firmware/ch32_board/bsp/ch32h417-evt
 	url = https://github.com/zyitom/ch32h417-evt.git
-	shallow = true
