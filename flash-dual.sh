@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 #
-# Flash the rmcs_board hpm5321_dual_can application over USB DFU.
+# Flash the dual CAN-FD HPM5321 board over USB DFU.
+#
+# Builds BOARD=hpm5321, whose single image serves both HPM5321 PCBs and picks its
+# CAN/LED tables at run time from OTP word 25 (firmware/rmcs_board/common/
+# board_identity.hpp). The board still enumerates as 0xa902, so the DFU_ID below
+# and any udev rule keyed on it are unchanged by the merge.
 #
 # The HPM5321 board carries the same "RMCS DFU Bootloader" as mc02/c_board, so the
 # app is flashed with dfu-util -- no debugger (J-Link/OpenOCD) needed. A debugger
@@ -15,14 +20,23 @@
 # re-enumerate it into DFU mode automatically.
 #
 # Usage:
-#   ./flash-dual.sh                 # builds the release preset, then flashes
-#   PRESET=debug ./flash-dual.sh    # build/flash a debuggable (-O0) image instead
+#   ./flash-dual.sh                        # builds the release preset, then flashes
+#   PRESET=debug ./flash-dual.sh           # build/flash a debuggable (-O0) image instead
+#   BOARD=hpm5321 ./flash-dual.sh          # explicit equivalent of the default
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DFU_IMAGE="$SCRIPT_DIR/firmware/rmcs_board/build/app/output/rmcs_board_app_hpm5321_dual_can.dfu"
-DFU_ID="0xa11c:0xa902" # VENDOR_ID:PRODUCT_ID baked into the .dfu suffix (alt 0 = Internal Flash)
+BOARD="${BOARD:-hpm5321}"
+if [[ "$BOARD" != hpm5321 ]]; then
+    echo "error: BOARD must be hpm5321; the image selects the PCB from OTP word 25" >&2
+    exit 2
+fi
+DFU_IMAGE="$SCRIPT_DIR/firmware/rmcs_board/build/app/output/rmcs_board_app_${BOARD}.dfu"
+# The PID the DEVICE enumerates as, which is what -d matches. Unrelated to the PID
+# in the .dfu suffix: BOARD=hpm5321 stamps the wildcard 0xFFFF there so one file
+# passes for either PCB.
+DFU_ID="0xa11c:0xa902" # VENDOR_ID:PRODUCT_ID (alt 0 = Internal Flash)
 
 command -v dfu-util >/dev/null 2>&1 || {
     echo "error: dfu-util not found (need >= 0.11)" >&2
@@ -34,8 +48,8 @@ command -v dfu-util >/dev/null 2>&1 || {
 # build dir, so switching PRESET triggers a full reconfigure.
 PRESET="${PRESET:-release}"
 : "${GNURISCV_TOOLCHAIN_PATH:?GNURISCV_TOOLCHAIN_PATH must point to the RISC-V toolchain root}"
-echo ">> Building rmcs_board_app (preset: $PRESET, BOARD=hpm5321_dual_can)"
-cmake --preset "$PRESET" -S "$SCRIPT_DIR/firmware/rmcs_board" -DBOARD=hpm5321_dual_can
+echo ">> Building rmcs_board_app (preset: $PRESET, BOARD=$BOARD)"
+cmake --preset "$PRESET" -S "$SCRIPT_DIR/firmware/rmcs_board" -DBOARD="$BOARD"
 cmake --build "$SCRIPT_DIR/firmware/rmcs_board/build" --target rmcs_board_app
 
 if [[ ! -f "$DFU_IMAGE" ]]; then
@@ -43,7 +57,7 @@ if [[ ! -f "$DFU_IMAGE" ]]; then
     exit 1
 fi
 
-echo ">> hpm5321_dual_can app image: $DFU_IMAGE"
+echo ">> dual CAN-FD app image ($BOARD): $DFU_IMAGE"
 echo ">> DFU devices currently visible:"
 dfu-util -l 2>/dev/null | grep -i "a11c:a902" || \
     echo "   (none in DFU mode yet; dfu-util will try to detach a running app)"

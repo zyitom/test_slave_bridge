@@ -22,7 +22,12 @@
 namespace librmcs::firmware::diag {
 namespace {
 
-constexpr std::size_t kCanCount = std::size(board::kCanPorts);
+// Table capacity: sizes the counter array and the worst-case record buffer.
+// board::can_port_count() is how many controllers this board actually has, and
+// that is what goes on the wire -- the host parser reads the count out of the
+// record (host/examples/can_stall_probe.cpp), so a shorter record on the
+// single-CAN hpm5321 decodes without any host change.
+constexpr std::size_t kCanCapacity = board::kCanPortCapacity;
 constexpr std::uint32_t kEmitPeriodMs = 100U;
 
 // Sources 0..191. The board's highest interrupt number is 161 (IRQn_DEBUG1), and
@@ -38,7 +43,7 @@ struct CanCounters {
     std::atomic<std::uint32_t> irq_recovered{0};
 };
 
-CanCounters counters[kCanCount];
+CanCounters counters[kCanCapacity];
 std::atomic<std::uint32_t> alloc_fail{0};
 std::uint32_t main_loop_count = 0;
 std::uint32_t last_main_loop_count = 0;
@@ -113,16 +118,21 @@ void poll(std::uint32_t tick) {
     constexpr std::size_t kPerCanSize = 11 * 4;
     // Three extra words: UART0 kernel clock, OSCR, and the DLM:DLL divisor.
     constexpr std::size_t kUartSize = 3 * 4;
-    constexpr std::size_t kRecordSize = kFixedSize + kCanCount * kPerCanSize + kUartSize;
+    // Buffer sized for the capacity; the record actually emitted covers only the
+    // controllers this board has, and carries that count in its header.
+    constexpr std::size_t kMaxRecordSize = kFixedSize + kCanCapacity * kPerCanSize + kUartSize;
 
-    std::byte record[kRecordSize];
+    const std::size_t can_count = board::can_port_count();
+    const std::size_t record_size = kFixedSize + can_count * kPerCanSize + kUartSize;
+
+    std::byte record[kMaxRecordSize];
     std::byte* cursor = record;
 
     *cursor++ = static_cast<std::byte>(kRecordMagic);
     *cursor++ = static_cast<std::byte>(kRecordVersion);
     *cursor++ = static_cast<std::byte>(record_sequence++);
-    *cursor++ = static_cast<std::byte>(kCanCount);
-    cursor = put_u32(cursor, static_cast<std::uint32_t>(kRecordSize));
+    *cursor++ = static_cast<std::byte>(can_count);
+    cursor = put_u32(cursor, static_cast<std::uint32_t>(record_size));
     cursor = put_u32(cursor, tick);
     cursor = put_u32(cursor, alloc_fail.load(std::memory_order::relaxed));
     cursor = put_u32(cursor, main_loop_count - last_main_loop_count);
@@ -136,7 +146,7 @@ void poll(std::uint32_t tick) {
         cursor = put_u32(cursor, plic_trigger_word(word));
     cursor = put_u32(cursor, __plic_get_threshold(HPM_PLIC_BASE, HPM_PLIC_TARGET_M_MODE));
 
-    for (std::size_t index = 0; index < kCanCount; index++) {
+    for (std::size_t index = 0; index < can_count; index++) {
         auto* const can = reinterpret_cast<MCAN_Type*>(board::kCanPorts[index].base);
         cursor = put_u32(cursor, counters[index].isr_entries.load(std::memory_order::relaxed));
         cursor = put_u32(cursor, counters[index].frames.load(std::memory_order::relaxed));
@@ -178,7 +188,7 @@ void poll(std::uint32_t tick) {
     (void)link::uplink_serializer().write_uart(
         static_cast<core::protocol::FieldId>(data::DataId::kUart0),
         {
-            .uart_data = {record, kRecordSize},
+            .uart_data = {record, record_size},
               .idle_delimited = true
     });
 }

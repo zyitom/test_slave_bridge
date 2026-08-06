@@ -5,9 +5,17 @@ project(rmcs_board_superbuild LANGUAGES NONE)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/../common/cmake/librmcs_firmware.cmake")
 
-set(BOARD "hpm5321" CACHE STRING "Target board (hpm5321 / hpm5321_dual_can)")
-set_property(CACHE BOARD PROPERTY STRINGS hpm5321 hpm5321_dual_can)
+# hpm5321 builds one image serving both HPM5321 PCBs -- single classic-CAN and
+# dual CAN-FD -- selecting its CAN and LED tables at run time from OTP word 25
+# (common/board_identity.hpp).
+set(BOARD "hpm5321" CACHE STRING "Target board (hpm5321)")
+set_property(CACHE BOARD PROPERTY STRINGS hpm5321)
 set(BOARD_SEARCH_PATH "${CMAKE_CURRENT_SOURCE_DIR}/boards" CACHE PATH "Board search path")
+
+if(BOARD STREQUAL "hpm5321_dual_can")
+    message(FATAL_ERROR
+        "hpm5321_dual_can was merged into hpm5321; build with -DBOARD=hpm5321")
+endif()
 # Bitmanip is enabled by the HPM SoC CMake via the granular _zba_zbb_zbc_zbs
 # extensions, so the umbrella "b" here is redundant. Keeping it makes the arch
 # string "rv32imafdcb_..._zba_zbb_zbc_zbs", which recent binutils reject ("cannot
@@ -37,8 +45,9 @@ option(LIBRMCS_CAN_DIAG "Emit CAN forwarding telemetry on the UART0 uplink" OFF)
 # Forwarded to the app sub-build as LIBRMCS_APP_DIAG_OVER_USB.
 option(LIBRMCS_DIAG_OVER_USB "Relay core1 diagnostics to the host over USB" OFF)
 
-# Forwarded to the app sub-build as LIBRMCS_APP_ILM_HOT_PATH.
-option(LIBRMCS_ILM_HOT_PATH "Run the CAN driver from ILM (custom linker script)" OFF)
+# Forwarded to the app sub-build as LIBRMCS_APP_ILM_HOT_PATH. HPM5321 always
+# uses its board-owned linker layout; this switch applies to HPM6E8Y.
+option(LIBRMCS_ILM_HOT_PATH "Run the HPM6E8Y CAN driver from ILM" OFF)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "debug")

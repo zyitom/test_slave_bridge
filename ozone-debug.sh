@@ -14,8 +14,6 @@
 #   ./ozone-debug.sh hpm6e8y-core1    # HPM6E8Y core1 fieldbus application, JTAG
 #   ./ozone-debug.sh hpm5321          # rmcs_board hpm5321 bootloader, JTAG (attach)
 #   ./ozone-debug.sh hpm5321 app      # rmcs_board hpm5321 application, JTAG (attach)
-#   ./ozone-debug.sh hpm5321-dual-can # rmcs_board hpm5321_dual_can bootloader, JTAG (attach)
-#   ./ozone-debug.sh hpm5321-dual-can app # rmcs_board hpm5321_dual_can application, JTAG (attach)
 #   ./ozone-debug.sh --list
 #
 # Omit the image selector to use the project default image. Passing "app" creates
@@ -80,9 +78,6 @@ app_elf_for_project() {
         ;;
     hpm5321)
         printf '%s\n' "$SCRIPT_DIR/firmware/rmcs_board/build/app/output/rmcs_board_app_hpm5321.elf"
-        ;;
-    hpm5321-dual-can)
-        printf '%s\n' "$SCRIPT_DIR/firmware/rmcs_board/build/app/output/rmcs_board_app_hpm5321_dual_can.elf"
         ;;
     *)
         return 1

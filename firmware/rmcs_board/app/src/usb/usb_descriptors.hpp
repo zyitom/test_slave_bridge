@@ -19,15 +19,24 @@
 
 #include "core/src/utility/assert.hpp"
 #include "firmware/rmcs_board/app/src/utility/lazy.hpp"
+#include "firmware/rmcs_board/common/board_identity.hpp"
 
 namespace librmcs::firmware::usb {
 
 class UsbDescriptors {
 public:
-    UsbDescriptors() { update_serial_string(); }
+    UsbDescriptors() {
+        update_serial_string();
+        update_product_id();
+    }
 
-    static uint8_t const* get_device_descriptor() {
-        return reinterpret_cast<uint8_t const*>(&kDeviceDescriptor);
+    // Non-static because idProduct is decided at run time on boards whose image
+    // serves two PCBs: the hpm5321 app reports 0xA901 or 0xA902 from the OTP
+    // identity, so one binary keeps both boards' existing USB identity and the
+    // host needs no change (host/src/transport/usb/device_scanner.hpp matches the
+    // PID exactly). Single-variant boards report their compile-time PID.
+    uint8_t const* get_device_descriptor() const {
+        return reinterpret_cast<uint8_t const*>(&device_descriptor_);
     }
 
     static uint8_t const* get_configuration_descriptor(uint8_t index) {
@@ -94,6 +103,32 @@ private:
         core::utility::assert_debug(cursor == serial_string_.data() + serial_string_.size());
     }
 
+    // Report the PID matching the PCB this chip is on. A no-op on single-variant
+    // boards, where board::kOtpIdentityEnabled is false and the compile-time PID
+    // already in kDeviceDescriptor is correct.
+    //
+    // The product string is deliberately NOT varied: the host matches it exactly
+    // against "RMCS Agent v<version>", and the PID is what distinguishes the two
+    // boards there. Nothing else in the descriptor set changes, so a board sees
+    // byte-identical descriptors to the ones its own build used to emit.
+    void update_product_id() {
+        if constexpr (!board::kOtpIdentityEnabled)
+            return;
+
+        const auto& identity = board::board_identity();
+
+        // The bootloader refuses to jump here unless the identity resolved, so
+        // reaching this with kUnknown means the app was started some other way
+        // (a debugger, or a bootloader predating the check). Trap in debug; in
+        // release keep the compile-time PID rather than inventing one.
+        core::utility::assert_debug(identity.recognized());
+
+        if (identity.variant == board::BoardVariant::kSingleCan)
+            device_descriptor_.idProduct = kSingleCanProductId;
+        else if (identity.variant == board::BoardVariant::kDualCanFd)
+            device_descriptor_.idProduct = kDualCanFdProductId;
+    }
+
     static constexpr void mix_uid_entropy(std::array<uint32_t, kUuidWordCount>& uid) {
         static_assert(kUuidWordCount == 4U);
 
@@ -137,6 +172,12 @@ private:
     }
 
 private: // Device Descriptor
+    // The two hpm5321 PCBs' allocated PIDs. Same values the separate builds used,
+    // so hosts, udev rules and dfu-util command lines are unaffected by the
+    // merge; only which one a given binary reports is now decided at run time.
+    static constexpr uint16_t kSingleCanProductId = 0xA901;
+    static constexpr uint16_t kDualCanFdProductId = 0xA902;
+
     static constexpr tusb_desc_device_t kDeviceDescriptor = {
         .bLength = sizeof(tusb_desc_device_t),
         .bDescriptorType = TUSB_DESC_DEVICE,
@@ -157,6 +198,10 @@ private: // Device Descriptor
 
         .bNumConfigurations = 0x01,
     };
+
+    // Mutable copy: the constructor patches idProduct from the board identity.
+    // Everything else stays exactly as the constant above declares it.
+    tusb_desc_device_t device_descriptor_ = kDeviceDescriptor;
 
 private: // Configuration Descriptor
          // NOLINTNEXTLINE(cppcoreguidelines-use-enum-class)

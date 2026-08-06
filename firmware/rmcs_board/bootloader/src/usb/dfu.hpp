@@ -14,6 +14,7 @@
 #include "firmware/rmcs_board/bootloader/src/flash/validation.hpp"
 #include "firmware/rmcs_board/bootloader/src/flash/writer.hpp"
 #include "firmware/rmcs_board/bootloader/src/utility/boot_mailbox.hpp"
+#include "firmware/rmcs_board/common/board_identity.hpp"
 
 namespace librmcs::firmware::usb {
 
@@ -52,6 +53,17 @@ public:
 
     uint8_t download(uint8_t alt, uint16_t block_num, const uint8_t* data, uint16_t length) {
         if (alt != kDfuAltFlash)
+            return DFU_STATUS_ERR_TARGET;
+
+        // Refuse every write on a board whose OTP identity is not one of the two
+        // known values. Writing an app that then configures PA30/PA31 for the
+        // wrong variant is the failure this exists to prevent, and there is no
+        // way to pick a safe default from here -- so nothing gets flashed until
+        // someone reads the reported word 25 and decides what the board is.
+        // ERR_TARGET is the honest status: the device cannot accept an image for
+        // this target. dfu-util surfaces it as a failed download rather than a
+        // silent success.
+        if (!board::board_identity().recognized())
             return DFU_STATUS_ERR_TARGET;
 
         if (length == 0U)

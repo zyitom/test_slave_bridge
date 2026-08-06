@@ -167,12 +167,12 @@ private:
         config.baudrate = baudrate;
         config.parity = static_cast<uint8_t>(parity);
 
-        static_assert(HPM_IP_FEATURE_UART_TX_IDLE_DETECT == 1);
+        static_assert(HPM_IP_FEATURE_UART_TX_IDLE_DETECT == 1); // NOLINT(misc-redundant-expression)
         config.txidle_config.idle_cond = uart_rxline_idle_cond_state_machine_idle;
         config.txidle_config.detect_enable = true;
         config.txidle_config.threshold = 16;
 
-        static_assert(HPM_IP_FEATURE_UART_RX_IDLE_DETECT == 1);
+        static_assert(HPM_IP_FEATURE_UART_RX_IDLE_DETECT == 1); // NOLINT(misc-redundant-expression)
         config.rxidle_config.detect_enable = true;
         config.rxidle_config.detect_irq_enable = true;
         config.rxidle_config.idle_cond = uart_rxline_idle_cond_state_machine_idle;

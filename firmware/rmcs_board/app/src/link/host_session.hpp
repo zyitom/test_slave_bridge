@@ -110,7 +110,12 @@ private:
         core::protocol::FieldId id, const data::CanDataView& data) override {
         if (!session_established_)
             return true;
-        for (size_t i = 0; i < can::kCanCount; i++) {
+        // Bounded by can_count(), not kCanCount: this is host-supplied data, and
+        // on the single-CAN hpm5321 the image still carries a CAN1 slot that was
+        // never constructed. A frame addressed to kCan1 there must be rejected
+        // (false = "field not recognized on this board"), not dispatched into an
+        // uninitialized Can.
+        for (size_t i = 0; i < can::can_count(); i++) {
             if (can::kCanDataIds[i] != static_cast<data::DataId>(id))
                 continue;
             can::can_array[i]->handle_downlink(data);

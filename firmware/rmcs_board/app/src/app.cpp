@@ -1,5 +1,6 @@
 #include "firmware/rmcs_board/app/src/app.hpp"
 
+#include <cstddef>
 #include <cstdint>
 
 #include <board.h>
@@ -99,8 +100,12 @@ App::App() {
         xcore::pd_link_init();
         usb::vendor.init();
 
-        for (auto& can : can::can_array)
-            can.init();
+        // Bounded by can_count(), not by the array size: on the hpm5321 image the
+        // table is sized for the dual-CAN PCB and the single-CAN one leaves the
+        // last slot unconstructed. Initializing it there would clock MCAN3 and
+        // steal PA30/PA31 from the LED. The uninitialized Lazy stays inert.
+        for (size_t i = 0; i < can::can_count(); ++i)
+            can::can_array[i].init();
 
         for (auto& board_uart : uart::uart_array)
             board_uart.init();
@@ -135,8 +140,8 @@ bool host_session_established() {
         // which is where TinyUSB delivers this pass's downlink frames. Placing
         // it later -- after the 1 kHz LED/telemetry block -- would put that
         // block's work between a frame arriving and reaching the wire.
-        for (auto& can : can::can_array)
-            can->try_transmit();
+        for (size_t i = 0; i < can::can_count(); ++i)
+            can::can_array[i]->try_transmit();
 
         usb::poll_dfu_runtime_reboot();
 
@@ -162,8 +167,8 @@ bool host_session_established() {
         // CAN interrupt-delivery watchdog. Must run every pass, not off the
         // 1 kHz tick: RX FIFO0 holds 32 elements, which at the rates this board
         // forwards is under two milliseconds of slack before frames are lost.
-        for (auto& can : can::can_array)
-            can->poll();
+        for (size_t i = 0; i < can::can_count(); ++i)
+            can::can_array[i]->poll();
 
         // Host transport pump.
         //

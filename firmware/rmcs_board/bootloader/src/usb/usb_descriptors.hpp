@@ -17,15 +17,22 @@
 #include <tusb_config.h>
 
 #include "firmware/rmcs_board/bootloader/src/utility/assert.hpp"
+#include "firmware/rmcs_board/common/board_identity.hpp"
 
 namespace librmcs::firmware::usb {
 
 class UsbDescriptors {
 public:
-    UsbDescriptors() { update_serial_string(); }
+    UsbDescriptors() {
+        update_serial_string();
+        update_board_identity_strings();
+    }
 
-    static uint8_t const* get_device_descriptor() {
-        return reinterpret_cast<uint8_t const*>(&kDeviceDescriptor);
+    // Non-static because idProduct is decided at run time: an unrecognized board
+    // enumerates under a sentinel PID so the fault is visible in plain `lsusb`
+    // and no host tool mistakes the device for a flashable board.
+    uint8_t const* get_device_descriptor() const {
+        return reinterpret_cast<uint8_t const*>(&device_descriptor_);
     }
 
     static uint8_t const* get_configuration_descriptor(uint8_t index) {
@@ -44,7 +51,7 @@ public:
             std::string_view str;
             switch (index) {
             case 1: str = kManufacturerString; break;
-            case 2: str = kProductString; break;
+            case 2: str = product_string_; break;
             case 3:
                 str = std::string_view{serial_string_.data(), serial_string_.size() - 1U};
                 break;
@@ -84,6 +91,49 @@ private:
             cursor = write_hex_u16(static_cast<uint16_t>(word), cursor) + 1;
         }
         utility::assert_debug(cursor == serial_string_.data() + serial_string_.size());
+    }
+
+    // Patch the runtime-decided half of the descriptors from the OTP board
+    // identity. A recognized board is indistinguishable from the old separate
+    // builds: it enumerates under the PID its own PCB has always used, and shows
+    // the plain bootloader product string.
+    //
+    // Reporting the variant PID rather than the compile-time one matters here,
+    // not just in the app. One bootloader binary now serves both HPM5321 PCBs,
+    // and its compile-time PID can only be one of them (0xA901). Leaving it at
+    // that would make a dual board enumerate its DFU interface as 0xA901, which
+    // breaks every `dfu-util -d 0xa11c:0xa902` command line in the repo
+    // (flash-dual.sh, flash-dual-bootloader.sh, BUILD_ENVIRONMENT.md) and any
+    // udev rule keyed on it. The merge is supposed to be invisible from the host
+    // side; the PID is the one field that makes that true.
+    //
+    // An unrecognized board deliberately becomes conspicuous instead. `lsusb`
+    // shows the sentinel PID, and the product string -- which `lsusb -v` prints
+    // and which needs no host-side support at all -- carries the offending word
+    // 25 value, so the first diagnostic step needs nothing but a USB cable. The
+    // sentinel is outside the allocated PID range, so no host tool in this repo
+    // matches it (host/src/transport/usb/device_scanner.hpp requires an exact
+    // PID) and DFU refuses the download besides.
+    void update_board_identity_strings() {
+        const auto& identity = board::board_identity();
+        if (identity.recognized()) {
+            if (identity.variant == board::BoardVariant::kSingleCan)
+                device_descriptor_.idProduct = kSingleCanProductId;
+            else if (identity.variant == board::BoardVariant::kDualCanFd)
+                device_descriptor_.idProduct = kDualCanFdProductId;
+            return;
+        }
+
+        device_descriptor_.idProduct = kUnknownBoardProductId;
+
+        auto* cursor = unknown_board_string_.data() + kUnknownBoardPrefix.size();
+        cursor = write_hex_u16(static_cast<uint16_t>(identity.otp_word >> 16U), cursor);
+        cursor = write_hex_u16(static_cast<uint16_t>(identity.otp_word), cursor);
+        utility::assert_debug(
+            cursor == unknown_board_string_.data() + unknown_board_string_.size() - 1U);
+
+        product_string_ =
+            std::string_view{unknown_board_string_.data(), unknown_board_string_.size() - 1U};
     }
 
     static constexpr void mix_uid_entropy(std::array<uint32_t, kUuidWordCount>& uid) {
@@ -128,6 +178,18 @@ private:
     }
 
 private: // Device Descriptor
+    // The two HPM5321 PCBs' allocated PIDs, reported from the OTP identity so one
+    // binary keeps both boards' historical DFU identity. Only reachable on a board
+    // that enables the identity check; a single-variant board resolves to
+    // BoardVariant::kFixed and keeps LIBRMCS_USB_PID below untouched.
+    static constexpr uint16_t kSingleCanProductId = 0xA901;
+    static constexpr uint16_t kDualCanFdProductId = 0xA902;
+
+    // PID reported when OTP word 25 held neither known value. Outside the
+    // allocated 0xA901..0xA904 range on purpose, so it can never collide with a
+    // real board and no existing host tool will bind to it.
+    static constexpr uint16_t kUnknownBoardProductId = 0xA9FF;
+
     static constexpr tusb_desc_device_t kDeviceDescriptor = {
         .bLength = sizeof(tusb_desc_device_t),
         .bDescriptorType = TUSB_DESC_DEVICE,
@@ -144,6 +206,10 @@ private: // Device Descriptor
         .iSerialNumber = 0x03,
         .bNumConfigurations = 0x01,
     };
+
+    // Mutable copy: the constructor overrides idProduct on an unrecognized
+    // board. Everything else stays exactly as the constant above declares it.
+    tusb_desc_device_t device_descriptor_ = kDeviceDescriptor;
 
 private: // Configuration Descriptor
     static constexpr uint8_t kItfNumDfu = 0U;
@@ -163,6 +229,17 @@ private: // String Descriptor
     static constexpr std::string_view kAlt0String = "Internal Flash";
     std::array<char, 43> serial_string_{"AF-0000-0000-0000-0000-0000-0000-0000-0000"};
     std::array<uint16_t, 128> descriptor_string_buffer_{};
+
+    // Error product string for an unrecognized board. The eight X's are
+    // overwritten with word 25 in hex by update_board_identity_strings(); the
+    // literal's length is what sizes the array, so the two cannot drift apart.
+    static constexpr std::string_view kUnknownBoardPrefix = "RMCS DFU UNKNOWN BOARD OTP25=0x";
+    std::array<char, 40> unknown_board_string_{"RMCS DFU UNKNOWN BOARD OTP25=0xXXXXXXXX"};
+    static_assert(kUnknownBoardPrefix.size() + 8U == 39U);
+
+    // Product string actually reported. Points at the constant on a recognized
+    // board and at unknown_board_string_ otherwise.
+    std::string_view product_string_{kProductString};
 };
 
 UsbDescriptors& get_usb_descriptors();

@@ -156,8 +156,15 @@ cmake --build firmware/rmcs_board/build
 
 > 提示:`BOARD` 是自由字符串,`BOARD_SEARCH_PATH` 默认指向 `boards/`,只要
 > `boards/hpm6e8y/` 存在即可用 `-DBOARD=hpm6e8y`。超级构建 `CMakeLists.txt` 的
-> `STRINGS` 下拉列表目前只列了 `hpm5321 / hpm5321_dual_can`,那只是 GUI 提示,
+> `STRINGS` 下拉列表目前只列了 `hpm5321`,那只是 GUI 提示,
 > 不影响命令行;把 `hpm6e8y` 加进该列表纯属可读性优化。
+
+> **HPM5321 只有一个 BOARD 值要记:`hpm5321`。** 它出的单个镜像同时服务单 CAN 版和
+> 双 CAN-FD 版两块板,上电时读 OTP 第 25 个字判断跑在哪块上,并据此报 `0xA901` 或
+> `0xA902`——所以 `dfu-util -d` 的 PID 按板子填,和合并前一样。`.dfu` 容器后缀里的
+> PID 是通配 `0xFFFF`,同一个文件对两个 PID 都能过校验。原理、实测数据、以及"读到
+> 未知值就拒绝启动"的行为见 [boards/hpm5321/README.md](boards/hpm5321/README.md)。
+> HPM5321 两块 PCB 共用 `-DBOARD=hpm5321` 这一份镜像；OTP 第 25 字决定 CAN/LED/PID。
 
 ### 4.2 EtherCAT 桥固件(当前 6e8y 镜像)
 

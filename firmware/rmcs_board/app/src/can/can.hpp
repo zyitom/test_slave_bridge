@@ -36,7 +36,12 @@ using board::CanPort;
 
 class Can : private core::utility::Immovable {
 public:
-    using Lazy = utility::Lazy<Can, data::DataId, CanPort, size_t>;
+    // Constructed from the logical CAN index alone, with the CanPort derived from
+    // it via board::can_port(). The port cannot be a Lazy argument: Lazy's
+    // constructor is consteval, and on a board serving two PCBs the port's mode
+    // is only known at run time (boards/hpm5321/app/board_app.hpp). The index is
+    // a compile-time constant either way.
+    using Lazy = utility::Lazy<Can, data::DataId, size_t>;
 
     // Baudrates are compile-time constants; the mode is fixed per board via
     // the CanPort table in board_app.hpp.
@@ -59,11 +64,19 @@ public:
         | MCAN_INT_BUS_OFF_STATUS | MCAN_INT_WARNING_STATUS | MCAN_INT_ERROR_PASSIVE
         | MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE | MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE;
 
+    explicit Can(data::DataId data_id, size_t board_can_index)
+        : Can(data_id, board::can_port(board_can_index), board_can_index) {}
+
     explicit Can(data::DataId data_id, CanPort port, size_t board_can_index)
         : data_id_(data_id)
         , can_base_(reinterpret_cast<MCAN_Type*>(port.base))
         , irq_num_(port.irq_num)
         , canfd_(port.mode == CanMode::kCanFd) {
+
+        // Only ports the PCB actually has may be brought up. On the single-CAN
+        // hpm5321 the second slot's pads are LED cathodes, so constructing it
+        // would hand PA30/PA31 to a transceiver that is not there.
+        core::utility::assert_always(board_can_index < board::can_port_count());
 
         // Message RAM placement is board business: SoCs differ in where MCAN
         // buffers may live (dedicated AHB RAM vs a section-placed array), so
@@ -322,8 +335,22 @@ private:
 // Everything below is built from the board's CAN port table (board::kCanPorts),
 // so there are no per-port macros: the count, the FD mode and the dispatch all
 // follow the table. Message RAM comes from board::can_message_ram().
-constexpr size_t kCanCount = std::size(board::kCanPorts);
+//
+// kCanCount is the table CAPACITY -- how many Can slots the image carries. On
+// most boards that is also how many controllers exist. On a board directory that
+// serves two PCBs (boards/hpm5321) the table is sized for the larger variant and
+// board::can_port_count() reports how many are actually present at run time,
+// which is what every loop must bound on: constructing a Can for a port the PCB
+// does not have would clock a controller whose pads belong to something else.
+// Slots at or above can_port_count() are left uninitialized, and Lazy leaves
+// them safely inert -- try_get() returns nullptr until init() runs.
+constexpr size_t kCanCount = board::kCanPortCapacity;
+static_assert(kCanCount == std::size(board::kCanPorts));
 static_assert(kCanCount >= 1 && kCanCount <= 4);
+
+// Controllers actually present on this board. Equal to kCanCount except on the
+// dual-variant hpm5321 image.
+inline size_t can_count() { return board::can_port_count(); }
 
 constexpr data::DataId kCanDataIds[] = {
     data::DataId::kCan0, data::DataId::kCan1, data::DataId::kCan2, data::DataId::kCan3};
@@ -332,7 +359,7 @@ namespace internal {
 
 template <std::size_t index>
 consteval Can::Lazy make_can() {
-    return Can::Lazy{kCanDataIds[index], board::kCanPorts[index], index};
+    return Can::Lazy{kCanDataIds[index], index};
 }
 
 template <std::size_t... indices>

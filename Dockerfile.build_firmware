@@ -8,16 +8,15 @@ RUN --mount=type=bind,target=/src,source=.,readonly \
     mkdir -p /output; \
     LIBRMCS_PROJECT_VERSION="$(.scripts/generate_version)"; \
     for board in rmcs_board; do \
-        for variant in hpm5321 hpm5321_dual_can; do \
-            build_dir="/tmp/build-${board}-${variant}"; \
-            artifact_name="${board}-${variant}"; \
-            cmake --preset release -S "firmware/${board}" -B "${build_dir}" -DBOARD="${variant}"; \
-            cmake --build "${build_dir}"; \
-            cp "${build_dir}/bootloader/output/rmcs_board_bootloader_${variant}.elf" \
-                "/output/librmcs-bootloader-${artifact_name}.elf"; \
-            cp "${build_dir}/app/output/rmcs_board_app_${variant}.dfu" \
-                "/output/librmcs-firmware-${artifact_name}-${LIBRMCS_PROJECT_VERSION}.dfu"; \
-        done; \
+        variant=hpm5321; \
+        build_dir="/tmp/build-${board}-${variant}"; \
+        artifact_name="${board}-${variant}"; \
+        cmake --preset release -S "firmware/${board}" -B "${build_dir}" -DBOARD="${variant}"; \
+        cmake --build "${build_dir}"; \
+        cp "${build_dir}/bootloader/output/rmcs_board_bootloader_${variant}.elf" \
+            "/output/librmcs-bootloader-${artifact_name}.elf"; \
+        cp "${build_dir}/app/output/rmcs_board_app_${variant}.dfu" \
+            "/output/librmcs-firmware-${artifact_name}-${LIBRMCS_PROJECT_VERSION}.dfu"; \
     done; \
     for board in c_board; do \
         build_dir="/tmp/build-${board}"; \

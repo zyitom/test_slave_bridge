@@ -108,7 +108,11 @@ public:
         //   solid on     = BUS-OFF: too many errors; controller recovering/offline
         // The CAN ISR refreshes the per-controller fault on every error
         // interrupt; it decays here ~5 s after the last error, returning to off.
-        for (size_t i = 0; i < kCanIndicatorCount; ++i) {
+        // Bounded by the runtime count, not the table capacity: the hpm5321 image
+        // carries two indicator entries for the dual-CAN PCB, and the single-CAN
+        // one has no indicator LEDs at all -- its PB14/PB15 are unpopulated, so
+        // driving them would be writing to pads this board does not use.
+        for (size_t i = 0; i < board::can_indicator_count(); ++i) {
             uint16_t timeout = can_fault_timeout_[i].load(std::memory_order::relaxed);
             if (timeout) {
                 --timeout;
@@ -143,6 +147,10 @@ public:
     // bus state change (warning/passive) carrying no fresh LEC does not blank a
     // fault that was reported moments earlier.
     void report_can_fault(uint8_t can_index, CanFault fault) {
+        // Guards the array bound (capacity). Whether an indicator LED physically
+        // exists is update()'s business: recording a fault for a slot that has no
+        // LED is harmless, and the check that matters for memory safety is this
+        // one.
         if (can_index >= kCanIndicatorCount)
             return;
         can_fault_timeout_[can_index].store(kCanFaultTimeoutTicks, std::memory_order::relaxed);
@@ -151,6 +159,10 @@ public:
     }
 
 private:
+    // Capacity of the board's indicator table, which sizes the state arrays
+    // below. board::can_indicator_count() is how many LEDs are actually
+    // populated; the two differ only on the hpm5321 image, whose table is sized
+    // for the dual-CAN PCB while the single-CAN one has none.
     static constexpr size_t kCanIndicatorCount = board::kCanIndicatorPins.size();
 
     // CAN fault indicator state — ISR-safe via atomic stores.  Each CAN

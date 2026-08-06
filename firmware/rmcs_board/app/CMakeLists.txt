@@ -2,9 +2,7 @@ cmake_minimum_required(VERSION 3.21...3.28)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 # Fold the selected board into the output name so the produced ELF/BIN/DFU make
-# the target board obvious (e.g. rmcs_board_app_hpm5321.elf vs
-# rmcs_board_app_hpm5321_dual_can.elf) and the wrong image cannot be flashed by
-# mistake.
+# the target board obvious and the wrong image cannot be flashed by mistake.
 set(APP_NAME "rmcs_board_app_${BOARD}")
 
 if(NOT LIBRMCS_RMCS_BOARD_SUPERBUILDING)
@@ -17,9 +15,19 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../common/cmake/librmcs_firmware.cmake")
 
 set(HPM_BUILD_TYPE "flash_uf2" CACHE STRING "HPM build type")
 
-# Run the CAN forwarding leaf calls from ILM instead of FLASH XIP. Our own glue
-# is already in .fast via ATTR_PLACE_AT, but the SDK's MCAN driver -- called on
-# every single frame -- is not, so the hot path still takes XIP fetches.
+# HPM5321 owns a board-specific linker script because its normal application
+# layout places selected librmcs forwarding sections in ILM. Set the override
+# before find_package(hpm-sdk); the SDK resolves its linker script while the
+# package is loaded, before the board CMakeLists can select one.
+if(BOARD STREQUAL "hpm5321")
+    set(CUSTOM_GCC_LINKER_FILE
+        "${BOARD_SEARCH_PATH}/${BOARD}/linker/app_flash_uf2.ld")
+endif()
+
+# On HPM6E8Y, optionally move the CAN forwarding leaf calls from FLASH XIP to
+# ILM. Our own glue is already in .fast via ATTR_PLACE_AT, but the SDK's MCAN
+# driver -- called on every frame -- is not, so the hot path still takes XIP
+# fetches.
 #
 # Worth it on the EtherCAT path and not on USB: both transports quantize the
 # round trip, but EtherCAT's quantum is the 25.75 us cycle while USB's is the
@@ -29,8 +37,8 @@ set(HPM_BUILD_TYPE "flash_uf2" CACHE STRING "HPM build type")
 #
 # OFF keeps the stock SDK script, which is the configuration every measurement
 # before 2026-08-01 was taken on.
-option(LIBRMCS_APP_ILM_HOT_PATH "Run the CAN driver from ILM (custom linker script)" OFF)
-if(LIBRMCS_APP_ILM_HOT_PATH)
+option(LIBRMCS_APP_ILM_HOT_PATH "Run the HPM6E8Y CAN driver from ILM" OFF)
+if(LIBRMCS_APP_ILM_HOT_PATH AND NOT BOARD STREQUAL "hpm5321")
     set(CUSTOM_GCC_LINKER_FILE "${CMAKE_CURRENT_SOURCE_DIR}/hpm6e80_flash_uf2_ilm_hot.ld")
 endif()
 
@@ -69,6 +77,15 @@ find_package(hpm-sdk REQUIRED HINTS "$ENV{HPM_SDK_BASE}")
 get_property(LIBRMCS_USB_PID GLOBAL PROPERTY LIBRMCS_USB_PID)
 if("${LIBRMCS_USB_PID}" STREQUAL "")
     message(FATAL_ERROR "LIBRMCS_USB_PID must be set by the selected board")
+endif()
+
+# PID stamped into the .dfu container's suffix, which dfu-util checks against the
+# connected device before writing. The hpm5321 image serves two PCBs and reports
+# its PID at run time, so boards/hpm5321 sets the wildcard 0xFFFF instead. Vendor
+# id and CRC are still verified.
+get_property(LIBRMCS_DFU_PRODUCT_ID GLOBAL PROPERTY LIBRMCS_DFU_PRODUCT_ID)
+if("${LIBRMCS_DFU_PRODUCT_ID}" STREQUAL "")
+    set(LIBRMCS_DFU_PRODUCT_ID ${LIBRMCS_USB_PID})
 endif()
 
 librmcs_setup_project_context(PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../..")
@@ -198,7 +215,7 @@ librmcs_add_dfu_image(
     INPUT_BINARY "${EXECUTABLE_OUTPUT_PATH}/${APP_BIN_NAME}"
     OUTPUT_DFU "${EXECUTABLE_OUTPUT_PATH}/${APP_NAME}.dfu"
     VENDOR_ID 0xA11C
-    PRODUCT_ID ${LIBRMCS_USB_PID}
+    PRODUCT_ID ${LIBRMCS_DFU_PRODUCT_ID}
     DEVICE_ID 0x0300
     COMMENT "Generating ${APP_NAME}.dfu"
 )

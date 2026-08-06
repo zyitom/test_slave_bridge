@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 #
-# Flash the rmcs_board hpm5321_dual_can DFU BOOTLOADER via J-Link (one-time).
+# Flash the dual CAN-FD HPM5321 board's DFU BOOTLOADER via J-Link (one-time).
+#
+# Builds BOARD=hpm5321, whose bootloader serves both HPM5321 PCBs: it reads OTP
+# word 25 to identify the board and reports 0xa902 here, exactly as the separate
+# dual build used to (firmware/rmcs_board/common/board_identity.hpp).
+#
+# It also REFUSES to jump to the app or accept a DFU download if word 25 holds
+# neither known value, enumerating as 0xa9ff with the offending value in its USB
+# product string instead. That is deliberate. Recovery from that state needs PA07
+# pulled to GND at reset, or this script over J-Link -- there is no USB path out.
 #
 # This is only needed for a blank chip or to recover/update the bootloader. After
 # the bootloader is on the board, flash the application with ./flash-dual.sh over
@@ -25,7 +34,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BL_BIN="$SCRIPT_DIR/firmware/rmcs_board/build/bootloader/output/rmcs_board_bootloader_hpm5321_dual_can.bin"
+BOARD="${BOARD:-hpm5321}"
+if [[ "$BOARD" != hpm5321 ]]; then
+    echo "error: BOARD must be hpm5321; the bootloader identifies the PCB from OTP word 25" >&2
+    exit 2
+fi
+BL_BIN="$SCRIPT_DIR/firmware/rmcs_board/build/bootloader/output/rmcs_board_bootloader_${BOARD}.bin"
 
 HPM_SDK_BASE="$SCRIPT_DIR/firmware/rmcs_board/bsp/hpm_sdk"
 OPENOCD_DIR="$HPM_SDK_BASE/boards/openocd"
@@ -41,8 +55,8 @@ command -v "$OPENOCD_BIN" >/dev/null 2>&1 || {
 # presets share one build dir, so switching PRESET triggers a full reconfigure).
 PRESET="${PRESET:-release}"
 : "${GNURISCV_TOOLCHAIN_PATH:?GNURISCV_TOOLCHAIN_PATH must point to the RISC-V toolchain root}"
-echo ">> Building rmcs_board_bootloader (preset: $PRESET, BOARD=hpm5321_dual_can)"
-cmake --preset "$PRESET" -S "$SCRIPT_DIR/firmware/rmcs_board" -DBOARD=hpm5321_dual_can
+echo ">> Building rmcs_board_bootloader (preset: $PRESET, BOARD=$BOARD)"
+cmake --preset "$PRESET" -S "$SCRIPT_DIR/firmware/rmcs_board" -DBOARD="$BOARD"
 cmake --build "$SCRIPT_DIR/firmware/rmcs_board/build" --target rmcs_board_bootloader
 
 if [[ ! -f "$BL_BIN" ]]; then

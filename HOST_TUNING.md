@@ -644,22 +644,21 @@ CAN-FD 从 5 提到 6 Mbit（省约 3us 线上时间）时，p50 五轮为
    `debug` 固件后怎么测都是 118-121。**不是 9.1 测错了，是那次测量用的是 `release` 固件。**
    板级 p50 的第一嫌疑人永远是固件构建类型，不是主机。
 2. **`-Og` 是怎么进去的**：`app/CMakeLists.txt:98` 在 `CMAKE_BUILD_TYPE STREQUAL "debug"`
-   时加 `-Og`。而 `firmware/rmcs_board/AGENTS.md` 给 `hpm5321_dual_can` 的示例命令用的是
-   `--preset release`——**板上跑 debug 多半是意外，不是选择。**
+   时加 `-Og`。历史测量使用的双 CAN 硬件现在统一由 `BOARD=hpm5321` 的运行时镜像服务，
+   构建类型仍只由 preset 决定——**板上跑 debug 多半是意外，不是选择。**
 3. **吞吐完全不受影响**：两种构建下都是每总线 19000 帧/s 无损、20000 帧/s 丢约 0.67-0.69%，
    `corrupt=0`。**上限是 CAN-FD 线速，不是 CPU**，所以优化等级动不了它。
 
-> **烧录前必须核对板级变体。** `hpm5321` 的 USB PID 是 `0xA901`，`hpm5321_dual_can` 是
-> `0xA902`，而 `BOARD` 的默认值是 `hpm5321`。**不带 `-DBOARD=hpm5321_dual_can` 编出来的
-> 镜像烧上去会改掉 PID 并配错引脚。** 仓库里 `firmware/rmcs_board/build/` 这棵树当前就是
-> 默认的 `hpm5321`，别直接拿它烧 DualCan 板。
+> **两块 HPM5321 板使用同一个固件构建入口。** `BOARD=hpm5321` 的镜像上电读取 OTP 第
+> 25 字，单 CAN 版枚举 `0xA901`，双 CAN-FD 版枚举 `0xA902`，并选择对应引脚。仓库里
+> `firmware/rmcs_board/build/` 的产物就是两块板共用的镜像。
 >
 > ```bash
 > cmake -S firmware/rmcs_board -B <build> -G Ninja \
->       -DCMAKE_BUILD_TYPE=release -DBOARD=hpm5321_dual_can
+>       -DCMAKE_BUILD_TYPE=release -DBOARD=hpm5321
 > cmake --build <build>
 > dfu-util -d 0xa11c:0xa902 -S <serial> -a 0 \
->          -D <build>/app/output/rmcs_board_app_hpm5321_dual_can.dfu
+>          -D <build>/app/output/rmcs_board_app_hpm5321.dfu
 > ```
 >
 > 两块板同时在线时用 `-S <serial>` 逐块烧（`dfu-util -l` 列出序列号）。

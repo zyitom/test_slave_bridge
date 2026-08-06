@@ -30,6 +30,14 @@ constexpr CanPort kCanPorts[] = {
     {.base = HPM_MCAN4_BASE, .irq_num = IRQn_MCAN4, .mode = CanMode::kClassic},
 };
 
+// Table capacity and the number of controllers actually populated on this board.
+// They differ only on boards whose directory serves more than one PCB
+// (boards/hpm5321), where the table is sized for the larger variant and this
+// count comes from the runtime identity. Here they are the same.
+constexpr size_t kCanPortCapacity = std::size(kCanPorts);
+constexpr size_t can_port_count() { return kCanPortCapacity; }
+constexpr CanPort can_port(size_t index) { return kCanPorts[index]; }
+
 uint32_t init_can(MCAN_Type* ptr);
 void can_irq_handler(size_t board_can_index);
 
@@ -74,8 +82,18 @@ constexpr GpioPin kLedRedPin = make_gpio_pin<gpiom_soc_gpio0, 'E', 14, true>();
 constexpr GpioPin kLedGreenPin = make_gpio_pin<gpiom_soc_gpio0, 'E', 15, true>();
 constexpr GpioPin kLedBluePin = make_gpio_pin<gpiom_soc_gpio0, 'E', 4, true>();
 
+// Accessor form of the three constants above. The shared LED driver calls these
+// rather than reading the constants, because a board directory that serves more
+// than one PCB has to pick its pads from the runtime identity
+// (boards/hpm5321/app/board_app.hpp does). This board has one pinout, so these
+// are constant folds.
+constexpr GpioPin led_red_pin() { return kLedRedPin; }
+constexpr GpioPin led_green_pin() { return kLedGreenPin; }
+constexpr GpioPin led_blue_pin() { return kLedBluePin; }
+
 // No per-CAN indicator LEDs on this board.
 constexpr std::array<GpioPin, 0> kCanIndicatorPins{};
+constexpr size_t can_indicator_count() { return kCanIndicatorPins.size(); }
 
 void init_led_pins();
 void init_can_indicator_pins();

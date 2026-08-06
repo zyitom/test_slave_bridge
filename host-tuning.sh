@@ -329,8 +329,8 @@ fi
 
 echo "== USB board =="
 BOARD_CONTROLLERS=""
-# Match on vendor id only: the product id differs per board (a901 hpm5321,
-# a902 hpm5321_dual_can, a904 hpm6e8y), and hardcoding one silently reports
+# Match on vendor id only: the product id differs per board (a901 HPM5321 single
+# CAN, a902 HPM5321 dual CAN-FD, a904 hpm6e8y), and hardcoding one silently reports
 # "board not enumerated" the moment a different board is plugged in.
 FOUND_BOARD=0
 for d in /sys/bus/usb/devices/*/; do

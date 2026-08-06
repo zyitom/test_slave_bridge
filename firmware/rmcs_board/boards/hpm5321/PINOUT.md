@@ -3,25 +3,42 @@
 > **文档类型**：硬件参考（引脚表）
 > **适用范围**：`firmware/rmcs_board/boards/hpm5321/`
 > **状态**：现行有效
-> **相关文档**：[README.md](README.md)（板级说明） · [../hpm5321_dual_can/PINOUT.md](../hpm5321_dual_can/PINOUT.md)（双 CAN 版对照）
+> **相关文档**：[README.md](README.md)（板级说明）
 
 ## 摘要
 
-本文件是 hpm5321 的**引脚速查表**。每一项都直接取自固件源码，"来源"列标明该引脚在哪里
-被配置，**便于随时回源核对**——发现表与代码不一致时，以代码为准并回来更正本表。
+本文件是 hpm5321 两种 PCB 变体的**引脚速查表**。每一项都直接取自固件源码，"来源"列
+标明该引脚在哪里被配置，**便于随时回源核对**——发现表与代码不一致时，以代码为准并回来
+更正本表。两种 PCB 使用同一份镜像，OTP shadow word 25 在上电时选择对应表。
 
-SoC 是 **HPM5361**（`HPM5361xEGx`，QFN48；`openocd-soc: hpm5300`）。注意板子**名字**叫
-hpm5321 是沿用板系列名，实际硅片是 HPM5361。
+SDK 使用的 SoC 模型是 **HPM5361**；板上实际器件为 **HPM5321IEG1**，J-Link 设备族名为
+`HPM5321xEGx`（QFN48；`openocd-soc: hpm5300`）。注意 `hpm5321` 是仓库板卡名，
+不是 SDK 的 SoC 目录名；SDK 的 HPM5361 模型用于这颗兼容芯片。
 
 ## CAN（MCAN）
 
-| 逻辑名 | 硬件 | TXD | RXD | 模式 | 来源 |
-| ------- | -------- | ---- | ---- | ------- | ------------------------ |
-| CAN0 | MCAN0 | PA00 | PA01 | 经典 | `app/board_app.cpp` 的 `init_can()` |
+**共用端口：**
 
-端口表在 `app/board_app.hpp`（`kCanPorts`）。CAN0 是 DM（达妙）电机总线。控制器配置为
-仅经典模式（`CanMode::kClassic`）：主机请求 CAN-FD 的帧上线时会被降为经典，见
-[README.md](README.md)。
+| 逻辑名 | 硬件 | TXD | RXD | 来源 |
+| ------- | -------- | ---- | ---- | ------------------------ |
+| CAN0 | MCAN0 | PA00 | PA01 | `app/board_app.cpp` 的 `init_can()` |
+
+**单 CAN 变体（OTP25 = `0x00000000`）：**
+
+| 逻辑名 | 模式 | 说明 |
+| ------- | ---- | ------- |
+| CAN0 | 经典 CAN | 主机请求 CAN-FD 时降级为经典帧 |
+
+**双 CAN-FD 变体（OTP25 = `0x00000002`）：**
+
+| 逻辑名 | 硬件 | TXD | RXD | 模式 |
+| ------- | -------- | ---- | ---- | ------- |
+| CAN0 | MCAN0 | PA00 | PA01 | CAN-FD |
+| CAN1 | MCAN3 | PA31 | PA30 | CAN-FD |
+
+端口表和变体选择在 `app/board_app.hpp`（`kCanPorts`、`can_port()`）。CAN0 是 DM（达妙）
+电机总线；单 CAN 变体控制器配置为仅经典模式，主机请求 CAN-FD 的帧会降为经典，见
+[README.md](README.md)。双 CAN-FD 变体启用 MCAN0 和 MCAN3 两路 FD。
 
 ## UART
 
@@ -38,13 +55,27 @@ hpm5321 是沿用板系列名，实际硅片是 HPM5361。
 共阳极 RGB 灯：把引脚**拉低**才点亮对应通道（`make_gpio_pin<..., false>`）。定义在
 `app/board_app.hpp`，由 `app/board_app.cpp` 的 `init_led_pins()` 完成引脚复用。
 
+**单 CAN 变体（OTP25 = `0x00000000`）：**
+
 | 颜色 | 引脚 |
 | ----- | ---- |
 | 蓝 | PA29 |
 | 绿 | PA30 |
 | 红 | PA31 |
 
-这块板**没有**每路 CAN 的独立指示灯（`kCanIndicatorPins` 为空）。
+**双 CAN-FD 变体（OTP25 = `0x00000002`）：**
+
+| 颜色 | 引脚 |
+| ----- | ---- |
+| 蓝 | PA26 |
+| 绿 | PA27 |
+| 红 | PA28 |
+
+## CAN 指示灯
+
+单 CAN 变体没有每路 CAN 的独立指示灯（`kCanIndicatorPins` 为空）。双 CAN-FD 变体有两路
+高电平有效指示灯：CAN0 为 PB14，CAN1 为 PB15；定义在 `app/board_app.hpp`，由
+`app/board_app.cpp` 的 `init_can_indicator_pins()` 配置。
 
 ## USB（设备模式，高速）
 
@@ -59,7 +90,7 @@ hpm5321 是沿用板系列名，实际硅片是 HPM5361。
 ## Bootloader 强制常驻引脚 / 调试
 
 > 这里的「触发」不一定是按键：`board.c` 采的是**与 JTAG_TMS 复用的引脚**，函数名里的
-> `button` 只是沿用叫法。同系列的 `hpm5321_dual_can` 已确认板上没有任何实体键
+> `button` 只是沿用叫法。双 CAN-FD 变体同样没有任何实体键
 > [实测 2026-08-03]，本板是否装了键以实物为准 [推断]。
 
 | 功能 | 引脚 | 说明 |

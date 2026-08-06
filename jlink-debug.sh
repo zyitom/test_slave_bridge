@@ -24,7 +24,6 @@
 #   ./jlink-debug.sh hpm6e8y           # ecat bootloader,    HPM6E8Y,       JTAG
 #   ./jlink-debug.sh hpm6e8y-core1     # core1 fieldbus app (no bootloader), JTAG
 #   ./jlink-debug.sh hpm5321           # rmcs_board bootloader, HPM5361 (hpm5321 board),      JTAG
-#   ./jlink-debug.sh hpm5321-dual-can  # rmcs_board bootloader, HPM5361 (hpm5321_dual_can board), JTAG
 #   ./jlink-debug.sh --list            # show the target table and exit
 #
 # Environment overrides (all optional):
@@ -62,8 +61,6 @@ print_targets() {
         firmware/rmcs_board/ecat/build/rmcs_ecat_core1/output/demo.elf
     printf '%-16s %-18s %-6s %s\n' hpm5321 HPM5321xEGx JTAG \
         firmware/rmcs_board/build/bootloader/output/rmcs_board_bootloader_hpm5321.elf
-    printf '%-16s %-18s %-6s %s\n' hpm5321-dual-can HPM5321xEGx JTAG \
-        firmware/rmcs_board/build/bootloader/output/rmcs_board_bootloader_hpm5321_dual_can.elf
 }
 
 RESET_TO_MAIN=0
@@ -118,8 +115,8 @@ hpm6e8y-core1)
     DEFAULT_ELF="$SCRIPT_DIR/firmware/rmcs_board/ecat/build/rmcs_ecat_core1/output/demo.elf"
     GDB="$RISCV_GDB"
     ;;
-hpm5321 | hpm5321-dual-can)
-    # hpm5321.yaml / hpm5321_dual_can.yaml declare soc=HPM5361, device=
+hpm5321)
+    # hpm5321.yaml declares soc=HPM5361, device=
     # HPM5361xEGx -- that is the SDK's build target (register-compatible
     # superset), same relationship as hpm6e8y building against HPM6E80 while
     # the physical die is an HPM6E00 (see the hpm6e8y case above). The chip
@@ -136,11 +133,7 @@ hpm5321 | hpm5321-dual-can)
     # loader. Program with ./flash-dual-bootloader.sh instead, then attach.
     DEFAULT_DEVICE="HPM5321xEGx"
     DEFAULT_IFACE="JTAG"
-    if [[ "$TARGET" == "hpm5321-dual-can" ]]; then
-        DEFAULT_ELF="$SCRIPT_DIR/firmware/rmcs_board/build/bootloader/output/rmcs_board_bootloader_hpm5321_dual_can.elf"
-    else
-        DEFAULT_ELF="$SCRIPT_DIR/firmware/rmcs_board/build/bootloader/output/rmcs_board_bootloader_hpm5321.elf"
-    fi
+    DEFAULT_ELF="$SCRIPT_DIR/firmware/rmcs_board/build/bootloader/output/rmcs_board_bootloader_hpm5321.elf"
     GDB="$RISCV_GDB"
     RESET_TO_MAIN=1
     ;;

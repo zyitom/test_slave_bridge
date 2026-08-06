@@ -9,17 +9,32 @@
 #include "firmware/rmcs_board/bootloader/src/utility/assert.hpp"
 #include "firmware/rmcs_board/bootloader/src/utility/boot_mailbox.hpp"
 #include "firmware/rmcs_board/bootloader/src/utility/jump.hpp"
+#include "firmware/rmcs_board/common/board_identity.hpp"
 
 int main() {
     using namespace librmcs::firmware; // NOLINT(google-build-using-namespace)
 
     const bool force_stay = board_check_bootloader_force_stay_requested();
 
+    // Board identity from OTP, before anything can act on it. An unrecognized
+    // value blocks the jump unconditionally -- even with a perfectly valid,
+    // signed app image present -- because the app configures PA30/PA31 for one
+    // variant or the other and there is no safe default. The device instead falls
+    // through into the DFU loop and enumerates under the sentinel PID with the
+    // offending word 25 in its product string; DFU downloads are refused there
+    // too, so the only way out is deliberate human action.
+    //
+    // NOTE: this is a hard stop by design (requested explicitly). A chip whose
+    // word 25 is neither 0 nor 2 cannot be recovered over USB at all. Rescue
+    // needs PA07 pulled to GND or a J-Link. That is the accepted trade for never
+    // mis-driving a transceiver against an LED network.
+    const bool board_recognized = board::board_identity().recognized();
+
 #if LIBRMCS_BOOTLOADER_MODE_AUTO
-    if (!force_stay && !boot::BootMailbox::consume_enter_dfu_request()
+    if (board_recognized && !force_stay && !boot::BootMailbox::consume_enter_dfu_request()
         && flash::validate_app_image())
 #else
-    if (!force_stay && boot::BootMailbox::consume_boot_app_once_request()
+    if (board_recognized && !force_stay && boot::BootMailbox::consume_boot_app_once_request()
         && flash::validate_app_image())
 #endif
         utility::jump_to_app();

@@ -7,7 +7,10 @@ sdk_src(board.c)
 sdk_compile_definitions_ifdef(BUILD_FOR_SECONDARY_CORE BOARD_RUNNING_CORE=HPM_CORE1)
 
 # Unique per board: the DFU bootloader enumerates with this PID and dfu-util
-# matches images against it (0xA901 hpm5321, 0xA902 hpm5321_dual_can, 0xA903 hpm6e80ivm1).
+# matches images against it (0xA901/0xA902 the two HPM5321 PCBs, 0xA903 hpm6e80ivm1).
+#
+# Single-variant board, so this is a genuine compile-time constant. Contrast
+# boards/hpm5321, whose one image serves two PCBs and picks its PID at run time.
 set_property(GLOBAL PROPERTY LIBRMCS_USB_PID 0xA904)
 sdk_compile_definitions(LIBRMCS_USB_PID=0xA904)
 

@@ -158,7 +158,7 @@ QEIV2/QEOV2/PWMV2/PLB/FFA/FEMC/MTG/SPI/I2C…）是给电机控制、模拟采�
 
 **HPM5321 DualCan 的情况不同**：芯片有 **4 路 CAN**（数据手册 1.1 节），板子只接了
 **2 路**（MCAN0 = PA00/PA01，MCAN3 = PA31/PA30）。这是 **QFN48 封装的引脚可用性**限制，
-不是固件选择，详见 `../boards/hpm5321_dual_can/PINOUT.md`。想要 4 路 CAN 必须换到
+不是固件选择，详见 `../boards/hpm5321/PINOUT.md`。想要 4 路 CAN 必须换到
 HPM6E8Y 或更大封装。
 
 ## 2.2 CAN-FD 数据段速率：上限实测与最终结论 [实测 2026-08-01]

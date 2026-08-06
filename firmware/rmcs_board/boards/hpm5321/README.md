@@ -1,27 +1,70 @@
 # RMCS Slave HPM5321
 
 > **文档类型**：硬件参考（板级说明）
-> **适用范围**：`firmware/rmcs_board/boards/hpm5321/`，单 CAN 版 HPM5321 板
+> **适用范围**：`firmware/rmcs_board/boards/hpm5321/`，**两块 HPM5321 板共用一份镜像**（单 CAN 版 + 双 CAN-FD 版）
 > **状态**：现行有效
-> **相关文档**：[PINOUT.md](PINOUT.md)（引脚分配） · [../hpm5321_dual_can/README.md](../hpm5321_dual_can/README.md)（双 CAN 版，需要 CAN-FD 时用那块） · [../../AGENTS.md](../../AGENTS.md) · [../../BUILD_ENVIRONMENT.md](../../BUILD_ENVIRONMENT.md)
+> **相关文档**：[PINOUT.md](PINOUT.md)（引脚分配） · [../../AGENTS.md](../../AGENTS.md) · [../../BUILD_ENVIRONMENT.md](../../BUILD_ENVIRONMENT.md)
 
 ## 摘要
 
-最精简的 USB <-> 现场总线转发桥：**一路经典 CAN 控制器、一路数据 UART、一颗普通 GPIO
-驱动的 RGB 状态灯**。没有 IMU、没有 DBUS 接收机、没有 GPIO 应用通道、也没有每路 CAN
-的独立指示灯。
+最精简的 USB <-> 现场总线转发桥：**一路 CAN、一路数据 UART、一颗普通 GPIO 驱动的 RGB
+状态灯**。没有 IMU、没有 DBUS 接收机、没有 GPIO 应用通道。
 
-**选板提醒**：这块板的 CAN 控制器配置为**仅经典模式**，主机请求 CAN-FD 的帧会被静默降
-成经典 CAN 2.0 发出。真需要 CAN-FD 上线，请用 `hpm5321_dual_can`。
+**这个目录现在同时服务两块板**：单 CAN 版（经典 CAN，RGB 灯在 PA29/30/31，无 CAN 指示
+灯）和双 CAN-FD 版（MCAN0 + MCAN3，RGB 灯在 PA26/27/28，两颗 CAN 指示灯在 PB14/PB15）。
+`-DBOARD=hpm5321` 出的**同一个 `.dfu` 两块板都能烧**，固件上电时自己判断跑在哪块板上
+（见下节）。这是 HPM5321 唯一的固件构建入口。
 
-硬件引脚分配见 [PINOUT.md](PINOUT.md)。
+硬件引脚分配见 [PINOUT.md](PINOUT.md)，其中同时列出单 CAN 和双 CAN-FD 两套复用关系。
+
+## 板型自识别：OTP 第 25 个字 [实测 2026-08-05，4 颗芯片]
+
+两块板的 `.yaml` **逐字节相同**，`board.h` 只差一个 `BOARD_NAME`，PCB 上也没有任何
+可读的板型标志位——没有空闲 GPIO 跳线、没有电阻编码、`DGO_GPR` 四个字里没有一个是空
+的。唯一在出厂时就已经不同、且软件能读到的东西是 **OTP 影子寄存器第 25 个字**
+（`0xF3050064`）：
+
+| 板型 | OTP word 25 | 样本 |
+|---|---|---|
+| 单 CAN 版 | `0x00000000` | 2 颗（lot 378、380） |
+| 双 CAN-FD 版 | `0x00000002` | 2 颗（lot 375、377） |
+| 其他任何值 | — | **拒绝启动**，见下 |
+
+固件（`common/board_identity.hpp`）在 bootloader 和 app 里各读一次这个字，据此选择
+CAN 端口表、CAN 模式、LED 引脚和 USB PID。**上电只读一次**并缓存；读 OTP 是一条普通
+的 MMIO load，不消耗写次数、不损伤熔丝阵列（编程走的是完全另一条路径：先开 2.5 V
+LDO、写 `UNLOCK` 魔数、再写 `FUSE[]`）。而且序列号本来就要读 4 个 OTP 字，这只是第 5 个。
+
+### 已知局限：板型与批次在样本里是共线的
+
+四颗样本恰好是**按批次订的**（双 CAN 来自 375/377，单 CAN 来自 378/380），所以
+"word 25 = 2 表示双 CAN" 和 "word 25 = 2 表示某个批次" 这两个解释在现有数据上**无法
+区分**。要打破这个共线，需要**一块 375-377 批次的单 CAN 板**或**一块 ≥378 批次的双
+CAN 板**。现已确认 OTP 第 25 字是板型标志，固件只保留运行时识别这一条路径；其他值按下
+节说明拒绝启动。
+
+### 读到未知值：拒绝启动，并在 lsusb 里报错
+
+如果 word 25 既不是 0 也不是 2，bootloader **不跳 app、也不接受任何 DFU 下载**，并以
+PID `0xA9FF`（分配范围 `0xA901..0xA904` 之外）枚举，产品字符串写成
+`RMCS DFU UNKNOWN BOARD OTP25=0x<八位十六进制>`。所以一根 USB 线 + `lsusb -v` 就能看到
+是哪个值不对，不需要调试器。
+
+> **这是故意做成砖的**：拒绝下载意味着不能用 DFU 修回来。恢复手段是复位时把 **PA07 拉
+> 到 GND** 强制 bootloader 常驻（该引脚不一定引出按键，见 PINOUT），或者
+> 直接上 J-Link。这是明确要求的行为——宁可停下来让人查，也不要在认不出的硬件上乱跑。
+
+其他板（hpm6e8y / hpm6e80ivm1）**不做这个检查**：它们的 word 25 读出来是 `0x6`
+（见 [../hpm6e8y/README.md](../hpm6e8y/README.md)），只有本目录通过
+`LIBRMCS_BOARD_OTP_IDENTITY=1` 打开它。
 
 ## 标识信息
 
 | 项目 | 取值 |
 | ----------- | --------------------------------- |
 | 板名 | `RMCS_Slave_HPM5321`（`BOARD_NAME`） |
-| SoC | HPM5361（QFN48），单 RV32 核 |
+| 实际器件 | HPM5321IEG1（QFN48），单 RV32 核 |
+| SDK SoC 模型 | HPM5361（SDK 当前兼容模型） |
 | USB PID | `0xA901`（VID `0xA11C`） |
 | USB 速度 | High speed（480 Mbps） |
 | Flash | 1 MiB XPI NOR，app 位于共享 DFU bootloader 之后 |
@@ -32,22 +75,40 @@
 vendor 类设备，会话握手（kStart nonce + keepalive 租约）由共享的 `link::HostSession`
 处理。
 
+主机看到的 PID 取决于**芯片在哪块板上**，不取决于编译：单 CAN 版报 `0xA901`，双 CAN-FD
+版报 `0xA902`——和合并之前各自的取值一样，所以主机代码、udev 规则、`dfu-util -d` 命令行
+都不用改。
+
+**单 CAN 版：**
+
 | 主机侧端点 | 板上资源 | 说明 |
 | ------------- | -------------- | ------------------------------ |
 | `DataId::kCan0` | MCAN0（经典模式 1 Mbps） | DM（达妙）电机总线 |
 | `DataId::kUart0` | UART2，921600-8N1 | 收发双向均由 DMA 驱动 |
 
-### 仅经典 CAN 与逐帧的 FD 标志
+**双 CAN-FD 版：**
+
+| 主机侧端点 | 板上资源 | 说明 |
+| ------------- | -------------- | ------------------------------ |
+| `DataId::kCan0` | MCAN0（CAN-FD） | PA00/PA01 |
+| `DataId::kCan1` | MCAN3（CAN-FD） | PA30/PA31 |
+| `DataId::kUart0` | UART2，921600-8N1 | 同上 |
+
+镜像里两路 CAN 的表和缓冲**都按 2 路的容量编译**（AHB SRAM 多占约 2.5 KiB），但在单 CAN
+版上只有第 0 路被构造和启用。主机若给单 CAN 版发 `kCan1` 的帧，会被当作"本板不认识这个
+field"拒掉，不会打到未初始化的对象上。
+
+### 单 CAN 版：仅经典 CAN 与逐帧的 FD 标志
 
 共享的 CAN 驱动会尊重主机下发的逐帧 `is_fdcan` 标志，但受控制器能力封顶
-（`send_fd = canfd_ && data.is_fdcan`）。这块板把 MCAN0 配成仅经典模式，因此
+（`send_fd = canfd_ && data.is_fdcan`）。单 CAN 版把 MCAN0 配成仅经典模式，因此
 `is_fdcan = true` 的帧仍会以经典 CAN 2.0 发出——**安全，但是被静默降级了**。
-需要 CAN-FD 真正上线时请改用 `hpm5321_dual_can`。
+需要 CAN-FD 真正上线得换双 CAN-FD 版硬件（不是换固件——同一份镜像在双 CAN 板上自动开 FD）。
 
 #### 降级是单向的：对端发来的 FD 帧收不到 [实测 2026-08-05]
 
 降级只作用于**本板发出**的帧。反方向没有降级可言——`enable_canfd = false` 的
-控制器**不接受 FD 帧格式**，对端发来的 FD 帧一帧都收不到。实测这块板与 mc02 的
+控制器**不接受 FD 帧格式**，对端发来的 FD 帧一帧都收不到。实测单 CAN 版与 mc02 的
 FDCAN3 对接（mc02 常驻 FD+BRS）：
 
 | 方向 | 格式 | 结果 |
@@ -61,7 +122,8 @@ FDCAN3 对接（mc02 常驻 FD+BRS）：
 （那是采样点，这是控制器不支持 FD 格式），总线上也不会有错误计数。
 
 判据：先用 classic 测同一条链路。**classic 通、只有 FD 单向不通，且总线错误
-计数为 0**，那就是本板的仅经典配置在起作用，不是 bug。
+计数为 0**，那就是单 CAN 版的仅经典配置在起作用，不是 bug。顺带一说，这条实测正是
+"OTP 识别到的板型确实决定了 CAN 模式"的独立佐证——同一份镜像在双 CAN 板上 FD 双向都通。
 
 注意 `host/examples/mixed_board_test` 无法自动识别这一点——它不知道板子的 FD
 能力，`RMCS_CAN_FD=1` 时照样打印 "CAN-FD"。开关名是 **`RMCS_CAN_FD`**，写成
@@ -75,24 +137,31 @@ cmake --build firmware/rmcs_board/build
 ```
 
 构建产物是 `firmware/rmcs_board/build/app/output/` 下的
-`rmcs_board_app_hpm5321.dfu`。通过 USB DFU 烧录（**前提是芯片上已经有共享的 RMCS DFU
-bootloader**；首次烧 bootloader 需要调试器）：
+`rmcs_board_app_hpm5321.dfu`，**两块板都用这一个文件**。通过 USB DFU 烧录（**前提是芯片
+上已经有共享的 RMCS DFU bootloader**；首次烧 bootloader 需要调试器）：
 
 ```bash
+# 单 CAN 版
 dfu-util -d 0xa11c:0xa901 -a 0 -D firmware/rmcs_board/build/app/output/rmcs_board_app_hpm5321.dfu
+# 双 CAN-FD 版：同一个 .dfu，只有 -d 的 PID 不同
+dfu-util -d 0xa11c:0xa902 -a 0 -D firmware/rmcs_board/build/app/output/rmcs_board_app_hpm5321.dfu
 ```
+
+`.dfu` 容器后缀里的 PID 写的是通配 `0xFFFF`（`dfu-suffix` 支持），所以同一个文件对两个
+PID 都能通过校验；VID 和 CRC 仍然照常检查。**`-d` 后面的 PID 要按板子填**——它匹配的是
+设备实际枚举出来的值，不是文件里的值。
 
 正在运行的 app 会暴露 DFU 运行时接口，所以 `dfu-util` 能自动让它 detach 并重新枚举进
 DFU 模式。若要强制 bootloader 常驻，复位时把 **PA07（与 JTAG_TMS 复用，不一定是按键，
 见 [PINOUT.md](PINOUT.md)）拉到 GND**，或者在没有有效 app 的状态下上电。
 
-> app 与 bootloader 的 mailbox 版本不一致时，上面的自动 detach 会静默失效 —— 现象、
-> 起因和恢复手段见同系列的
-> [hpm5321_dual_can/README.md](../hpm5321_dual_can/README.md) [实测 2026-08-03]。
+> app 与 bootloader 的 mailbox 版本不一致时，上面的自动 detach 会静默失效；此时按
+> [../../AGENTS.md](../../AGENTS.md) 中的 bootloader 恢复流程处理。
 
 ## 状态灯语义
 
-单颗 RGB 灯（引脚见 [PINOUT.md](PINOUT.md)），由共享的 Led 驱动
+单颗 RGB 灯（单 CAN 版在 PA29/30/31，双 CAN-FD 版在 PA26/27/28，见
+[PINOUT.md](PINOUT.md)），由共享的 Led 驱动
 （`app/src/led/led.hpp`）驱动。黄色 = 红+绿，青色 = 绿+蓝；**优先级从上到下**：
 
 | 灯效 | 含义 |

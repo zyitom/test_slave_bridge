@@ -24,6 +24,7 @@ MounRiver WCH GCC15，当前机器和 `librmcs-ci` 镜像均已安装。
 | [版本要求](#版本要求) | 编译器、构建工具和基础依赖 |
 | [Docker 构建环境](#docker-构建环境) | CI / Dev Container 的工具链和职责边界 |
 | [宿主机调试工具](#宿主机调试工具可选不进-docker) | J-Link、Ozone 与 WCH-LinkE 的安装边界 |
+| [LLVM 20](#llvm-20clangd--clang-format--clang-tidy) | 本机与 CI 共用的编辑器、格式和静态分析工具 |
 | [构建命令](#构建命令) | host SDK 与 CH32 的常用命令 |
 
 ## 版本要求
@@ -36,7 +37,7 @@ MounRiver WCH GCC15，当前机器和 `librmcs-ci` 镜像均已安装。
 | ARM GCC | **15.3.rel1** | `arm-none-eabi-gcc`，c_board / mc02，见下方 |
 | RISC-V GCC (HPM) | 13.2.0 | rmcs_board，见下方 |
 | RISC-V GCC (WCH) | 15.2.0 | ch32_board，MounRiver，见下方 |
-| clang-format / clang-tidy | ≥ 16 | `sudo apt install clang-format-20 clang-tidy-20` |
+| clangd / clang-format / clang-tidy | **20.x** | Ubuntu 24.04 官方 apt 源，见下方 |
 | libusb-1.0-dev | ≥ 1.0 | `sudo apt install libusb-1.0-0-dev` |
 | dfu-util | ≥ 0.9 | `sudo apt install dfu-util` |
 
@@ -153,16 +154,25 @@ CH32F1 / CH32F2，没有 CH32H417；本机 J-Link V9.48 设备库也没有该芯
 用 J-Link/Ozone 替代 WCH-LinkE。[官网与本机实测 2026-08-05] MounRiver 的 SDI 配置、
 烧录命令和双核注意事项见 `firmware/ch32_board/AGENTS.md`。
 
-## clang-format / clang-tidy
+## LLVM 20（clangd / clang-format / clang-tidy）
+
+本机与 `librmcs-ci` 统一使用 Ubuntu 24.04 `noble-updates/universe` 提供的 LLVM 20；
+不添加 `apt.llvm.org`，也不安装无版本的 `clangd` / `clang-format` / `clang-tidy` 元包，
+因为 Ubuntu 24.04 的无版本元包仍指向 LLVM 18。[Ubuntu apt 实测 2026-08-06]
 
 ```bash
-sudo apt install clang-format-20 clang-tidy-20
+sudo apt update
+sudo apt install clangd-20 clang-format-20 clang-tidy-20
+sudo update-alternatives --install /usr/bin/clangd clangd /usr/bin/clangd-20 200
 sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-20 200
 sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-20 200
+clangd --version
+clang-format --version
+clang-tidy --version
 ```
 
-> **本机实际装的是 18**（`clang-format-18` / `clang-tidy-18`，无 update-alternatives 条目），
-> 满足上表的"≥ 16"，`.scripts/clang-*-check` 正常工作。上面的命令是推荐版本，不是本机现状。
+`clangd` 是编辑器语言服务器；CI 实际执行的是 `clang-format` 和 `clang-tidy`。三个工具固定
+同一主版本，才能让本机编辑器诊断、格式检查和云端质量门禁保持一致。
 
 ## 构建命令
 

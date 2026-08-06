@@ -36,7 +36,8 @@ LibRMCS v3 正在开发！目前处于测试阶段，无良好的文档/教程�
 
 下面是这套链路在**本仓库自带工具**下的实测数字，用来回答"它到底能跑多快、我该期待什么"。
 测量条件、对照数据、每条结论的证据等级全部在 **[HOST_TUNING.md](HOST_TUNING.md)**，
-这里只放结果。**测量条件**：2026-08-04，两块 `hpm5321_dual_can`，`release` 固件，主机已跑过
+这里只放结果。**测量条件**：2026-08-04，两块 HPM5321 双 CAN-FD 硬件，`BOARD=hpm5321`
+的 `release` 固件，主机已跑过
 `host-tuning.sh` `[实测]`。
 
 **延迟**（1 kHz 控制环占空比，即两次事务之间核会真正空闲）：
@@ -159,15 +160,21 @@ App 镜像 `*.dfu` 已带好镜像哈希与 DFU 后缀，`dfu-util` 会按 VID/P
 | c_board    | STM32F407VG  | `0xD401` | `RMCS DFU Bootloader`      |
 | mc02       | STM32H723VG  | `0xD402` | `RMCS DFU Bootloader`      |
 | ch32_board | WCH CH32H417 | `0xD403` | `RMCS Bootloader v<版本号>` |
-| rmcs_board `hpm5321` | HPM5321 | `0xA901` | `RMCS Agent v<版本号>` |
-| rmcs_board `hpm5321_dual_can` | HPM5321 | `0xA902` | 同上 |
+| rmcs_board HPM5321 单 CAN 版 | HPM5321 | `0xA901` | `RMCS Agent v<版本号>` |
+| rmcs_board HPM5321 双 CAN-FD 版 | HPM5321 | `0xA902` | 同上 |
 | rmcs_board `hpm6e80ivm1` | HPM6E8Y | `0xA903` | 同上 |
 | rmcs_board `hpm6e8y` | HPM6E8Y | `0xA904` | 同上 |
 
 VID 均为 `0xA11C`。
 
-> **`rmcs_board` 烧录前必须核对板级变体。** `BOARD` 的默认值是 `hpm5321`（PID `0xA901`），
-> 不带 `-DBOARD=<变体>` 编出来的镜像烧到别的变体上会改掉 PID 并配错引脚。
+> **两块 HPM5321 板的 PID 由硬件决定，不由 `BOARD` 决定。** `-DBOARD=hpm5321` 出的单个
+> 镜像同时服务这两块板：上电读 OTP 第 25 个字判断板型，据此报 `0xA901` 或 `0xA902` 并选
+> 对应的 CAN/LED 引脚表。所以这两行不再对应两个 `BOARD` 值。原理与已知局限见
+> [firmware/rmcs_board/boards/hpm5321/README.md](firmware/rmcs_board/boards/hpm5321/README.md)。
+
+> **`rmcs_board` 烧录前必须核对板级变体。** `BOARD` 的默认值是 `hpm5321`。
+> 不带 `-DBOARD=<变体>` 编出来的镜像烧到 6E8Y 系列板上会改掉 PID 并配错引脚
+> （HPM5321 的两块板之间不受此影响，同一镜像通用）。
 > **版本字符串区分不出构建类型和变体**——它来自 `git describe`，`debug` 和 `release` 完全一样。
 > 多块同型号板同时在线时用 `dfu-util -S <序列号>` 逐块烧（`dfu-util -l` 列序列号）。
 

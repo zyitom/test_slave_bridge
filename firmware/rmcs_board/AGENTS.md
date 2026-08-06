@@ -196,7 +196,7 @@ CubeMX 板（mc02、c_board）两个域都是 `tseg1/tseg2 = 13/2 = 87.5%`。532
 
 ### 影响范围
 
-`can.hpp` 由**全部 rmcs_board 镜像共用**（hpm5321 / hpm5321_dual_can / hpm6e8y，
+`can.hpp` 由**全部 rmcs_board 镜像共用**（hpm5321 / hpm6e8y，
 含两套 EtherCAT 固件）。此前"FD 没问题"的印象来自只测 rmcs_board 对 rmcs_board——
 两端错得一样所以互通。**真实电机（DJI、达妙 MIT、瓴控）全是 87.5%**，所以这个修复
 是让 5321 能跟电机跑 CAN-FD，不只是为了跟 mc02 说话。
@@ -345,9 +345,11 @@ export PATH=~/3rd_party/hpm/bin:$PATH        # [前机路径] 确保 riscv32-unk
 # USB 数据固件（超级构建，含 app + bootloader）
 cmake --preset debug -S firmware/rmcs_board
 cmake --build firmware/rmcs_board/build       # target: rmcs_board_app / rmcs_board_bootloader
-# hpm5321_dual_can（单核 USB + 2 路 CAN）
-cmake --preset release -S firmware/rmcs_board -B <build> -DBOARD=hpm5321_dual_can
-# 烧录：dfu-util -d 0xa11c:0xa902 -a 0 -D <build>/app/output/rmcs_board_app_hpm5321_dual_can.dfu
+# 两块 HPM5321 板（单 CAN / 双 CAN-FD）共用 -DBOARD=hpm5321 这一个镜像，上电自己判板型
+cmake --preset release -S firmware/rmcs_board -B <build> -DBOARD=hpm5321
+# 烧录：同一个 .dfu，只有 -d 的 PID 按板子填（单 CAN a901 / 双 CAN-FD a902）
+# dfu-util -d 0xa11c:0xa902 -a 0 -D <build>/app/output/rmcs_board_app_hpm5321.dfu
+# HPM5321 单 CAN / 双 CAN-FD 共用 -DBOARD=hpm5321，板型由 OTP 第 25 字判断。
 # EtherCAT 桥固件（旧布局）
 cmake --preset debug -S firmware/rmcs_board/ecat
 cmake --build firmware/rmcs_board/ecat/build
