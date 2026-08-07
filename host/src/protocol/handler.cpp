@@ -41,12 +41,22 @@ public:
     explicit Impl(std::unique_ptr<transport::Transport> transport, data::DataCallback& callback)
         : callback_(callback)
         , deserializer_(*this)
+        , can_deserializer_(*this)
         , expected_session_nonce_(generate_session_nonce())
         , expected_session_start_ack_(make_session_start_ack(expected_session_nonce_))
         , transport_(std::move(transport)) {
         // USB bulk completions and EtherCAT callbacks are both arbitrary
         // slices of one reliable byte stream, not protocol-field boundaries.
         transport_->receive([this](std::span<const std::byte> buffer) { receive_stream(buffer); });
+        // The CAN pipe, when the board has one, is a separate reliable byte
+        // stream and needs its own deserializer: interleaving its bytes with the
+        // bulk stream's would corrupt both. It carries no session control, so it
+        // needs none of receive_stream()'s session-start-ack window -- the board
+        // does not put a CAN field on the wire before the session is up.
+        if (transport_->has_priority_channel()) {
+            transport_->receive_priority(
+                [this](std::span<const std::byte> buffer) { can_deserializer_.feed(buffer); });
+        }
         transport_->receive_cyclic_can([this](data::DataId id, const data::CanDataView& data) {
             (void)can_deserialized_callback(id, data);
         });
@@ -55,6 +65,7 @@ public:
             // protocol field. The callback runs on the transport receive
             // thread, so it is serialized with deserializer_.feed().
             deserializer_.finish_transfer();
+            can_deserializer_.finish_transfer();
             awaiting_session_start_ack_ = true;
             session_start_ack_window_size_ = 0;
             {
@@ -379,6 +390,7 @@ private:
 
     data::DataCallback& callback_;
     core::protocol::Deserializer deserializer_;
+    core::protocol::Deserializer can_deserializer_;
 
     mutable std::mutex session_mutex_;
     std::condition_variable session_cv_;
@@ -400,13 +412,24 @@ private:
 namespace {
 
 struct PacketBuilderImpl {
+    // The CAN pipe is only split off when the transport actually has a second
+    // channel AND this is not a cyclic (fixed-PDO) batch. Without both, CAN keeps
+    // using the main buffer, so a board with one pipe produces exactly the packets
+    // it always did -- splitting unconditionally would turn a single CAN+UART
+    // packet into two on hardware that gains nothing from it.
     explicit PacketBuilderImpl(transport::Transport& transport, bool cyclic) noexcept
         : buffer_(transport, cyclic)
-        , serializer_(buffer_) {}
+        , serializer_(buffer_)
+        , split_can_(!cyclic && transport.has_priority_channel())
+        , can_buffer_(transport, false, split_can_)
+        , can_serializer_(can_buffer_) {}
 
     PacketBuilderImpl(PacketBuilderImpl&& other) noexcept
         : buffer_(std::move(other.buffer_))
-        , serializer_(buffer_) {}
+        , serializer_(buffer_)
+        , split_can_(other.split_can_)
+        , can_buffer_(std::move(other.can_buffer_))
+        , can_serializer_(can_buffer_) {}
 
     PacketBuilderImpl& operator=(PacketBuilderImpl&&) = delete;
     PacketBuilderImpl(const PacketBuilderImpl&) = delete;
@@ -421,6 +444,8 @@ struct PacketBuilderImpl {
             return buffer_.try_stage_cyclic_can(field_id, view);
         if (buffer_.try_stage_cyclic_can(field_id, view))
             return true;
+        if (split_can_)
+            return process_result(can_serializer_.write_can(field_id, view));
         return process_result(serializer_.write_can(field_id, view));
     }
 
@@ -493,6 +518,9 @@ private:
 
     StreamBuffer buffer_;
     core::protocol::Serializer serializer_;
+    bool split_can_;
+    StreamBuffer can_buffer_;
+    core::protocol::Serializer can_serializer_;
 };
 
 } // namespace

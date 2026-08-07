@@ -45,6 +45,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -52,6 +53,7 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -835,6 +837,287 @@ int run_contend(
 }
 
 // ---------------------------------------------------------------------------
+// uartcontend: CAN latency while a UART stream saturates the same USB pipe.
+// ---------------------------------------------------------------------------
+
+// CAN frames and UART bytes share ONE bulk endpoint in each direction, so a UART
+// chunk queued ahead of a CAN frame delays it. That is head-of-line blocking, and
+// no CAN-only measurement can see it: `contend` loads the second CAN bus, which
+// competes for CPU and controllers but is the same kind of traffic. This mode
+// loads the endpoint with traffic that has nothing to do with CAN at all.
+//
+// The stream runs A.UART0 -> B.UART0, which puts bytes on exactly the two legs
+// the measured frame uses: board A's downlink and board B's uplink. The measured
+// path, sample count and warm-up match `latency 0` and `contend`, so all three
+// numbers are directly comparable.
+//
+// Both threads transmit on board A here (unlike `contend`, where the load sits on
+// board B). That is safe: acquire_transmit_buffer() pops an exclusive transfer
+// from a mutex-protected free list, so each thread fills its own buffer.
+
+struct UartLoadSink {
+    std::atomic<uint64_t> bytes{0};
+};
+
+void uart_load_handler(void* context, const librmcs::data::UartDataView& data) {
+    static_cast<UartLoadSink*>(context)->bytes.fetch_add(
+        data.uart_data.size(), std::memory_order_relaxed);
+}
+
+int run_uart_contend(
+    uint32_t samples, uint32_t uart_kbps, int core_a, int core_b, int core_main, int load_core) {
+    Node board_a{g_serial_a, core_a, "rmcs-a"};
+    Node board_b{g_serial_b, core_b, "rmcs-b"};
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+
+    configure_thread(core_main, 80, "dual-main");
+
+    LatencyProbe probe;
+    probe.set_expected_bus(0);
+    board_b.set_can_handler(&probe, LatencyProbe::handler);
+
+    UartLoadSink load_sink;
+    board_b.set_uart_handler(&load_sink, uart_load_handler);
+
+    const bool fd = use_fdcan();
+    std::atomic<bool> running{true};
+    std::atomic<uint64_t> load_sent{0};
+    std::thread load_thread{[&]() {
+        configure_thread(load_core, 70, "dual-load");
+        // 64 bytes is one chunk the firmware forwards as a unit; at 921600 8N1
+        // that is 694 us of wire time, so ~92 kB/s is the line rate. The period
+        // follows the requested rate, which is what makes the load a sweep: the
+        // question is not only "does a saturated UART hurt CAN" but "how much
+        // does MY UART rate hurt". Asking for more than the line rate would
+        // measure the board's queue overflow instead of the blocking.
+        constexpr size_t kChunk = 64;
+        const auto kPeriod = std::chrono::microseconds{
+            static_cast<int64_t>(kChunk * 1000ULL / (uart_kbps ? uart_kbps : 1))};
+        const auto load_start = Clock::now();
+        uint64_t chunk_index = 0;
+        uint64_t index = 0;
+        while (running.load(std::memory_order_relaxed)) {
+            std::byte payload[kChunk];
+            for (std::byte& b : payload)
+                b = static_cast<std::byte>(index++);
+            {
+                auto builder = board_a.board().start_transmit();
+                builder.uart0_transmit({.uart_data = payload, .idle_delimited = false});
+            }
+            load_sent.fetch_add(kChunk, std::memory_order_relaxed);
+
+            // Absolute schedule, not an incrementally advanced deadline: chunk N
+            // is due at start + N*period no matter what happened to chunks 0..N-1.
+            // An incremental `next += period` plus a clamp still lets the loop run
+            // free for as long as it is behind, so a stall anywhere -- the board
+            // applying backpressure, the measurement thread timing out and
+            // stretching the run -- turns into a burst afterwards. That burst is
+            // what overflows the board's UART queue, and then the run measures
+            // queue overflow instead of head-of-line blocking.
+            ++chunk_index;
+            const auto due = load_start + kPeriod * chunk_index;
+            while (running.load(std::memory_order_relaxed) && Clock::now() < due) {}
+        }
+    }};
+
+    printf(
+        "A.CAN0 -> B.CAN0 latency while A.UART0 -> B.UART0 runs at %u kB/s (%s)\n", uart_kbps,
+        fd ? "CAN-FD" : "classic");
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+
+    const auto start = Clock::now();
+    std::vector<double> latencies;
+    latencies.reserve(samples);
+    uint32_t timeouts = 0;
+    for (uint32_t sequence = 0; sequence < samples + kWarmupSamples; ++sequence) {
+        std::byte payload[kPayloadSize];
+        put_u32_le(payload, sequence);
+        put_u32_le(payload + 4, mix(sequence));
+        probe.arm(sequence, Clock::now());
+        transmit_can(
+            board_a.board(), 0, {.can_id = kCanIdBase, .can_data = payload, .is_fdcan = fd});
+
+        double latency_us = 0.0, uplink_us = 0.0;
+        bool has_uplink = false;
+        if (!probe.wait(sequence, latency_us, uplink_us, has_uplink)) {
+            if (sequence >= kWarmupSamples)
+                ++timeouts;
+            continue;
+        }
+        if (sequence >= kWarmupSamples)
+            latencies.push_back(latency_us);
+    }
+    const double seconds = std::chrono::duration<double>(Clock::now() - start).count();
+
+    running.store(false, std::memory_order_relaxed);
+    load_thread.join();
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+
+    const uint64_t sent = load_sent.load(std::memory_order_relaxed);
+    const uint64_t got = load_sink.bytes.load(std::memory_order_relaxed);
+    // The offered rate is printed next to the requested one because they diverge
+    // exactly when the run is invalid: CAN timeouts stretch the wall clock, the
+    // load keeps running, and sent/delivered then reflects a much longer run than
+    // the sample count suggests. A run whose offered rate is not close to the
+    // request, or whose measured count is short of the request, must be rejected
+    // rather than read -- the percentiles look plausible either way.
+    const double offered_kbps = static_cast<double>(sent) / seconds / 1000.0;
+    printf(
+        "measured=%zu/%u timeout=%u  elapsed=%.1f s  uart: offered=%.1f kB/s (asked %u) "
+        "delivered=%.1f kB/s\n",
+        latencies.size(), samples, timeouts, seconds, offered_kbps, uart_kbps,
+        static_cast<double>(got) / seconds / 1000.0);
+    if (latencies.size() < samples || offered_kbps > uart_kbps * 1.25)
+        printf("  WARNING: run is not comparable -- see the note above.\n");
+    print_stats("A->B under UART load us", summarize(latencies));
+    return latencies.empty() ? 2 : 0;
+}
+
+// ---------------------------------------------------------------------------
+// uartlatency: the UART path's OWN latency and loss, end to end.
+// ---------------------------------------------------------------------------
+
+// Everything else here treats UART as a load generator for the CAN measurement.
+// This measures the UART link itself: host -> A.USB -> A.UART0 -> wire ->
+// B.UART0 -> B.USB -> host, one chunk at a time with the loop idle in between.
+//
+// The wire time is a first-class term and must not be subtracted away: at
+// 921600 8N1 a byte is 10 bits, so 10.85 us each. An 8-byte chunk spends 87 us
+// on the wire, a 64-byte one 694 us -- for anything but the smallest chunk the
+// UART wire dominates the USB path completely. Sweeping the chunk size is what
+// makes that visible instead of leaving it hidden in one number.
+//
+// Byte-stream, not framed: the sequence number is carried in the first four
+// bytes and the receiver reassembles across callbacks, because a chunk may
+// arrive split or coalesced.
+
+class UartLatencyProbe {
+public:
+    void arm(uint32_t sequence, size_t chunk_bytes, Clock::time_point send_time) {
+        const std::scoped_lock guard{mutex_};
+        expected_ = sequence;
+        chunk_bytes_ = chunk_bytes;
+        send_time_ = send_time;
+        received_ = 0;
+        arrived_ = false;
+        mismatched_ = false;
+    }
+
+    bool wait(double& latency_us, bool& mismatched) {
+        const auto deadline = Clock::now() + std::chrono::milliseconds{50};
+        std::unique_lock guard{mutex_};
+        if (!cv_.wait_until(guard, deadline, [this] { return arrived_; }))
+            return false;
+        latency_us = latency_us_;
+        mismatched = mismatched_;
+        return true;
+    }
+
+    static void handler(void* context, const librmcs::data::UartDataView& data) {
+        static_cast<UartLatencyProbe*>(context)->on_uart(data);
+    }
+
+private:
+    void on_uart(const librmcs::data::UartDataView& data) {
+        const auto receive_time = Clock::now();
+        const std::scoped_lock guard{mutex_};
+        if (arrived_ || chunk_bytes_ == 0)
+            return;
+        for (const std::byte b : data.uart_data) {
+            if (received_ < sizeof(header_))
+                header_[received_] = b;
+            if (++received_ < chunk_bytes_)
+                continue;
+            // Whole chunk in: the timestamp is taken at the callback that
+            // completed it, so the reported latency covers the last byte.
+            arrived_ = true;
+            mismatched_ = get_u32_le(header_) != expected_;
+            latency_us_ = std::chrono::duration<double, std::micro>(receive_time - send_time_).count();
+            cv_.notify_one();
+            return;
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    uint32_t expected_ = 0;
+    size_t chunk_bytes_ = 0;
+    size_t received_ = 0;
+    bool arrived_ = false;
+    bool mismatched_ = false;
+    double latency_us_ = 0.0;
+    Clock::time_point send_time_{};
+    std::byte header_[4]{};
+};
+
+int run_uart_latency(
+    uint32_t samples, size_t chunk_bytes, int core_a, int core_b, int core_main) {
+    if (chunk_bytes < 4 || chunk_bytes > 509) {
+        printf("chunk must be 4..509 bytes (509 keeps the transfer inside one USB packet)\n");
+        return 2;
+    }
+    Node board_a{g_serial_a, core_a, "rmcs-a"};
+    Node board_b{g_serial_b, core_b, "rmcs-b"};
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+
+    configure_thread(core_main, 80, "dual-main");
+
+    UartLatencyProbe probe;
+    board_b.set_uart_handler(&probe, UartLatencyProbe::handler);
+
+    const double wire_us = static_cast<double>(chunk_bytes) * 10.0 * 1e6 / 921600.0;
+    printf(
+        "A.UART0 -> B.UART0 latency, %u samples x %zu bytes @921600 "
+        "(wire time alone = %.1f us)\n",
+        samples, chunk_bytes, wire_us);
+
+    std::vector<double> latencies;
+    latencies.reserve(samples);
+    uint32_t timeouts = 0, mismatches = 0;
+    std::vector<std::byte> payload(chunk_bytes);
+
+    for (uint32_t sequence = 0; sequence < samples + kWarmupSamples; ++sequence) {
+        put_u32_le(payload.data(), sequence);
+        for (size_t i = 4; i < chunk_bytes; ++i)
+            payload[i] = static_cast<std::byte>(sequence + i);
+
+        const auto now = Clock::now();
+        probe.arm(sequence, chunk_bytes, now);
+        {
+            auto builder = board_a.board().start_transmit();
+            builder.uart0_transmit({.uart_data = payload, .idle_delimited = false});
+        }
+
+        double latency_us = 0.0;
+        bool mismatched = false;
+        if (!probe.wait(latency_us, mismatched)) {
+            if (sequence >= kWarmupSamples)
+                ++timeouts;
+            // Let the stream drain so the next sample starts on a clean boundary.
+            std::this_thread::sleep_for(std::chrono::milliseconds{2});
+            continue;
+        }
+        if (sequence >= kWarmupSamples) {
+            if (mismatched)
+                ++mismatches;
+            latencies.push_back(latency_us);
+        }
+        // Idle between samples: this measures one chunk's trip, not throughput.
+        std::this_thread::sleep_for(std::chrono::microseconds{500});
+    }
+
+    printf(
+        "measured=%zu/%u  timeout=%u  mismatch=%u\n", latencies.size(), samples, timeouts,
+        mismatches);
+    print_stats("A.UART0 -> B.UART0 us", summarize(latencies));
+    if (!latencies.empty()) {
+        const auto stats = summarize(latencies);
+        printf("  minus wire time: p50 %.1f us  (USB down + board + USB up)\n", stats.p50 - wire_us);
+    }
+    return latencies.empty() ? 2 : 0;
+}
+
+// ---------------------------------------------------------------------------
 // dual: drive both buses at once and check they stay independent.
 // ---------------------------------------------------------------------------
 
@@ -1404,6 +1687,12 @@ void print_usage() {
                 "  latency [bus] [samples] [ca] [cb] [cmain]     A.CANx -> B.CANx one-way latency\n"
                 "  dual    [samples]                             both buses in parallel\n"
                 "  uart    [rounds]                              A.UART0 -> B.UART0 integrity\n"
+                "  uartlatency [samples] [bytes] [ca] [cb] [cmain]\n"
+                "          the UART path's OWN latency; sweep [bytes] to see the 10.85 us/byte\n"
+                "          wire time separate from the USB path\n"
+                "  uartcontend [samples] [uart_kBps] [ca] [cb] [cmain] [cload]\n"
+                "          CAN latency while a UART stream shares the same pipe; 92 kB/s is\n"
+                "          the 921600 8N1 line rate, sweep it to map YOUR rate onto the cost\n"
                 "  stress  [fps] [seconds] [buses] [per_packet]  sustained flood, loss accounting\n"
                 "          fps is FRAMES/s per bus; per_packet frames share one USB packet,\n"
                 "          so packets/s is fps/per_packet.  buses 1..2, per_packet >= 1\n"
@@ -1446,6 +1735,16 @@ int main(int argc, char** argv) {
                 static_cast<uint32_t>(argument(2, 4000)), static_cast<uint32_t>(argument(3, 3000)),
                 static_cast<int>(argument(4, -1)), static_cast<int>(argument(5, -1)),
                 static_cast<int>(argument(6, -1)), static_cast<int>(argument(7, -1)));
+        if (mode == "uartcontend")
+            return run_uart_contend(
+                static_cast<uint32_t>(argument(2, 3000)), static_cast<uint32_t>(argument(3, 92)),
+                static_cast<int>(argument(4, -1)), static_cast<int>(argument(5, -1)),
+                static_cast<int>(argument(6, -1)), static_cast<int>(argument(7, -1)));
+        if (mode == "uartlatency")
+            return run_uart_latency(
+                static_cast<uint32_t>(argument(2, 3000)), static_cast<size_t>(argument(3, 8)),
+                static_cast<int>(argument(4, -1)), static_cast<int>(argument(5, -1)),
+                static_cast<int>(argument(6, -1)));
         if (mode == "uart")
             return run_uart(static_cast<uint32_t>(argument(2, 2000)));
         if (mode == "uartraw")

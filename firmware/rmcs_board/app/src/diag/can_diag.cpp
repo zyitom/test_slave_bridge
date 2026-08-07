@@ -7,7 +7,9 @@
 # include <atomic>
 # include <cstring>
 
+# include <hpm_clock_drv.h>
 # include <hpm_common.h>
+# include <hpm_csr_drv.h>
 # include <hpm_mcan_drv.h>
 # include <hpm_mcan_regs.h>
 # include <hpm_plic_drv.h>
@@ -45,6 +47,21 @@ struct CanCounters {
 
 CanCounters counters[kCanCapacity];
 std::atomic<std::uint32_t> alloc_fail{0};
+
+// USB bulk OUT endpoint timing. Plain (non-atomic) globals on purpose: both
+// notify functions run in tud_task context on the main loop, and poll() reads
+// them from the same loop, so there is no cross-context hazard here -- unlike
+// the CAN counters above, which the ISR writes.
+//
+// Sums are reset every emit period. At the measured ~58k packets/s and 100 ms
+// per record that is ~5800 samples of a few thousand cycles each, three orders
+// of magnitude below a uint32 wrap.
+std::uint32_t usb_out_turnaround_cycles = 0;
+std::uint32_t usb_out_starve_cycles = 0;
+std::uint32_t usb_out_samples = 0;
+std::uint32_t usb_out_complete_cycle = 0;
+std::uint32_t usb_out_armed_cycle = 0;
+bool usb_out_armed_valid = false;
 std::uint32_t main_loop_count = 0;
 std::uint32_t last_main_loop_count = 0;
 std::uint32_t last_emit_tick = 0;
@@ -102,6 +119,24 @@ void note_irq_recovered(std::size_t can_index) {
     counters[can_index].irq_recovered.fetch_add(1, std::memory_order::relaxed);
 }
 
+void note_usb_out_complete() {
+    const auto now = static_cast<std::uint32_t>(hpm_csr_get_core_mcycle());
+    // The first completion after a re-arm closes a full cycle; before the very
+    // first arm there is nothing to attribute the elapsed time to.
+    if (usb_out_armed_valid) {
+        usb_out_starve_cycles += now - usb_out_armed_cycle;
+        usb_out_samples++;
+    }
+    usb_out_complete_cycle = now;
+}
+
+void note_usb_out_armed() {
+    const auto now = static_cast<std::uint32_t>(hpm_csr_get_core_mcycle());
+    usb_out_turnaround_cycles += now - usb_out_complete_cycle;
+    usb_out_armed_cycle = now;
+    usb_out_armed_valid = true;
+}
+
 void poll(std::uint32_t tick) {
     if (tick - last_emit_tick < kEmitPeriodMs)
         return;
@@ -118,12 +153,18 @@ void poll(std::uint32_t tick) {
     constexpr std::size_t kPerCanSize = 11 * 4;
     // Three extra words: UART0 kernel clock, OSCR, and the DLM:DLL divisor.
     constexpr std::size_t kUartSize = 3 * 4;
+    // USB bulk OUT timing, appended LAST so the host can find it from the end of
+    // the record without reconstructing the variable-length CAN section: cycle
+    // sums for turnaround and starve, the sample count they cover, and the core
+    // clock needed to turn cycles into microseconds.
+    constexpr std::size_t kUsbSize = 4 * 4;
     // Buffer sized for the capacity; the record actually emitted covers only the
     // controllers this board has, and carries that count in its header.
-    constexpr std::size_t kMaxRecordSize = kFixedSize + kCanCapacity * kPerCanSize + kUartSize;
+    constexpr std::size_t kMaxRecordSize =
+        kFixedSize + kCanCapacity * kPerCanSize + kUartSize + kUsbSize;
 
     const std::size_t can_count = board::can_port_count();
-    const std::size_t record_size = kFixedSize + can_count * kPerCanSize + kUartSize;
+    const std::size_t record_size = kFixedSize + can_count * kPerCanSize + kUartSize + kUsbSize;
 
     std::byte record[kMaxRecordSize];
     std::byte* cursor = record;
@@ -181,6 +222,18 @@ void poll(std::uint32_t tick) {
         cursor = put_u32(cursor, uart::uart_array[0]->oscr());
         cursor = put_u32(cursor, uart::uart_array[0]->divisor());
     }
+
+    // USB bulk OUT endpoint timing, and the reset of its accumulators. Emitting
+    // the raw sums plus the sample count rather than an average keeps the
+    // division on the host, where a period with zero packets is visibly zero
+    // samples instead of a divide by zero.
+    cursor = put_u32(cursor, usb_out_turnaround_cycles);
+    cursor = put_u32(cursor, usb_out_starve_cycles);
+    cursor = put_u32(cursor, usb_out_samples);
+    cursor = put_u32(cursor, clock_get_frequency(clock_cpu0));
+    usb_out_turnaround_cycles = 0;
+    usb_out_starve_cycles = 0;
+    usb_out_samples = 0;
 
     // Best effort by design: if the batch pool is full the record is dropped
     // rather than retried, exactly like a forwarded CAN frame. A gap in the

@@ -326,7 +326,11 @@ void Can::handle_interrupt_flags(uint32_t flags) {
         }
 # else
         if (link::uplink_enabled()) {
-            auto& serializer = link::uplink_serializer();
+            // can_uplink_serializer(), not uplink_serializer(): with the CAN
+            // endpoint split enabled these frames go into their own batch pool
+            // and out on their own bulk endpoint, so a UART batch cannot occupy
+            // the pipe ahead of them. Identical to uplink_serializer() otherwise.
+            auto& serializer = link::can_uplink_serializer();
             while (handle_uplink(data_id_, serializer)) {}
         } else {
             mcan_rx_message_t rx;

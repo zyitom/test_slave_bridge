@@ -37,6 +37,7 @@
 | Python | 3.x(实测 3.12.3) | 否 | 已装 |
 | Python 包 | `PyYAML`、`jinja2` | 否(pip 装) | 需确认 |
 | HPM SDK | v1.12.0(fork `zyitom/hpm_sdk`,`v1.12.0-3-ge4347411`) | **是**(`bsp/hpm_sdk`) | 随仓库 |
+| TinyUSB | v0.21.0 | **是**(`../c_board/bsp/tinyusb` submodule) | 随仓库，需初始化 |
 | RISC-V 工具链 | `rv32imac_zicsr_zifencei_multilib_b_ext`(HPMicro GNU) | **否** | 见下方状态更新 |
 | 烧录工具 | HPMicro Manufacturing Tool v0.6.0(DFU) | 否 | 见 §5 |
 
@@ -87,24 +88,32 @@ pip3 install PyYAML jinja2
 
 ### 2.3 HPM SDK
 
-无需单独安装——已随仓库 vendored 在 `firmware/rmcs_board/bsp/hpm_sdk`。
+无需单独安装——已随仓库 vendored 在 `firmware/rmcs_board/bsp/hpm_sdk`。当前固件只使用
+它的 SoC、USB PHY 和寄存器驱动；TinyUSB device stack 来自共享的
+`firmware/c_board/bsp/tinyusb` v0.21.0。clone 后需初始化两项 submodule：
+
+```bash
+git submodule update --init firmware/rmcs_board/bsp/hpm_sdk firmware/c_board/bsp/tinyusb
+```
 
 submodule 指向 **fork `zyitom/hpm_sdk`**(不是上游),当前
 `v1.12.0-3-ge4347411`,分支 `migrate-v1.12.0`。fork 里的本地补丁:tinyusb 构建
 vendor class 并去掉示例 BSP、vendor ZLP 显式写 API、`rh_init` 按速度强制 full speed,
-外加 HPM5300 的 `__cpluscplus` typo 修复。
+外加 HPM5300 的 `__cpluscplus` typo 修复。前三项 TinyUSB 补丁仅保留在 SDK fork 的历史
+代码中，当前 rmcs_board 镜像不再编译它们。
 
 #### v1.11.0 -> v1.12.0 迁移评估(2026-07-27,已完成迁移)
 
 只有一项改动对本仓库有实际价值,其余与我们用到的代码无关。记录于此以免重复调研:
 
-- **有价值:USB setup 包的 SUTW(setup tripwire)修复**,落在
-  `middleware/tinyusb/src/portable/hpm/dcd_hpm.c`——**这个文件在我们的编译路径里**
-  (`ecat/core0` 与 `app/`/`bootloader/` 都用 tinyusb 的 hpm port)。v1.11 直接读
+- **历史价值:USB setup 包的 SUTW(setup tripwire)修复**,落在
+  `middleware/tinyusb/src/portable/hpm/dcd_hpm.c`。v1.11 直接读
   `qhd0->setup_request`,无 tripwire 保护;主机在读取途中又发来 setup 包时会读到撕裂
   或过期的 8 字节,表现为**枚举偶发失败、控制传输卡死**。v1.12 改为
   `set_sutw -> memcpy -> 检查 sutw` 的重读循环(ChipIdea/EHCI 手册要求的协议),并给
-  `bus_reset` 分支补了 `return`。属白捡的稳定性修复。
+  `bus_reset` 分支补了 `return`。该结论适用于迁移前的 SDK TinyUSB v0.20.0 路径；
+  2026-08-06 起所有镜像改用共享 v0.21.0 的通用 ChipIdea DCD
+  `portable/chipidea/ci_hs/dcd_ci_hs.c`，`dcd_hpm.c` 已不在编译路径。[实测构建]
 - **无关:cherryusb 升到 v1.6.1**。本仓库用 **TinyUSB**,不编 cherryusb,该改动零影响。
 - **暂不采用:MCAN 新增 queue 模式与 `*_unchecked` 高吞吐 API**
   (`mcan_read_rxfifo_unchecked` 等)。相比 checked 版省掉 NULL/边界/空 FIFO 检查,且只

@@ -253,8 +253,6 @@ void pump_vendor_data() {
 
 extern "C" {
 
-void dcd_int_handler(uint8_t rhport);
-
 SDK_DECLARE_EXT_ISR_M(IRQn_USB0, rmcs_usb0_isr)
 void rmcs_usb0_isr(void) {
     dcd_int_handler(0);
@@ -275,7 +273,7 @@ void rmcs_usb0_isr(void) {
 
 // Host started talking on the vendor OUT endpoint: claim the link for USB. The
 // ESC hooks go inert (pd_glue) so the two transports never fight over the rings.
-void tud_vendor_rx_cb(uint8_t itf, uint8_t const* buffer, uint16_t bufsize) {
+void tud_vendor_rx_cb(uint8_t itf, uint8_t const* buffer, uint32_t bufsize) {
     (void)itf;
     (void)buffer;
     (void)bufsize;

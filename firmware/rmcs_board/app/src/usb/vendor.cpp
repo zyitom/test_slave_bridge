@@ -1,7 +1,9 @@
 #include "firmware/rmcs_board/app/src/usb/vendor.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #include <common/tusb_types.h>
 #include <device/usbd.h>
@@ -11,6 +13,7 @@
 #include <hpm_soc.h>
 
 #include "core/src/protocol/serializer.hpp"
+#include "firmware/rmcs_board/app/src/diag/can_diag.hpp"
 #include "firmware/rmcs_board/app/src/link/uplink.hpp"
 #include "firmware/rmcs_board/app/src/utility/boot_mailbox.hpp"
 #include "firmware/rmcs_board/app/src/xcore/pd_link.hpp"
@@ -18,6 +21,26 @@
 namespace {
 
 constexpr uint32_t kDfuRuntimeResetDelayMs = 50U;
+
+// Landing pads for the receive callback's copy-then-arm sequence. Sized for one
+// high-speed bulk packet, which is the most a single transfer can deliver here.
+//
+// WHY THE COPY EXISTS. The class driver hands the callback a pointer into the
+// endpoint's own DMA buffer, and arming the endpoint again lets the controller
+// start writing that same buffer. So the natural order is "process, then arm" --
+// which leaves the endpoint un-armed for the whole processing time, and the
+// device answers the host with NAK for all of it. Copying the packet out first
+// removes that constraint: the endpoint can be armed immediately and the work
+// runs against a private buffer.
+//
+// The measured cost of NOT doing this is large, because the per-packet budget is
+// dominated by it: cycle = 1.2..1.4 x turnaround + ~13.5 us (rmcs_board/AGENTS.md),
+// and the processing this skips ahead of is ~3 us of that turnaround.
+//
+// One pad per pipe, and no locking: both callbacks run from tud_task() on the
+// main loop, and each consumes its pad before returning.
+alignas(4) uint8_t g_downlink_copy[512];
+alignas(4) uint8_t g_can_downlink_copy[512];
 
 volatile bool g_dfu_runtime_reboot_requested = false;
 volatile uint32_t g_dfu_runtime_reboot_requested_ms = 0U;
@@ -50,6 +73,14 @@ namespace librmcs::firmware::link {
 core::protocol::Serializer& uplink_serializer() { return usb::vendor->serializer(); }
 bool uplink_enabled() { return usb::vendor->session_established(); }
 
+core::protocol::Serializer& can_uplink_serializer() {
+#if LIBRMCS_SPLIT_CAN_ENDPOINT
+    return usb::vendor->can_serializer();
+#else
+    return usb::vendor->serializer();
+#endif
+}
+
 } // namespace librmcs::firmware::link
 
 #endif
@@ -66,21 +97,80 @@ void poll_dfu_runtime_reboot() {
     boot::BootMailbox::reboot_to_bootloader();
 }
 
+// Copy the packet out and re-arm BEFORE processing it, instead of processing
+// first. Halves the window in which the endpoint has no buffer and NAKs the host
+// (turnaround 2.22 -> 1.27 us, measured), at the cost of one memcpy per packet.
+//
+// DEFAULT OFF, because it buys nothing here: this host schedules exactly 8 bulk
+// transactions per 125 us microframe per device (64000 packets/s, +-0.01% over
+// six runs), and the device is already idle waiting when the next one arrives.
+// Shrinking turnaround just moves the time into that idle wait -- measured
+// 63999/63996/64002 vs 63988/63988/63991, i.e. identical.
+//
+// Kept switchable rather than deleted: on a host that schedules more than 8 per
+// microframe the device would become the constraint and this would start to pay.
+#ifndef LIBRMCS_COPY_THEN_ARM
+# define LIBRMCS_COPY_THEN_ARM 0
+#endif
+
 // TinyUSB device callbacks
 extern "C" {
 
 // USB0 interrupt vector. The HPM SDK leaves the concrete ISR in the example
-// family.c (which this project does not build), so bind it here in app code
-// instead of patching the SDK's dcd_hpm.c -- this keeps the hpm_sdk submodule
-// pristine across version bumps. dcd_int_handler is tinyusb's device ISR entry.
+// family.c (which this project does not build), so bind it here in app code and
+// keep both third-party submodules pristine. dcd_int_handler is TinyUSB's device
+// ISR entry.
 SDK_DECLARE_EXT_ISR_M(IRQn_USB0, rmcs_usb0_isr)
 void rmcs_usb0_isr(void) { dcd_int_handler(0); }
 
 void tud_vendor_rx_cb(uint8_t itf, const uint8_t* buffer, uint16_t size) {
+    const std::size_t packet_size = (tud_speed_get() == TUSB_SPEED_HIGH) ? 512 : 64;
+    const bool finished = size < packet_size;
+    const uint16_t copy_size = std::min<uint16_t>(size, sizeof(g_downlink_copy));
+
+#if LIBRMCS_SPLIT_CAN_ENDPOINT
+    if (itf == 1) {
+        // Copy, arm, then process -- see g_can_downlink_copy above. The arm has
+        // to happen before the deserializer runs, which is the whole point; the
+        // throttle it consults is refreshed from the main loop, so it does not
+        // need this packet's CAN enqueues to have happened yet.
+# if LIBRMCS_COPY_THEN_ARM
+        std::memcpy(g_can_downlink_copy, buffer, copy_size);
+        usb::vendor->poll_can_downlink_arm();
+        usb::vendor->handle_can_downlink(
+            {reinterpret_cast<const std::byte*>(g_can_downlink_copy), copy_size}, finished);
+# else
+        usb::vendor->handle_can_downlink(
+            {reinterpret_cast<const std::byte*>(buffer), copy_size}, finished);
+        usb::vendor->poll_can_downlink_arm();
+# endif
+        return;
+    }
+#endif
+
     if (itf != 0) [[unlikely]]
         return;
 
-    const std::size_t max_packet_size = (tud_speed_get() == TUSB_SPEED_HIGH) ? 512 : 64;
+    // Timestamp before any work, so the turnaround this opens covers the whole
+    // device-side path -- copy, re-arm. Compiled out unless LIBRMCS_APP_CAN_DIAG.
+    diag::note_usb_out_complete();
+
+#if LIBRMCS_COPY_THEN_ARM
+    std::memcpy(g_downlink_copy, buffer, copy_size);
+    usb::vendor->poll_downlink_arm();
+
+    // Closes the turnaround and opens the starve interval. Everything below runs
+    // against the private copy, with the endpoint already armed, so it is off the
+    // per-packet critical path entirely.
+    diag::note_usb_out_armed();
+#else
+    // Original ordering: the endpoint stays un-armed for the whole of the
+    // processing below, because that processing reads the endpoint's own buffer.
+    const uint8_t* const g_downlink_copy = buffer;
+#endif
+
+    const std::size_t max_packet_size = packet_size;
+    (void)max_packet_size;
 
 #if defined(LIBRMCS_APP_RELEASE_CORE1) && LIBRMCS_APP_RELEASE_CORE1
     // Core-swap layout: the shared session lives in xcore::pd_link and USB is one
@@ -92,11 +182,17 @@ void tud_vendor_rx_cb(uint8_t itf, const uint8_t* buffer, uint16_t size) {
     xcore::notify_usb_activity();
     if (xcore::usb_owns_data_plane())
         xcore::pd_link->handle_usb_downlink(
-            {reinterpret_cast<const std::byte*>(buffer), size}, size < max_packet_size);
+            {reinterpret_cast<const std::byte*>(g_downlink_copy), copy_size}, finished);
 #else
     usb::vendor->handle_downlink(
-        {reinterpret_cast<const std::byte*>(buffer), size}, size < max_packet_size);
+        {reinterpret_cast<const std::byte*>(g_downlink_copy), copy_size}, finished);
 #endif
+
+#if !LIBRMCS_COPY_THEN_ARM
+    usb::vendor->poll_downlink_arm();
+    diag::note_usb_out_armed();
+#endif
+
 }
 
 void tud_dfu_runtime_reboot_to_dfu_cb() {

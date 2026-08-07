@@ -68,10 +68,14 @@ public:
      * @param transport The transport to use for buffer acquisition and transmission.
      *                  Must outlive this StreamBuffer instance.
      */
-    explicit StreamBuffer(transport::Transport& transport, bool cyclic = false) noexcept
+    explicit StreamBuffer(
+        transport::Transport& transport, bool cyclic = false, bool priority = false) noexcept
         : transport_and_flags_(
-              reinterpret_cast<std::uintptr_t>(&transport) | (cyclic ? kCyclicFlag : 0)) {
-        static_assert(alignof(transport::Transport) >= 2);
+              reinterpret_cast<std::uintptr_t>(&transport) | (cyclic ? kCyclicFlag : 0)
+              | (priority ? kPriorityFlag : 0)) {
+        // Two spare low bits are needed now: a polymorphic class is pointer-aligned,
+        // so this holds with room to spare, but assert what is actually relied on.
+        static_assert(alignof(transport::Transport) >= 4);
         if (cyclic && init_buffer())
             (void)buffer_->begin_cyclic_can_batch();
     }
@@ -222,7 +226,8 @@ private:
     bool init_buffer() noexcept {
         core::utility::assert_debug(!buffer_ && !current_ && !end_);
 
-        buffer_ = transport().acquire_transmit_buffer();
+        buffer_ = priority_enabled() ? transport().acquire_priority_transmit_buffer()
+                                     : transport().acquire_transmit_buffer();
         if (!buffer_)
             return false;
 
@@ -240,7 +245,12 @@ private:
         const std::byte* begin = buffer_->data().data();
         const std::size_t payload_size = current_ - begin;
         if (payload_size == 0 && !buffer_->has_cyclic_data()) {
-            transport().release_transmit_buffer(std::move(buffer_));
+            if (priority_enabled())
+                transport().release_priority_transmit_buffer(std::move(buffer_));
+            else
+                transport().release_transmit_buffer(std::move(buffer_));
+        } else if (priority_enabled()) {
+            transport().transmit_priority(std::move(buffer_), payload_size);
         } else {
             transport().transmit(std::move(buffer_), payload_size);
         }
@@ -249,12 +259,19 @@ private:
     }
 
     transport::Transport& transport() const noexcept {
-        return *reinterpret_cast<transport::Transport*>(transport_and_flags_ & ~kCyclicFlag);
+        return *reinterpret_cast<transport::Transport*>(
+            transport_and_flags_ & ~(kCyclicFlag | kPriorityFlag));
     }
 
     bool cyclic_enabled() const noexcept { return (transport_and_flags_ & kCyclicFlag) != 0; }
 
+    // Routes this buffer to the transport's priority channel (CAN's own endpoint
+    // pair on USB). Transports without one fall back to the single channel in
+    // their default overrides, so this stays valid for EtherCAT too.
+    bool priority_enabled() const noexcept { return (transport_and_flags_ & kPriorityFlag) != 0; }
+
     static constexpr std::uintptr_t kCyclicFlag = 1;
+    static constexpr std::uintptr_t kPriorityFlag = 2;
     std::uintptr_t transport_and_flags_;
 
     std::unique_ptr<transport::TransportBuffer> buffer_ = nullptr;

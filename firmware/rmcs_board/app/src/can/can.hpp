@@ -220,6 +220,13 @@ public:
     // handle_downlink in can.cpp for why the queue exists.
     void try_transmit();
 
+    // How many frames are waiting in the software transmit queue. The USB
+    // downlink arming policy reads this to decide whether accepting another OUT
+    // packet would overrun the queue; see usb/vendor.hpp.
+    [[nodiscard]] size_t transmit_queue_depth() const { return transmit_buffer_.readable(); }
+
+    static constexpr size_t kTransmitQueueSize = 64;
+
     // One pass of the interrupt handler: acknowledge `flags` and act on them.
     // Split out of irq_handler so the latter can re-test IR and repeat; see the
     // comment there for why returning after a single pass loses the interrupt.
@@ -329,7 +336,7 @@ private:
     };
     static_assert(sizeof(QueuedFrame) == 16);
 
-    utility::RingBuffer<QueuedFrame, 64> transmit_buffer_;
+    utility::RingBuffer<QueuedFrame, kTransmitQueueSize> transmit_buffer_;
 };
 
 // Everything below is built from the board's CAN port table (board::kCanPorts),
@@ -371,5 +378,19 @@ consteval std::array<Can::Lazy, sizeof...(indices)>
 } // namespace internal
 
 inline constinit auto can_array = internal::make_can_array(std::make_index_sequence<kCanCount>{});
+
+// Deepest software transmit queue across the controllers this PCB actually has.
+// The USB downlink arming policy throttles on this: one backed-up bus is already
+// enough to start dropping frames, whichever bus it is. Bounded by can_count()
+// and guarded by try_get() for the same reason every other loop over can_array
+// is: on the single-CAN hpm5321 the trailing slot was never constructed.
+inline size_t max_transmit_queue_depth() {
+    size_t depth = 0;
+    for (size_t i = 0; i < can_count(); ++i) {
+        if (const Can* can = can_array[i].try_get())
+            depth = std::max(depth, can->transmit_queue_depth());
+    }
+    return depth;
+}
 
 } // namespace librmcs::firmware::can

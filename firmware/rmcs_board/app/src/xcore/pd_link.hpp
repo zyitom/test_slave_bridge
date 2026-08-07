@@ -99,7 +99,8 @@ public:
             const auto* src = reinterpret_cast<const uint8_t*>(data.data() + transmitted_size_);
             core::utility::assert_debug(tud_vendor_n_write(0, src, target_size) == target_size);
         } else {
-            core::utility::assert_debug(tud_vendor_n_write_zlp(0));
+            static constexpr uint8_t kZlpByte = 0;
+            (void)tud_vendor_n_write(0, &kZlpByte, 0);
         }
 
         transmitted_size_ += target_size;

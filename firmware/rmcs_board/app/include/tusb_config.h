@@ -64,11 +64,34 @@ extern "C" {
 #endif
 
 //------------- CLASS -------------//
-#define CFG_TUD_CDC         0
-#define CFG_TUD_MSC         0
-#define CFG_TUD_HID         0
-#define CFG_TUD_MIDI        0
-#define CFG_TUD_VENDOR      1
+// Give CAN its own bulk endpoint pair, on a second vendor interface, so a UART
+// packet can no longer sit ahead of a CAN packet in the host controller's
+// per-endpoint queue. Measured cost of sharing one pipe: a CAN frame that
+// collides with UART data waits ~40 us extra, taking p99 from 104.5 to 143.9 us
+// at UART line rate -- and only 25 kB/s (27% of line rate) is needed to inflict
+// nine tenths of that. See rmcs_board/AGENTS.md.
+//
+// Deliberately NOT the interrupt endpoint pair TinyUSB 0.21 also offers: an
+// interrupt endpoint is polled once per bInterval, so at high speed it would
+// quantize the uplink to a 125 us microframe. A second BULK pair keeps the
+// existing continuous-poll behaviour and only stops sharing the queue.
+//
+// Host and firmware MUST agree on this: with it on, CAN travels on endpoints
+// 0x02/0x82 and a host that only claims interface 0 sees no CAN at all. Default
+// off so the two can be switched over together.
+#ifndef LIBRMCS_SPLIT_CAN_ENDPOINT
+# define LIBRMCS_SPLIT_CAN_ENDPOINT 1
+#endif
+
+#define CFG_TUD_CDC 0
+#define CFG_TUD_MSC 0
+#define CFG_TUD_HID 0
+#define CFG_TUD_MIDI 0
+#if LIBRMCS_SPLIT_CAN_ENDPOINT
+# define CFG_TUD_VENDOR 2
+#else
+# define CFG_TUD_VENDOR 1
+#endif
 #define CFG_TUD_DFU_RUNTIME 1
 #define CFG_TUD_DFU         0
 
@@ -78,6 +101,13 @@ extern "C" {
 // https://docs.tinyusb.org/en/latest/reference/usb_concepts.html#class-driver-types
 #define CFG_TUD_VENDOR_RX_BUFSIZE 0
 #define CFG_TUD_VENDOR_TX_BUFSIZE 0
+
+// Do not let the class driver re-arm the bulk OUT endpoint on its own. The
+// application re-arms it from the main loop, and withholds that while the CAN
+// software transmit queues are close to full, so an overloaded board answers the
+// host with NAK instead of accepting frames it can only drop. See the arming
+// policy and its bounded-stall escape in app/src/usb/vendor.hpp.
+#define CFG_TUD_VENDOR_RX_MANUAL_XFER 1
 
 #ifdef __cplusplus
 }

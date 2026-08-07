@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include <class/dfu/dfu_device.h>
+#include <device/dcd.h>
 #include <hpm_interrupt.h>
 
 namespace librmcs::firmware::usb {
@@ -10,12 +11,9 @@ namespace librmcs::firmware::usb {
 extern "C" {
 
 // USB0 interrupt vector. The HPM SDK leaves the concrete ISR in the example
-// family.c (which this project does not build), so bind it here in app code
-// instead of patching the SDK's dcd_hpm.c -- mirroring the main app's
-// vendor.cpp. Without it the DFU stack never sees a single USB event and the
-// bootloader cannot even enumerate. dcd_int_handler is tinyusb's device ISR
-// entry.
-void dcd_int_handler(uint8_t rhport);
+// family.c (which this project does not build), so bind it here in app code and
+// keep both third-party submodules pristine. Without it the DFU stack never sees
+// a USB event and the bootloader cannot enumerate.
 
 SDK_DECLARE_EXT_ISR_M(IRQn_USB0, rmcs_usb0_isr)
 void rmcs_usb0_isr(void) { dcd_int_handler(0); }

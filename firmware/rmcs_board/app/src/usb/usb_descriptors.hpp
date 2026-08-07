@@ -205,8 +205,15 @@ private: // Device Descriptor
 
 private: // Configuration Descriptor
          // NOLINTNEXTLINE(cppcoreguidelines-use-enum-class)
+    // The CAN interface is inserted BEFORE the DFU runtime one, so enabling the
+    // split renumbers DFU from 1 to 2. dfu-util locates its interface by
+    // descriptor class, not by number, so the flashing workflow is unaffected --
+    // but anything that hardcodes interface 1 as DFU would not be.
     enum InterfaceNumber : uint8_t {
         kItfNumVendor = 0,
+#if LIBRMCS_SPLIT_CAN_ENDPOINT
+        kItfNumVendorCan,
+#endif
         kItfNumDfuRuntime,
         kItfNumTotal,
     };
@@ -220,6 +227,17 @@ private: // Configuration Descriptor
     static constexpr uint8_t kEpnumCdc0DataOut = 0x01;
     static constexpr uint8_t kEpnumCdc0DataIn = 0x81;
 
+    // Second bulk pair, carrying CAN only when the split is enabled.
+    static constexpr uint8_t kEpnumCanOut = 0x02;
+    static constexpr uint8_t kEpnumCanIn = 0x82;
+
+#if LIBRMCS_SPLIT_CAN_ENDPOINT
+# define LIBRMCS_VENDOR_CAN_DESCRIPTOR(size)                                                       \
+     TUD_VENDOR_DESCRIPTOR(kItfNumVendorCan, 0, kEpnumCanOut, kEpnumCanIn, (size)),
+#else
+# define LIBRMCS_VENDOR_CAN_DESCRIPTOR(size)
+#endif
+
     static constexpr uint8_t const kConfigurationDescriptorFs[] = {
         // Config number, interface count, string index, total length, attribute, power in mA
         TUD_CONFIG_DESCRIPTOR(
@@ -227,6 +245,7 @@ private: // Configuration Descriptor
 
         // Interface number, string index, EP data address (out, in) and size.
         TUD_VENDOR_DESCRIPTOR(kItfNumVendor, 0, kEpnumCdc0DataOut, kEpnumCdc0DataIn, 64),
+        LIBRMCS_VENDOR_CAN_DESCRIPTOR(64)
         TUD_DFU_RT_DESCRIPTOR(
             kItfNumDfuRuntime, 4, DFU_ATTR_CAN_DOWNLOAD | DFU_ATTR_WILL_DETACH, 1000, 1024),
     };
@@ -239,6 +258,7 @@ private: // Configuration Descriptor
 
         // Interface number, string index, EP data address (out, in) and size.
         TUD_VENDOR_DESCRIPTOR(kItfNumVendor, 0, kEpnumCdc0DataOut, kEpnumCdc0DataIn, 512),
+        LIBRMCS_VENDOR_CAN_DESCRIPTOR(512)
         TUD_DFU_RT_DESCRIPTOR(
             kItfNumDfuRuntime, 4, DFU_ATTR_CAN_DOWNLOAD | DFU_ATTR_WILL_DETACH, 1000, 1024),
     };

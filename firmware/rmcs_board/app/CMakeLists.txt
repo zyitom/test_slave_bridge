@@ -64,9 +64,7 @@ option(LIBRMCS_APP_CAN_DIAG "Emit CAN forwarding telemetry on the UART0 uplink" 
 option(LIBRMCS_APP_DIAG_OVER_USB "Relay core1 diagnostics to the host over USB" OFF)
 
 set(CONFIG_DMA_MGR 1)
-set(CONFIG_TINYUSB 1)
 set(CONFIG_USB_DEVICE 1)
-set(CONFIG_USB_DEVICE_VENDOR 1)
 set(LIBRMCS_BUILDING_FIRMWARE_APP 1)
 
 # Always use the SDK pinned by this project's bsp/hpm_sdk submodule, ignoring any
@@ -130,6 +128,12 @@ sdk_inc("${CMAKE_CURRENT_SOURCE_DIR}/include")
 sdk_app_inc("${LIBRMCS_PROJECT_ROOT}/core/include")
 sdk_app_inc("${LIBRMCS_PROJECT_ROOT}")
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/current_tinyusb.cmake")
+librmcs_add_current_tinyusb(
+    src/class/vendor/vendor_device.c
+    src/class/dfu/dfu_rt_device.c
+)
+
 file(GLOB_RECURSE PROJECT_SOURCE CONFIGURE_DEPENDS
     "${LIBRMCS_PROJECT_ROOT}/core/src/*.cpp"
     "${LIBRMCS_PROJECT_ROOT}/core/src/*.c"
@@ -137,7 +141,6 @@ file(GLOB_RECURSE PROJECT_SOURCE CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c"
 )
 sdk_app_src(${PROJECT_SOURCE})
-sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/class/dfu/dfu_rt_device.c")
 
 if(LIBRMCS_APP_RELEASE_CORE1)
     # The generated core1 image lives in generated/, NOT in src/: the GLOB_RECURSE

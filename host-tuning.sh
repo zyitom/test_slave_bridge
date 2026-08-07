@@ -21,14 +21,20 @@
 #                       stopped it from idling. This supersedes the older
 #                       "governor: measured, no effect" note -- see HOST_TUNING.md
 #                       section 4 for why the CAN-loopback test could not see it.
-#   PM QoS / C-states   MEASURED, AND IT IS THE SAME EFFECT AS THE GOVERNOR, NOT
-#                       AN ADDITIONAL ONE. pm_qos=0 gives p50 68.3; governor
-#                       alone gives 67.5; BOTH TOGETHER give 68.3 -- not additive,
-#                       because both simply keep the core clocked up. Holding
-#                       /dev/cpu_dma_latency at 0 costs power machine-wide, so
-#                       prefer the governor and add --pmqos only for the last
-#                       ~2 us at p99. NOT applied by this script: it needs a
-#                       process to hold the fd open (see --pmqos).
+#   PM QoS / C-states   MEASURED TWICE, AND THE SECOND MEASUREMENT MATTERS MORE.
+#                       On the HOST path with no idle gap it is the same effect as
+#                       the governor, not an additional one: pm_qos=0 gives p50
+#                       68.3, governor alone 67.5, both together 68.3.
+#                       BUT ON THE BOARD PATH AT A REALISTIC 1 kHz DUTY CYCLE
+#                       (RMCS_LATENCY_GAP_US=1000, i.e. the core really does go
+#                       idle between samples) it buys real tail: p99.9 139.0 ->
+#                       129.9 us and p99 128.5 -> 126.8, three rounds each, p50
+#                       unchanged at 122. Measured 2026-08-07, two HPM5321.
+#                       The older "only worth ~2 us at p99" note was taken at
+#                       gap=0 and understates this for control-loop traffic.
+#                       Still NOT applied by this script -- it needs a process
+#                       holding the fd (see --pmqos) and costs power machine-wide
+#                       -- but a 1 kHz loop that cares about p99.9 should run it.
 #   Per-core C-state    MEASURED, DOES NOT WORK. Disabling C6/C10 on the
 #     disable           application core alone changed nothing (p50 77.8 vs 77.4
 #                       baseline). Disabling them on ALL cores while leaving C1E
@@ -104,17 +110,21 @@ expand_cpu_list() {
 
 # --- PM QoS: hold deep C-states off for as long as this process lives --------
 # Kept in this script rather than a systemd unit on purpose: it costs real power
-# machine-wide and, now that the governor is known to capture nearly all of the
-# same benefit, it is only worth holding while chasing the last microseconds of
-# p99 during a measurement.
+# machine-wide. On the host path the governor captures nearly all of the same
+# benefit, but on the BOARD path at a 1 kHz duty cycle it is worth 9 us of p99.9
+# on its own (139.0 -> 129.9) -- see the table at the top. Hold it for the
+# duration of a measurement, and for production only if p99.9 is a real
+# requirement.
 if [[ "$PMQOS_ONLY" == "1" ]]; then
     if [[ "$EUID" -ne 0 ]]; then
         echo "error: --pmqos must run as root" >&2
         exit 1
     fi
     echo ">> Holding /dev/cpu_dma_latency at 0 (all idle states blocked)."
-    echo "   Most of what this buys is also available from the CPU governor at a"
-    echo "   fraction of the power -- run the plain script first."
+    echo "   Run the plain script first: on the host path the governor already"
+    echo "   captures most of this, at a fraction of the power."
+    echo "   What this ADDS, measured at a 1 kHz duty cycle on two HPM5321:"
+    echo "     p99.9 139.0 -> 129.9 us,  p99 128.5 -> 126.8,  p50 unchanged."
     echo "   Leave this running for the duration of the measurement; Ctrl-C releases."
     exec python3 -c '
 import os, struct, signal

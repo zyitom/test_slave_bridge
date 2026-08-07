@@ -17,6 +17,14 @@ namespace librmcs::firmware::link {
 core::protocol::Serializer& uplink_serializer();
 bool uplink_enabled();
 
+// Uplink serializer for CAN specifically. Identical to uplink_serializer() on
+// every transport except a USB build with LIBRMCS_SPLIT_CAN_ENDPOINT, where CAN
+// gets its own batch pool and its own bulk endpoint so a UART batch cannot
+// occupy the pipe ahead of it. Declared separately rather than switched inside
+// uplink_serializer() because UART and the diagnostics channel must keep using
+// the bulk pipe -- only CAN moves.
+core::protocol::Serializer& can_uplink_serializer();
+
 #if defined(RMCS_ECAT_HYBRID_PD) && RMCS_ECAT_HYBRID_PD
 // Hybrid fixed-PDO variant: raw CAN data frames bypass the protocol serializer
 // (which the stream also uses) and are forwarded straight into the native

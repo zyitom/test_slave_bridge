@@ -40,7 +40,9 @@ public:
 
         explicit PacketBuilder(void* transport, bool cyclic) noexcept;
 
-        alignas(std::uintptr_t) std::uint8_t storage_[6 * sizeof(std::uintptr_t)];
+        // Two StreamBuffer + Serializer pairs since CAN can be routed to its own
+        // transport channel. A static_assert in handler.cpp pins the real size.
+        alignas(std::uintptr_t) std::uint8_t storage_[16 * sizeof(std::uintptr_t)];
     };
 
     Handler(

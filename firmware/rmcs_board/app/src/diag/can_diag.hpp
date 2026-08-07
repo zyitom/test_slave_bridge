@@ -37,7 +37,7 @@ inline constexpr bool kEnabled = true;
 // Wire format of the UART0 uplink payload. Little endian, fixed layout so the
 // host decoder needs no length negotiation.
 inline constexpr std::uint8_t kRecordMagic = 0xD1U;
-inline constexpr std::uint8_t kRecordVersion = 5U;
+inline constexpr std::uint8_t kRecordVersion = 6U;
 
 // Hot-path notifications. All are a single relaxed atomic add; the CAN ISR calls
 // the first two per interrupt and per forwarded frame respectively.
@@ -54,6 +54,23 @@ void note_main_loop();
 // Counted by Can::poll() each time it releases a stuck PLIC claim.
 void note_irq_recovered(std::size_t can_index);
 
+// USB bulk OUT endpoint timing, called from the receive completion callback.
+// Splits the per-packet budget into the only two parts that matter for deciding
+// whether chaining multiple qTDs is worth anything:
+//
+//   turnaround = complete -> re-armed. Device-side. This is the part a chained
+//                qTD removes, because the next buffer would already be primed
+//                when the current transfer completes.
+//   starve     = re-armed -> next complete. The endpoint is ready and idle; what
+//                elapses here is bus time plus however long the host controller
+//                takes to issue the next token. Chaining qTDs cannot shorten it.
+//
+// Both are sampled with CSR_MCYCLE (one instruction, core-clock resolution) so
+// the measurement does not perturb what it measures -- the record's own history
+// has an entry about an observer destroying its subject.
+void note_usb_out_complete();
+void note_usb_out_armed();
+
 // Main-loop sampler. Emits one record every kEmitPeriodMs of the 1 kHz tick;
 // a no-op when the uplink is not carrying data.
 void poll(std::uint32_t tick);
@@ -68,6 +85,8 @@ inline void note_tx_fail(std::size_t) {}
 inline void note_alloc_fail() {}
 inline void note_main_loop() {}
 inline void note_irq_recovered(std::size_t) {}
+inline void note_usb_out_complete() {}
+inline void note_usb_out_armed() {}
 inline void poll(std::uint32_t) {}
 
 #endif

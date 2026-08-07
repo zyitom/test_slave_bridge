@@ -53,6 +53,8 @@
 #include <librmcs/board/common.hpp>
 #include <librmcs/board/rmcs_board_hpm5321_dual_can.hpp>
 
+#include "can_diag_record.hpp"
+
 namespace {
 
 using Board = librmcs::board::RmcsBoardHpm5321DualCan;
@@ -61,6 +63,12 @@ using Clock = std::chrono::steady_clock;
 constexpr uint32_t kCanIdBase = 0x560;
 constexpr size_t kPayloadSize = 8;
 constexpr size_t kUartPayloadSize = 8;
+
+// uartonly mode only. The packet ceiling measured with tiny records answers
+// "how many transfers per second", not "how many bytes per second" -- and which
+// of the two is capped decides whether batching more records into one transfer
+// is a real escape or a no-op. Sweeping this size is what separates them.
+size_t g_uart_flood_bytes = kUartPayloadSize;
 
 std::string g_serial_a;
 std::string g_serial_b;
@@ -109,6 +117,11 @@ public:
     Board& board() { return *board_; }
     void watch(Counter* counter) { counter_.store(counter, std::memory_order_release); }
 
+    // Only meaningful on the board being flooded, and only on a LIBRMCS_CAN_DIAG
+    // build. This is the one place the OUT endpoint is actually saturated, which
+    // is the only condition under which the starve figure means anything.
+    const librmcs::diag::UsbOutTimingAccumulator& usb_timing() const { return usb_timing_; }
+
 private:
     void can0_receive_callback(const librmcs::data::CanDataView& data) override {
         tally_can(0, data);
@@ -117,9 +130,18 @@ private:
         tally_can(1, data);
     }
     void uart0_receive_callback(const librmcs::data::UartDataView& data) override {
+        librmcs::diag::UsbOutTiming timing{};
+        if (librmcs::diag::decode_usb_out_timing(data.uart_data, timing)) {
+            // Single-threaded by contract: the transport calls this from one
+            // thread at a time, and the accumulator is read after the join.
+            usb_timing_.add(timing);
+            return; // a telemetry frame is not payload; do not count it as such
+        }
         if (Counter* counter = counter_.load(std::memory_order_acquire))
             counter->uart_bytes.fetch_add(data.uart_data.size(), std::memory_order_relaxed);
     }
+
+    librmcs::diag::UsbOutTimingAccumulator usb_timing_;
 
     void tally_can(int bus, const librmcs::data::CanDataView& data) {
         if (data.can_data.size() != kPayloadSize)
@@ -181,13 +203,20 @@ bool discover() {
     return true;
 }
 
-enum class Mode { kCombined, kSplit, kSplit3 };
+// kUartOnly carries NO CAN at all. Every other mode's ceiling turns out to sit
+// at the CAN wire rate times its records/iteration, which makes them useless for
+// measuring what the USB path alone can do: the board's backpressure (or, without
+// it, the transmit queue) paces the host to whatever CAN can absorb. UART
+// downlink has no such coupling -- the bytes are dropped at a full UART queue and
+// the USB packets keep flowing -- so this mode measures the endpoint, not the bus.
+enum class Mode { kCombined, kSplit, kSplit3, kUartOnly };
 
 int records_per_iteration(Mode mode) {
     switch (mode) {
     case Mode::kCombined: return 1; // one packet carrying two CAN records
     case Mode::kSplit: return 2;
     case Mode::kSplit3: return 3;
+    case Mode::kUartOnly: return 1;
     }
     return 1;
 }
@@ -197,6 +226,7 @@ int records_per_iteration(Mode mode) {
 uint64_t send_loop(Node& node, Mode mode, uint32_t iterations_per_sec, Clock::time_point deadline) {
     std::byte can_payload[kPayloadSize] = {};
     std::byte uart_payload[kUartPayloadSize] = {};
+    static std::byte big_uart_payload[992] = {};
 
     const bool flood = iterations_per_sec == 0;
     const auto period = flood ? std::chrono::nanoseconds{0}
@@ -209,7 +239,12 @@ uint64_t send_loop(Node& node, Mode mode, uint32_t iterations_per_sec, Clock::ti
         // Each `start_transmit()` scope flushes exactly one USB packet when the
         // builder goes out of scope -- that is what makes split modes cost more
         // packets for the same number of CAN frames.
-        if (mode == Mode::kCombined) {
+        if (mode == Mode::kUartOnly) {
+            auto builder = node.board().start_transmit();
+            builder.uart0_transmit(
+                {.uart_data = {big_uart_payload, g_uart_flood_bytes}, .idle_delimited = false});
+            packets += 1;
+        } else if (mode == Mode::kCombined) {
             auto builder = node.board().start_transmit();
             builder.can0_transmit(
                 {.can_id = kCanIdBase, .can_data = can_payload, .is_fdcan = true});
@@ -276,6 +311,7 @@ int run(Mode mode, uint32_t iterations_per_sec, uint32_t seconds, bool both) {
 
     const char* name = mode == Mode::kCombined ? "combined"
                      : mode == Mode::kSplit    ? "split"
+                     : mode == Mode::kUartOnly ? "uartonly"
                                                : "split3";
     printf(
         "%-9s %-6s %-7s packets/s A %8.0f", name, both ? "2-brd" : "1-brd",
@@ -290,6 +326,22 @@ int run(Mode mode, uint32_t iterations_per_sec, uint32_t seconds, bool both) {
         static_cast<double>(counter.can[0].load()) / elapsed,
         static_cast<double>(counter.can[1].load()) / elapsed,
         static_cast<double>(counter.uart_bytes.load()) / elapsed);
+
+    // The per-packet budget of board A's OUT endpoint, split into the part a
+    // device-side change could remove and the part it could not. Present only on
+    // a LIBRMCS_CAN_DIAG firmware; silent otherwise so the normal output is
+    // unchanged.
+    double turnaround_us = 0.0, starve_us = 0.0;
+    if (board_a.usb_timing().summary(turnaround_us, starve_us)) {
+        const double cycle_us = turnaround_us + starve_us;
+        printf(
+            "                          usb OUT n=%llu  cycle %.2f us (%.0f packets/s)  "
+            "turnaround %.2f us (%.0f%%)  starve %.2f us (%.0f%%)\n",
+            static_cast<unsigned long long>(board_a.usb_timing().samples()), cycle_us,
+            cycle_us > 0.0 ? 1e6 / cycle_us : 0.0, turnaround_us,
+            cycle_us > 0.0 ? 100.0 * turnaround_us / cycle_us : 0.0, starve_us,
+            cycle_us > 0.0 ? 100.0 * starve_us / cycle_us : 0.0);
+    }
     return 0;
 }
 
@@ -298,7 +350,7 @@ int run(Mode mode, uint32_t iterations_per_sec, uint32_t seconds, bool both) {
 int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(
-            stderr, "usage: usb_packet_rate <combined|split|split3> [iterations_per_sec] [seconds] "
+            stderr, "usage: usb_packet_rate <combined|split|split3|uartonly> [iterations_per_sec] [seconds] "
                     "[both]\n"
                     "  iterations_per_sec 0 (default) floods with no pacing\n"
                     "  both               drive BOTH boards at once, to tell a per-device ceiling\n"
@@ -311,6 +363,8 @@ int main(int argc, char** argv) {
         mode = Mode::kCombined;
     else if (mode_name == "split")
         mode = Mode::kSplit;
+    else if (mode_name == "uartonly")
+        mode = Mode::kUartOnly;
     else if (mode_name == "split3")
         mode = Mode::kSplit3;
     else {
@@ -323,6 +377,8 @@ int main(int argc, char** argv) {
     const uint32_t seconds =
         argc > 3 ? static_cast<uint32_t>(std::strtoul(argv[3], nullptr, 0)) : 8;
     const bool both = argc > 4 && std::string_view{argv[4]} == "both";
+    if (argc > 5)
+        g_uart_flood_bytes = std::min<size_t>(std::strtoul(argv[5], nullptr, 0), 992);
 
     try {
         if (!discover())

@@ -67,6 +67,13 @@ target_link_libraries(usb_canfd_stress PRIVATE librmcs-sdk)
 add_executable(can_stall_probe can_stall_probe.cpp)
 target_link_libraries(can_stall_probe PRIVATE librmcs-sdk)
 
+# The main-loop-period half of the same telemetry, for the HPM5321. Separate
+# from can_stall_probe because that tool is bound to the HPM6E8Y's four buses
+# and its single-board CAN0->CAN1 / CAN2->CAN3 loopback, neither of which exists
+# on a two-board HPM5321 rig. Reads only; drive the load from another process.
+add_executable(hpm5321_loop_probe hpm5321_loop_probe.cpp)
+target_link_libraries(hpm5321_loop_probe PRIVATE librmcs-sdk)
+
 # Prints core1's diagnostic ring, relayed as UART0 uplink frames by a firmware
 # built with LIBRMCS_DIAG_OVER_USB=ON. The board's console UART sits on an
 # unpopulated debug header, so this is the only way to read that log here.

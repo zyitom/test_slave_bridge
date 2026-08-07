@@ -81,6 +81,13 @@ protected:
     // pending batches were just dropped. Transports reset transfer progress.
     virtual void session_activated_callback() {}
 
+    // Lets a transport drive a SECOND deserializer into this same session, for a
+    // transport that carries the protocol on more than one pipe (the USB CAN
+    // endpoint pair). The callbacks, and with them the session gating, stay
+    // shared; only the framing state is per-pipe, which is exactly right --
+    // interleaving two pipes' bytes into one deserializer would corrupt both.
+    core::protocol::DeserializeCallback& deserialize_callback() { return *this; }
+
 private:
     void activate_session(uint32_t nonce) {
         if (transmitting_batch_) {

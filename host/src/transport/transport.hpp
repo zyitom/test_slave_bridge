@@ -170,6 +170,40 @@ public:
     // the protocol session and lets its keepalive thread establish a new one.
     virtual void on_link_restart(std::function<void()> callback) { (void)callback; }
     // NOLINTEND(performance-unnecessary-value-param)
+
+    //------------------------------------------------------------------
+    // Optional priority channel: a second, independent pipe for CAN.
+    //------------------------------------------------------------------
+    // A transport that reports has_priority_channel() carries CAN on a pipe of
+    // its own, so CAN never queues behind bulk traffic (UART, config, telemetry).
+    // On USB that is a second bulk endpoint pair: the host controller schedules
+    // each endpoint independently, which is the whole point -- sharing one pipe
+    // costs a colliding CAN frame ~40 us, taking p99 from 104.5 to 143.9 us at
+    // UART line rate (firmware/rmcs_board/AGENTS.md).
+    //
+    // Everything below falls back to the single channel by default, so the
+    // EtherCAT backends (which have one stream and no such queueing) inherit
+    // correct behaviour without implementing anything.
+    virtual bool has_priority_channel() const noexcept { return false; }
+
+    virtual std::unique_ptr<TransportBuffer> acquire_priority_transmit_buffer() noexcept {
+        return acquire_transmit_buffer();
+    }
+
+    virtual void transmit_priority(std::unique_ptr<TransportBuffer> buffer, size_t payload_size) {
+        transmit(std::move(buffer), payload_size);
+    }
+
+    virtual void release_priority_transmit_buffer(std::unique_ptr<TransportBuffer> buffer) {
+        release_transmit_buffer(std::move(buffer));
+    }
+
+    // Never called unless has_priority_channel() is true, so the default is to
+    // drop the registration rather than silently duplicate the main callback.
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
+    virtual void receive_priority(std::function<void(std::span<const std::byte>)> callback) {
+        (void)callback;
+    }
 };
 
 namespace usb {

@@ -17,7 +17,6 @@ set(HPM_BUILD_TYPE "flash_xip" CACHE STRING "HPM build type")
 set(BOARD_BOOTLOADER_MODE "auto" CACHE STRING "Bootloader mode (auto / manual)")
 set_property(CACHE BOARD_BOOTLOADER_MODE PROPERTY STRINGS auto manual)
 
-set(CONFIG_TINYUSB 1)
 set(CONFIG_USB_DEVICE 1)
 
 # Always use the SDK pinned by this project's bsp/hpm_sdk submodule, ignoring any
@@ -72,17 +71,16 @@ sdk_inc("${CMAKE_CURRENT_SOURCE_DIR}/include")
 sdk_app_inc("${LIBRMCS_PROJECT_ROOT}/core/include")
 sdk_app_inc("${LIBRMCS_PROJECT_ROOT}")
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/current_tinyusb.cmake")
+librmcs_add_current_tinyusb(
+    src/class/dfu/dfu_device.c
+)
+
 file(GLOB_RECURSE PROJECT_SOURCE CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c"
 )
 sdk_app_src(${PROJECT_SOURCE})
-sdk_app_src(
-    "$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/device/usbd.c"
-    "$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/device/usbd_control.c"
-    "$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/portable/hpm/dcd_hpm.c"
-    "$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/class/dfu/dfu_device.c"
-)
 
 sdk_linker_global_symbols("_flash_size=0x1F000")
 

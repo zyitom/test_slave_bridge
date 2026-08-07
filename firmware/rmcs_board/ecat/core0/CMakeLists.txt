@@ -33,7 +33,6 @@ endif()
 
 # Enables the SDK flash-EEPROM-emulation component (must precede find_package).
 set(CONFIG_EEPROM_EMULATION 1)
-set(CONFIG_TINYUSB 1)
 set(CONFIG_USB_DEVICE 1)
 
 # Hot-path linker script: EtherCAT data-path objects execute from ILM instead
@@ -165,13 +164,12 @@ else()
 endif()
 sdk_app_src(src/sec_core_img.c)
 sdk_app_src(src/usb_runtime.cpp)
-sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/device/usbd.c")
-sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/device/usbd_control.c")
-sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/portable/hpm/dcd_hpm.c")
-sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/class/dfu/dfu_rt_device.c")
-# Vendor (bulk) data class: the USB co-transport (src/usb_runtime.cpp) enables
-# CFG_TUD_VENDOR, so usbd.c needs the vendor class driver linked in.
-sdk_app_src("$ENV{HPM_SDK_BASE}/middleware/tinyusb/src/class/vendor/vendor_device.c")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/current_tinyusb.cmake")
+librmcs_add_current_tinyusb(
+    src/class/vendor/vendor_device.c
+    src/class/dfu/dfu_rt_device.c
+)
 
 set_property(TARGET app PROPERTY CXX_STANDARD 23)
 set_property(TARGET app PROPERTY CXX_STANDARD_REQUIRED ON)

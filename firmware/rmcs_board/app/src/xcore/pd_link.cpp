@@ -28,6 +28,8 @@ namespace librmcs::firmware::link {
 // session_established(), i.e. driver telemetry starts only once the kStart ack
 // has been queued.
 core::protocol::Serializer& uplink_serializer() { return xcore::pd_link->serializer(); }
+// The cross-core PD stream is a single pipe, so CAN shares it as it always has.
+core::protocol::Serializer& can_uplink_serializer() { return xcore::pd_link->serializer(); }
 bool uplink_enabled() { return xcore::pd_link->uplink_enabled(); }
 
 } // namespace librmcs::firmware::link
