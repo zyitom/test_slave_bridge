@@ -11,6 +11,7 @@ extern "C" {
 #include "firmware/ch32_board/app/src/led/led.hpp"
 #include "firmware/ch32_board/app/src/timer/timer.hpp"
 #include "firmware/ch32_board/app/src/uart/uart.hpp"
+#include "firmware/ch32_board/app/src/usb/bench.hpp"
 #include "firmware/ch32_board/app/src/usb/dfu_runtime.hpp"
 #include "firmware/ch32_board/app/src/usb/vendor.hpp"
 #include "firmware/ch32_board/boot/src/mailbox.hpp"
@@ -150,6 +151,18 @@ App::App() {
 
     while (true) {
         diag[31] = ++iterations;
+
+        // Before any transmit: a link that went down took the armed IN chain
+        // with it, and only this call can release the transmit gate afterwards
+        // (see usb::ss::poll_link_reset). Cheap -- one register read.
+        usb::ss::poll_link_reset();
+
+#if LIBRMCS_CH32_USB_BENCH
+        // Bench builds keep the forwarding loop below running (so CAN/UART do
+        // not spin down), but EP1 belongs to usb/bench.cpp: the protocol
+        // transport is bypassed entirely and try_transmit() has nothing to send.
+        usb::bench::poll();
+#endif
 
         // Same shape as upstream rmcs_board's run loop. CAN has no try_transmit:
         // downlink writes straight to the hardware TX mailboxes in

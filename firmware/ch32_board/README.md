@@ -24,6 +24,8 @@ mc02、c_board 这些 FS/HS 板卡在"板子 -> 主机"方向撞到的转发天�
 | [目录结构](#目录结构) | 整个 `firmware/ch32_board/` 的组织 |
 | [构建](#构建) | 编译命令（详版在 AGENTS.md） |
 | [关键移植决策](#关键移植决策) | 不用 `xw`、USB 放 V5F、坚持严格 C11 |
+| [USB SS bulk 实测天花板](#usb-ss-bulk-实测天花板2026-08-06) | 441/462 MB/s、13 µs 往返，以及怎么测的 |
+| [作为转发板的接线](#作为转发板的接线引脚映射的由来) | CAN/UART 引脚怎么定的、座子上接哪几脚 |
 | [已解决：中断返回 `ret` vs `mret`](#已解决中断返回-ret-vs-mret) | 曾经让 USB 彻底死掉的那个 bug |
 | [烧录](#烧录wch-link) | WCH-Link 烧录与注意事项 |
 | [Bootloader / DFU](#bootloader--dfu) | 双核架构下 bootloader 的特殊形态 |
@@ -171,6 +173,93 @@ target：`ch32_board_app`、`ch32_board_boot`、`ch32_board_merged`（默认全�
   `-Dasm=__asm__ -Dtypeof=__typeof__` 做别名，而不是把标准放宽到 gnu11，这样仓库
   "禁用 GNU 扩展"的规定对我们自己的代码仍然成立。
 
+## USB SS bulk 实测天花板（2026-08-06）
+
+**结论先给**：这颗芯片的 bulk 管道能跑到 **上行 441 MB/s / 下行 462 MB/s**，回环往返
+**13 µs（min）/ 26 µs（p50）**。对得上 WCH 官方宣称的 450 MB/s，也把 README 里
+[HydraUSB3 那节](#值得对照的参考实现hydrausb3) 留的问号（"吞吐远低于预期先查 NUMP"）
+回答掉了。[实测]
+
+测法：`-DLIBRMCS_CH32_USB_BENCH=ON` 的专用固件（`app/src/usb/bench.cpp`）+ 纯 libusb 的
+主机程序，**协议层、序列化器、串口全部不在路径上**。之所以必须专门做一版固件：不接外设
+时上行没有数据源，而下行每包都要过反序列化器——625 MB/s 的逐字节扫描会先撞 CPU 上限，
+测出来的是解析器不是管道。
+
+| 方向 | 吞吐 | 占 500 MB/s 净荷上限 |
+|---|---|---|
+| EP1 IN（device→host） | 441.2 MB/s（3.53 Gbit/s） | 88.2% |
+| EP1 OUT（host→device） | 462.5 MB/s（3.70 Gbit/s） | 92.5% |
+
+（500 MB/s = 5 Gbit/s 经 8b/10b 编码后的净荷上限。）
+
+| 往返延迟（64 B 净荷） | min | p50 | p99 |
+|---|---|---|---|
+| EP1 回环，IN 提前挂好 | 13.1 µs | 26.0 µs | 48.9 µs |
+| 同上，同步写法（先等 OUT 完成再挂 IN） | 66.7 µs | 80.0 µs | — |
+| EP0 控制传输（同步，不含应用代码） | 27.7 µs | 40.1 µs | — |
+
+**后两行不能拿来相减**：主机路径的形状不同（同步提交-等唤醒 vs 预挂）。列在这里只是为了
+说明同一根线上测法能差 5 倍——引用任何 USB 延迟数字之前先问清楚 IN 是不是预挂的。
+
+两条实测约束，都值得记住：
+
+1. **主机发给这块板的 bulk OUT 长度不能是 1024 的整数倍。** 设备的 RX chain 装填成
+   `MAX_NUMP = 16`，**收满 16 包或收到一个短包**才触发完成中断；正好 1024 字节两个条件
+   都不满足，包就卡在控制器里直到超时。第一次测 RTT 全是超时就是撞了这条。协议本身不会
+   踩到（批次上限 1023 字节，天然是短包），但任何绕过协议直接发 bulk 的工具都要注意。
+2. **生产路径离这个天花板有 16 倍的包数差距**，且这是设计使然：`tx_write()` 每次只装
+   1 个 ≤1023 字节的包（`EXP_NUMP = 1`），bench 装的是 16×1024 的满突发。要吃满突发
+   得先抬高 `core/` 的协议批次上限并同步改主机 SDK——**是协议改动，不是固件改动**。
+   顺带补一条 bench 才用到的寄存器语义：多包突发必须设 `UEP_TX_DMA_OFS`（包间步长），
+   `UEP_TX_CHAIN_LEN` 只是**最后一包**的长度，`EXP_NUMP` 最后写才启动传输。
+
+## 作为转发板的接线（引脚映射的由来）
+
+**结论先给**：引脚不再是占位值。CAN/UART 的最终选法记在
+`app/src/board_app.hpp` 的 `kCanPorts` / `kUartPorts`（**那里是唯一权威**，本节只讲
+为什么这么选）。一句话：**2.54 排针 `J2` 上只能引出 1 路 CAN + 2 路 UART，第 2 路
+CAN 必须走 0.5 mm 的 `J3`。** [原理图 + 数据手册 V1.8]
+
+| 通道 | 外设 | TX / RX | 座子引脚 |
+|---|---|---|---|
+| can1 | CAN1 | PA12(AF9) / PA11(AF9) | `J2.31` / `J2.29` |
+| can2 | CAN2 | PB13(AF9) / PB12(AF9) | `J3.28` / `J3.13` |
+| uart1 | USART1 | PA9(AF7) / PA10(AF7) | `J2.26` / `J2.27` |
+| uart2 | **USART3** | PA13(AF4) / PA14(AF4) | `J2.32` / `J2.34` |
+| 控制台 | USART8 | PB4(AF11) / PB3(AF11) | `J4.5` / `J4.6` |
+
+四条约束把选择压到几乎唯一：
+
+1. **封装先砍一刀。** MEU6 是 QFN88，`PB5/PB6/PB7`、`PC4/PC5`、`PF6/PF7`、`PA2/PA3`
+   根本没引出来。原先占位的 `uart2 = USART2 (PA2/PA3)` 因此是**物理上不存在的引脚**
+   ——配上去 `GPIO_Init` 静默无效，永远收不到一个字节。这是本轮改动里唯一的实质 bug。
+2. **CAN2 没得选。** 去掉未封装的 `PB5/PB6`，CAN2 只剩 `PB13/PB12` 一种走法，而这两
+   个脚只出现在 `J3`（DF12 板对板，0.5 mm，飞不了线，得配对插座）。所以**只用 2.54
+   排针时这块板是单 CAN 板**。CAN3（`PD13/PD12` 或 `PF3/PF4`）同样只在 `J3`。
+3. **uart2 换成 USART3 是为了不跨座子。** USART2 唯一走法 `PD5/PD6` 一半在 `J2.4`、
+   一半在 `J3.34`；USART3 的 `PA13/PA14` 两个脚都在 `J2`，所以逻辑通道 2 挂到
+   USART3。**逻辑编号与外设编号本来就不必一致**，`kUartPorts` 的顺序才是主机看到的
+   顺序，主机侧无需任何改动。
+4. **控制台必须让出 PA9。** 厂商 `Debug/debug.c` 的 V3F 默认控制台是 USART1/PA9，正好
+   是 uart1 的 TX——每次复位都会往转发口上打一串 921600 baud 的 banner。改法是给
+   `ch32_board_boot` 定义 `DEBUG=DEBUG_UART8`，让两个核共用 USART8。这不是将就：原理图
+   把 `J4` 的 5/6 脚直接标成 `TX8`/`RX8`，板子本来就是这么设计的。
+
+还有两件硬件事实，选完引脚也绕不开：
+
+- **板上没有任何收发器。** 这是裸 breakout，CAN 引脚必须外挂 CAN PHY（`SN65HVD230`
+  一类）才看得到总线；`J1` 的 VBUS 经 `D1` 到 LDO，**没有保险丝**。
+- **没有可用的状态灯。** 全板只有 `D2`（红色电源指示，`R2` 1.5K 直连 3V3），不受
+  GPIO 控制，所以 `app/src/led/led.hpp` 保持空实现。要现场指示得自己从 `J2` 的空脚
+  （`PE0`/`PE1`/`PF0` 等）外接一颗。
+
+**CAN 位时序已由手册确认，不再是推断** [RM]：BTIMR 的 `Tq =（BRP[9:0]+1）× tHCLK`，
+即 CAN 的时间份额直接由 HCLK 分频，没有额外的外设分频器；驱动写入的是
+`CAN_Prescaler - 1`。因此 `board_app.hpp` 里 `peripheral_clock()` 返回 `HCLK_Frequency`
+是对的：100 MHz / 5 = 20 MHz，20 tq/bit 得 1 Mbit/s，采样点 16/20 = 80%。同一份 HCLK
+也是 USART 波特率（`USART_Init` 直接读 `HCLK_Frequency`）和 TIM 预分频的基准——这颗芯片
+的 `RCC_ClocksTypeDef` 里根本没有 PCLK1/PCLK2 之分。
+
 ## 已解决：中断返回 `ret` vs `mret`
 
 **结论**：这就是当初让 USB 彻底死掉的那个 bug。`[实测]`
@@ -293,12 +382,13 @@ app 会断开 SS 链路、写 boot mailbox 然后 park；**真正执行复位的
   经 DFU 推过一次镜像。首先要盯的两点：擦写动作发生在 USBSS 中断里；V3F 镜像是从 RAM
   执行的（`Link_v3f.ld` 会把它拷到 `0x20100000`），这正是自烧录安全的前提——两点都需
   上板确认。
-- **CAN 与 USART 的 GPIO 引脚映射**在 `app/src/board_app.cpp` 里还是占位值。
-  > **2026-08-05 更新**：目标板已换成 **Petros CH32H417M Alef Breakout**
-  > （见 [PITFALLS.md 文档头](PITFALLS.md#摘要)），所以要对的是**这块板的原理图**
-  > （`petros_ch32h417m_alef_breakout.kicad_sch`），不再是 EVT 包里的
-  > `EVT/PUB/CH32H417SCH.pdf`。这块 breakout 把大部分 GPIO 引到 `J2`（Pico 40 脚）
-  > 和 `J3`（DF12 板对板），选引脚时要从这两个座子实际引出的脚里挑。
-- **CAN 位时序与定时器分频**都是以 `SystemCoreClock` 为基准推出来的；需上板确认 CAN/TIM
-  的内核时钟分频系数。
+- ~~**CAN 与 USART 的 GPIO 引脚映射**在 `app/src/board_app.cpp` 里还是占位值。~~
+  > **2026-08-06 完成**：已按 Petros breakout 原理图定稿，见
+  > [作为转发板的接线](#作为转发板的接线引脚映射的由来)。仍未做的是**通电实测**：
+  > 挂上 CAN PHY 和 USB-TTL 之后，确认 can1/uart1/uart2 真能收发。
+- ~~**CAN 位时序与定时器分频**都是以 `SystemCoreClock` 为基准推出来的~~
+  > **2026-08-06 完成**：`Tq =（BRP+1）× tHCLK` 已在 RM 中查到，USART/TIM 同样以 HCLK
+  > 为基准，代码里的 `peripheral_clock()` 是对的。见上一节末尾。[RM]
 - SS 速度测试（WCH 随 CH372 demo 提供了一个主机侧速度测试工具）。
+- **只有 USB 3.0 口能用**：`LIBRMCS_USBSS_HS_FALLBACK=0` 关掉了回退，插到 USB 2.0 口或
+  用只有 USB2 线芯的线缆时**根本不会枚举**。部署到机器人上时这是一条硬约束。

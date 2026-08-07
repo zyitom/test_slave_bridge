@@ -28,7 +28,7 @@
 
 | 板子 | MCU | ISA / 工具链 | 构建 target | 备注 |
 |---|---|---|---|---|
-| `c_board` | STM32F4xx | ARM `cmake/gcc-arm-none-eabi.cmake` | `c_board_app` `c_board_bootloader` | CubeMX BSP + TinyUSB |
+| `c_board` | STM32F407IGH6TR | ARM `cmake/gcc-arm-none-eabi.cmake` | `c_board_app` `c_board_bootloader` | CubeMX BSP + TinyUSB |
 | `mc02` | STM32H723VGT6（M7） | ARM `cmake/gcc-arm-none-eabi.cmake` | `mc02_app` `mc02_bootloader` | CAN-FD，USB Full-Speed |
 | `ch32_board` | WCH CH32H417（Qingke V3F + V5F 双核） | RISC-V `cmake/toolchain-wch-riscv.cmake` | `ch32_board_app` `ch32_board_boot` `ch32_board_merged` | USB 3.0 SuperSpeed；`boot` 是 V3F 启动核兼 DFU bootloader |
 | `rmcs_board` | HPM6E8Y / HPM5321（Andes） | RISC-V 超级构建 + HPMicro GNU 工具链 | `rmcs_board_app` `rmcs_board_bootloader`；EtherCAT 桥在 `ecat/` | HPM SDK v1.12.0，双核 ECAT 桥 |
@@ -90,7 +90,7 @@
 - `firmware/*/bsp/cubemx/` 下 CubeMX 生成的产物（`Core/`、`USB_DEVICE/`、`cmake/`、`Makefile`、`.mxproject`）禁止 AI 直接修改：下次 Generate 会被覆盖。`.claude/settings.json` 已对这些目录硬禁止 Edit/Write。
 - 任何外设/时钟/中断/DMA 配置变更，AI 必须明确指出应在 CubeMX（或对应 `.ioc` 键）的哪个字段修改，由人工在 CubeMX 改后重新 Generate；严禁绕过 `.ioc` 直接改生成代码。
 - 例外：`.ioc` 与手维护的链接脚本 `*.ld` 仅在用户明确要求时方可由 AI 编辑。
-- 仅 `c_board`、`mc02` 使用 CubeMX；`ch32_board`、`rmcs_board` 不涉及本纪律（见各自 `AGENTS.md`）。
+- 仅 `c_board`、`mc02` 使用 CubeMX；`ch32_board`、`rmcs_board` 禁止 AI 直接修改bsp下内容（见各自 `AGENTS.md`）。
 
 ## 构建、测试与开发命令
 Host SDK（纯 x86，任意机器可编）：

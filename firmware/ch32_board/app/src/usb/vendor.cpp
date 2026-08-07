@@ -10,6 +10,7 @@ extern "C" {
 
 #include "core/src/protocol/serializer.hpp"
 #include "firmware/ch32_board/app/src/link/uplink.hpp"
+#include "firmware/ch32_board/app/src/usb/bench.hpp"
 
 namespace librmcs::firmware {
 
@@ -38,6 +39,31 @@ volatile bool tx_in_flight = false;
 bool enumerated() { return USBSS_DevEnumStatus != 0; }
 
 bool tx_ready() { return enumerated() && !tx_in_flight; }
+
+// Release the transmit gate when the SuperSpeed link drops.
+//
+// tx_in_flight is otherwise cleared only by the EP1 IN completion interrupt,
+// and that interrupt never arrives if the link goes down while a packet is
+// armed: cable removal, hot reset and warm reset all run
+// USBSS_Reset_Init(ENABLE) -> USBSS_Device_Endp_Init() -> USBSS_USB_CLR_ALL,
+// which discards the armed chain in hardware. The flag would then stay set for
+// the rest of the power cycle, tx_ready() would never come back, and the ack
+// for the host's next kStart could not be sent -- the board enumerates and
+// accepts downlink but answers nothing, i.e. it looks dead after an
+// unplug/replug until it is reset.
+//
+// Edge-triggered (link up -> down) rather than level-triggered: a bare
+// SET_CONFIGURATION(0) also clears USBSS_DevEnumStatus but leaves the endpoint
+// armed, and clearing the gate there would let the next batch overwrite a
+// buffer the controller still owns.
+void poll_link_reset() {
+    static bool link_was_up = false;
+
+    const bool link_is_up = enumerated();
+    if (link_was_up && !link_is_up)
+        tx_in_flight = false;
+    link_was_up = link_is_up;
+}
 
 // Arm one bulk-IN packet on EP1. The (DMA, CHAIN_LEN, CHAIN_EXP_NUMP) sequence
 // mirrors the demo's real EP3 IN arming in USBSS_Device_Endp_Init(); EXP_NUMP is
@@ -91,6 +117,9 @@ extern "C" {
 // EP1 bulk IN (device -> host uplink) transfer complete: ack the chain and free
 // the endpoint so the forwarding loop can arm the next batch.
 void usb_ss_ep1_in_complete(void) {
+#if LIBRMCS_CH32_USB_BENCH
+    bench::handle_ep1_in();
+#else
     USBSSD->EP1_TX.UEP_TX_CHAIN_ST |= USBSS_EP_TX_CHAIN_IF;
     ss::tx_in_flight = false;
 
@@ -99,6 +128,7 @@ void usb_ss_ep1_in_complete(void) {
         auto* diag = reinterpret_cast<volatile uint32_t*>(0x20170000u);
         diag[25]++; // uplink packets the host actually collected
     }
+#endif
 }
 
 // EP1 bulk OUT (host -> device downlink) transfer complete: hand the received
@@ -114,6 +144,9 @@ void usb_ss_ep1_in_complete(void) {
 //                      start of the burst has to be walked back.
 // This is the same computation the vendor ISR does for its own EP2 OUT case.
 void usb_ss_ep1_out_complete(void) {
+#if LIBRMCS_CH32_USB_BENCH
+    bench::handle_ep1_out();
+#else
     const uint32_t nump = USBSSD->EP1_RX.UEP_RX_CHAIN_NUMP;
     const uint32_t offset = USBSSD->EP1_RX.UEP_RX_DMA_OFS;
     const uint32_t last_packet_size = USBSSD->EP1_RX.UEP_RX_CHAIN_LEN;
@@ -156,6 +189,7 @@ void usb_ss_ep1_out_complete(void) {
     // address (RM 27.2.4.6, RB_EP_RX_CHAIN_EN).
     USBSSD->EP1_RX.UEP_RX_CHAIN_MAX_NUMP = DEF_ENDP1_OUT_BURST_LEVEL;
     USBSSD->EP1_RX.UEP_RX_CHAIN_ST |= USBSS_EP_RX_CHAIN_IF;
+#endif
 }
 
 } // extern "C"

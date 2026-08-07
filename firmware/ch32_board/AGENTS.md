@@ -185,16 +185,34 @@ $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg -c "init" -c "wch_riscv unfreeze" -c 
 - 无 CubeMX，不适用 CubeMX 纪律。
 
 ## 现状（改代码前须知）
-- **已上板：USB 3.0 SuperSpeed 枚举成功**（2026-07-25，WCH-LinkE 实测）。
+- **已上板：USB 3.0 SuperSpeed 枚举成功**（2026-07-25，WCH-LinkE 实测，**官方 EVB**）。
   `A11C:D403`、`bcdUSB 3.00`、bulk EP `0x01`/`0x81` 1024B/`bMaxBurst 15`，5 Gbps，
   多次复位稳定。
+- **USB SS bulk 天花板已实测**（2026-08-06）：**上行 441 MB/s、下行 462 MB/s、回环往返
+  13 µs(min)/26 µs(p50)**，占 500 MB/s 净荷上限的 88%/92%。用 `-DLIBRMCS_CH32_USB_BENCH=ON`
+  的专用固件（`app/src/usb/bench.cpp`，**默认关，生产镜像不受影响**）+ 纯 libusb 主机程序
+  测的。数据、测法和两条硬约束见
+  [README.md USB SS bulk 实测天花板](README.md#usb-ss-bulk-实测天花板2026-08-06)。
+  其中一条务必记住：**主机发给这块板的 bulk OUT 长度不能是 1024 的整数倍**，否则设备的
+  RX chain 既没收满 16 包也没遇到短包，完成中断不触发，包直接卡死到超时。
+- **Petros breakout 上首次跑通全流程**（2026-08-06 实测）：`usb 4-2: new SuperSpeed USB
+  device`、`/sys/bus/usb/devices/4-2/speed` = 5000，`rx_monitor` 打印
+  `Connected: Ch32Board (2 CAN, 2 UART)`。同一次运行的固件计数：下行 88 包、上行装填
+  88 包、主机收走 88 包（`diag[15]`/`[23]`/`[25]`），零丢包。**在此之前这块板只验过
+  启动链，SS 从未在它上面通过电**——所以旧文档里的 SS 结论都要读作"官方 EVB 上的"。
 - **bulk 数据通路已端到端验证**（2026-07-26）：11/11 下行包解析并回 ack，0 丢包。
   EP1-OUT 的链式 DMA 收长语义按 RM 27.2.4 修正过（`UEP_RX_DMA` 自增，实测确认）。
 - **主机侧接口已就位**：`librmcs::board::Ch32Board`（`host/include/librmcs/board/ch32_board.hpp`，
   PID `0xD403`，CAN1/CAN2 + UART1/UART2），通道表在
   `core/include/librmcs/spec/ch32_board/`，`host/examples/common/multi_board.hpp`
   里有 `Ch32BoardSession`，所以 `rx_monitor` 等 example 都能直接连这块板。
-- **UART 运行时改波特率已实现**（未上板）：下行 `kUartNConfig` 走
+- **UART 数据面已上板验证**（2026-08-06，`J2.26`↔`J2.27` 短接做 PA9/PA10 自环）：
+  `uart_stress` 在 921600 baud 下 **TX 1000 msg/s / 32000 B/s，RX 1000 msg/s / 32000 B/s，
+  rx/tx = 100%**。同一条链路在默认 115200 下 RX 稳定在 **11520 B/s = 该波特率的理论上限**、
+  每帧 64 B（`max_receive_size` 满缓冲 flush），即线跑满而非丢包——**看到 rx/tx 只有 18%
+  先算线速，不要当成丢包**。这条同时证明了 USB SS 双向、USART1 收发、IDLE 组帧都正确。
+- **UART 运行时改波特率已上板验证**（2026-08-06，用上面那条自环测的 115200 → 921600
+  切换，切换后立即 100% 回环）：下行 `kUartNConfig` 走
   `link::HostSession::uart_config_deserialized_callback` → `Uart::handle_config`，
   主机侧是 `Ch32Board::PacketBuilder::uart1_config` / `uart2_config`。切换时先清
   UE 再 `USART_Init`（`CTLR1_CLEAR_Mask=0x29F3` 保住 UE 和中断使能位，所以 TXE 要
@@ -224,7 +242,20 @@ $OCD/bin/openocd -f $OCD/bin/wch-riscv.cfg -c "init" -c "wch_riscv unfreeze" -c 
   一切过去调试口就没了、只能断电恢复。关掉之后 SS 失败就一直重试 SS，引脚永不被占。
   已实测：halt 核 5 秒（主机判 USB 掉线）后调试器仍能连上，旧固件此处必断。
   设成 1 可恢复原厂行为并支持 USB 2.0 主机，代价是回退时丢调试口。
-- CAN/USART 的 GPIO 引脚在 `app/src/board_app.cpp` 里仍是占位值，待按原理图确定。
+- **CAN/USART 引脚已按 Petros breakout 原理图定稿**（2026-08-06），权威表在
+  `app/src/board_app.hpp` 的 `kCanPorts` / `kUartPorts`，选型理由见
+  [README.md 作为转发板的接线](README.md#作为转发板的接线引脚映射的由来)。要点：
+  can1=PA12/PA11(`J2.31/29`)、can2=PB13/PB12(**`J3` 才有**)、uart1=USART1 PA9/PA10
+  (`J2.26/27`)、**uart2=USART3 PA13/PA14**(`J2.32/34`)。改这四条之前先读 README 那节，
+  封装没引出的脚（`PA2/PA3`、`PB5/PB6/PB7`、`PC4/PC5`、`PF6/PF7`）配上去是静默失效。
+  **仍未通电实测收发。**
+- **两个核的 printf 都走 USART8**（`J4.5/J4.6`）：`ch32_board_boot` 显式定义
+  `DEBUG=DEBUG_UART8`，否则厂商 `debug.c` 会把 V3F 控制台放到 USART1/PA9，那是 uart1
+  的 TX。删掉这个定义等于让 bootloader banner 打进转发口。
+- **`usb::ss::poll_link_reset()` 必须留在主循环里**（`app/src/usb/vendor.cpp`）：链路掉线
+  时厂商栈走 `USBSS_Reset_Init` → `USB_CLR_ALL` 把已装填的 EP1 IN 链丢掉，完成中断永远
+  不来，`tx_in_flight` 会永久卡住——症状是**拔插一次 USB 线之后上行彻底哑掉**（还能收
+  下行，但 kStart 的 ack 发不出去，主机永远建不起 session）。[代码分析，未上板复现]
 - **目标板是 Petros CH32H417M Alef Breakout**（不是官方 EVB），座子用 J 编号：
   `J1`=USB3.0-A、`J2`=Pico 40 脚排针、`J3`=DF12 板对板、`J4`=1x06（调试+串口）。
   **板上没有第二个 USB 座**，USB 数据面和 SWD 共用 PB8/PB9，所以**烧录必须拔 USB 线**，

@@ -21,6 +21,7 @@ bool tx_ready();                                 // bulk IN endpoint free?
 bool tx_write(const uint8_t* data, size_t size); // arm one IN packet
 bool tx_write_zlp();                             // arm a zero-length IN packet
 bool enumerated();                               // device configured on the host?
+void poll_link_reset();                          // recover the TX gate on link loss
 } // namespace ss
 
 // USB SuperSpeed vendor-class host transport: keeps only the transmission shape
