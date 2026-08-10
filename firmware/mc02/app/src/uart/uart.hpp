@@ -1,9 +1,8 @@
 #pragma once
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
+#include <span>
 
 #include <usart.h>
 
@@ -12,33 +11,19 @@
 #include "core/src/utility/assert.hpp"
 #include "core/src/utility/immovable.hpp"
 #include "firmware/mc02/app/src/led/led.hpp"
+#include "firmware/mc02/app/src/uart/rx_buffer.hpp"
+#include "firmware/mc02/app/src/uart/tx_buffer.hpp"
 #include "firmware/mc02/app/src/usb/helper.hpp"
 #include "firmware/mc02/app/src/utility/lazy.hpp"
 
 namespace librmcs::firmware::uart {
 
-class Uart : private core::utility::Immovable {
+// State and behaviour shared by both port flavours: identity, the runtime
+// baudrate control surface, and the hand-off of received bytes to USB. It holds
+// no buffers of its own, so the RX-only DBUS port does not carry a 3 KB TX ring
+// it can never use.
+class UartCommon : private core::utility::Immovable {
 public:
-    using Lazy = utility::Lazy<Uart, data::DataId, UART_HandleTypeDef*, uint16_t>;
-
-    Uart(data::DataId data_id, UART_HandleTypeDef* hal_uart_handle, uint16_t max_receive_size)
-        : data_id_(data_id)
-        , hal_uart_handle_(hal_uart_handle)
-        , max_receive_size_(max_receive_size) {
-        core::utility::assert_always(max_receive_size_ <= 64);
-
-        // CubeMX configures the RX DMA in circular mode, but we use the
-        // idle-event + re-arm pattern, which needs one-shot (normal) mode. Force
-        // it here so the receive path uses DMA without requiring a CubeMX change.
-        // The DMA stream is already linked via __HAL_LINKDMA in MX_USARTx_Init.
-        if (hal_uart_handle_->hdmarx != nullptr) {
-            hal_uart_handle_->hdmarx->Init.Mode = DMA_NORMAL;
-            core::utility::assert_always(HAL_DMA_Init(hal_uart_handle_->hdmarx) == HAL_OK);
-        }
-
-        core::utility::assert_always(trigger_hal_receive());
-    }
-
     // Runtime baudrate switch requested by the host. Writes BRR directly rather
     // than re-running HAL_UART_Init, so every other setting stays exactly as
     // CubeMX generated it and the running DMA is not torn down.
@@ -46,8 +31,8 @@ public:
     // This mirrors UART_SetConfig() in the STM32H7 HAL. Unlike the F4 parts,
     // H7 UARTs take their kernel clock from a selectable source (not simply
     // PCLK) and pass it through Init.ClockPrescaler, so the divisor must be
-    // computed from HAL_RCCEx_GetPeriphCLKFreq and the prescaler table -- using
-    // HAL_RCC_GetPCLKxFreq here would silently produce the wrong baudrate.
+    // computed from the resolved clock source -- using HAL_RCC_GetPCLKxFreq here
+    // the way c_board does would silently produce the wrong baudrate.
     //
     // RX bytes arriving inside the switch window may be garbled; the host is
     // expected to quiesce the link first.
@@ -105,99 +90,29 @@ public:
         return clock / brr;
     }
 
-    void handle_downlink(const data::UartDataView& data) {
-        const auto size = data.uart_data.size();
-        if (!size)
-            return;
+protected:
+    UartCommon(data::DataId data_id, UART_HandleTypeDef* hal_uart_handle)
+        : data_id_(data_id)
+        , hal_uart_handle_(hal_uart_handle) {}
 
-        auto writing = buffer_writing_.load(std::memory_order::relaxed);
-        auto& buf = transmit_buffers_[writing];
-        auto written = buf.written_size.load(std::memory_order::relaxed);
-
-        const auto allowed = std::min(size, sizeof(buf.data) - written);
-        if (allowed < size)
-            led::led->downlink_buffer_full();
-
-        if (allowed) {
-            std::memcpy(&buf.data[written], data.uart_data.data(), allowed);
-            buf.written_size.store(
-                static_cast<uint8_t>(written + allowed), std::memory_order::relaxed);
-        }
+    // RxBuffer and TxBuffer each keep their own copy of the handle, so the derived
+    // ports cannot name hal_uart_handle_ unqualified. Route the two accesses they
+    // need through here rather than sprinkling UartCommon:: qualifications.
+    [[nodiscard]] bool has_rx_error() const {
+        constexpr uint32_t rx_error_mask =
+            HAL_UART_ERROR_PE | HAL_UART_ERROR_NE | HAL_UART_ERROR_FE | HAL_UART_ERROR_ORE;
+        return (hal_uart_handle_->ErrorCode & rx_error_mask) != 0U;
     }
 
-    bool try_transmit() {
-        // Poll-recover stuck reception
-        if (hal_uart_handle_->RxState == HAL_UART_STATE_READY) [[unlikely]]
-            trigger_hal_receive();
+    void flag_dma_error() { hal_uart_handle_->ErrorCode |= HAL_UART_ERROR_DMA; }
 
-        const auto writing = buffer_writing_.load(std::memory_order::relaxed);
-        if (transmit_buffers_[writing].written_size.load(std::memory_order::relaxed) == 0)
-            return false;
-
-        if (hal_uart_handle_->gState != HAL_UART_STATE_READY)
-            return false;
-
-        const auto next = static_cast<uint8_t>(!writing);
-        transmit_buffers_[next].written_size.store(0, std::memory_order::relaxed);
-        std::atomic_signal_fence(std::memory_order::release);
-        buffer_writing_.store(next, std::memory_order::relaxed);
-        std::atomic_signal_fence(std::memory_order::release);
-
-        const auto tx_size =
-            transmit_buffers_[writing].written_size.load(std::memory_order::relaxed);
-        auto* tx_data = reinterpret_cast<uint8_t*>(transmit_buffers_[writing].data);
-
-        // Prefer DMA when a TX DMA stream is linked (USART1/USART10/UART7); the
-        // TX buffer lives in the MPU non-cacheable region, so no cache maintenance
-        // is needed. UART5 (DBUS) is RX-only and has no TX DMA -> fall back to IT.
-        const auto status = hal_uart_handle_->hdmatx != nullptr
-            ? HAL_UART_Transmit_DMA(hal_uart_handle_, tx_data, tx_size)
-            : HAL_UART_Transmit_IT(hal_uart_handle_, tx_data, tx_size);
-        core::utility::assert_always(status == HAL_OK);
-
-        return true;
-    }
-
-    void handle_uplink(uint16_t size, bool is_idle) {
-        if (!size)
-            return;
-
+    void handle_uplink(
+        std::span<const std::byte> payload, std::span<const std::byte> payload2, bool is_idle) {
         auto& serializer = usb::get_serializer();
         core::utility::assert_always(
             serializer.write_uart(
-                data_id_,
-                {.uart_data = {receive_buffer_, size}, .idle_delimited = is_idle},
-                {})
+                data_id_, {.uart_data = payload, .idle_delimited = is_idle}, payload2)
             != core::protocol::Serializer::SerializeResult::kInvalidArgument);
-
-        trigger_hal_receive();
-    }
-
-    // Called from HAL_UART_ErrorCallback on a UART receive error (PE/NE/FE/ORE)
-    // or an RX DMA error. The HAL has already cleared the error flags and aborted
-    // the in-flight ReceiveToIdle DMA, leaving RxState == READY; re-arm reception
-    // immediately so a corrupted frame costs at most one dropped frame instead of
-    // stalling the port until the next try_transmit() poll re-arms it. RX-side
-    // only -- a TX error self-heals via the gState check in try_transmit().
-    void handle_rx_error() {
-        if (hal_uart_handle_->RxState == HAL_UART_STATE_READY) [[likely]]
-            trigger_hal_receive();
-    }
-
-    // HAL_UARTEx_RxEventCallback access
-    friend void ::HAL_UARTEx_RxEventCallback(UART_HandleTypeDef*, uint16_t);
-
-private:
-    bool trigger_hal_receive() {
-        // DMA receive (normal mode, see constructor): zero per-byte CPU; the idle
-        // line still delimits frames at the same instant as before, so latency is
-        // unchanged while the per-byte interrupt jitter is removed. The RX buffer
-        // is in the MPU non-cacheable region, so no cache invalidation is needed.
-        return HAL_UARTEx_ReceiveToIdle_DMA(
-                   hal_uart_handle_,
-                   reinterpret_cast<uint8_t*>(receive_buffer_),
-                   max_receive_size_)
-            == HAL_OK;
     }
 
     // Kernel clock feeding this UART's baudrate divider.
@@ -255,20 +170,109 @@ private:
 
     data::DataId data_id_;
     UART_HandleTypeDef* hal_uart_handle_;
-    uint16_t max_receive_size_;
-
-    std::byte receive_buffer_[64]{};
-
-    struct {
-        std::atomic<uint8_t> written_size = 0;
-        std::byte data[128];
-    } transmit_buffers_[2];
-    std::atomic<uint8_t> buffer_writing_ = 0;
 };
 
-inline constinit Uart::Lazy uart1{data::DataId::kUart1, &huart1, 64};
-inline constinit Uart::Lazy uart2{data::DataId::kUart2, &huart7, 64};
-inline constinit Uart::Lazy uart3{data::DataId::kUart3, &huart10, 64};
-inline constinit Uart::Lazy uart_dbus{data::DataId::kUartDbus, &huart5, 32};
+// Full-duplex port: USART1, UART7 and USART10, each with both an RX and a TX DMA
+// stream wired up by CubeMX.
+class Uart
+    : public UartCommon
+    , private TxBuffer
+    , private RxBuffer<Uart> {
+    friend class RxBuffer<Uart>;
+
+public:
+    using Lazy = utility::Lazy<Uart, data::DataId, UART_HandleTypeDef*>;
+
+    Uart(data::DataId data_id, UART_HandleTypeDef* hal_uart_handle)
+        : UartCommon(data_id, hal_uart_handle)
+        , TxBuffer(hal_uart_handle, &hal_tx_dma_complete_callback, &hal_tx_dma_error_callback)
+        , RxBuffer(hal_uart_handle) {}
+
+    void handle_downlink(const data::UartDataView& data) {
+        if (!TxBuffer::try_enqueue(data))
+            led::led->downlink_buffer_full();
+    }
+
+    void try_transmit() {
+        RxBuffer::try_dequeue();
+        TxBuffer::try_dequeue();
+    }
+
+    void tx_complete_callback() { TxBuffer::tx_complete_callback(); }
+
+    void uart_error_callback() {
+        if (has_rx_error())
+            RxBuffer::rx_error_callback();
+    }
+
+    void rx_dma_tc_callback() { RxBuffer::dma_tc_callback(); }
+
+    void rx_dma_error_callback() {
+        flag_dma_error();
+        RxBuffer::rx_error_callback();
+    }
+
+    void tx_dma_error_callback() { TxBuffer::tx_error_callback(); }
+
+    void rx_event_callback() { RxBuffer::uart_idle_event_callback(); }
+
+private:
+    static void hal_rx_dma_tc_callback(DMA_HandleTypeDef* hal_dma_handle);
+
+    static void hal_rx_dma_error_callback(DMA_HandleTypeDef* hal_dma_handle);
+
+    static void hal_tx_dma_complete_callback(DMA_HandleTypeDef* hal_dma_handle);
+
+    static void hal_tx_dma_error_callback(DMA_HandleTypeDef* hal_dma_handle);
+};
+
+// Receive-only port, used for UART5 (DBUS).
+//
+// Two independent reasons it carries no TX path: CubeMX wires UART5 with an RX
+// DMA stream only (bsp/cubemx/Core/Src/usart.c declares hdma_uart5_rx and no
+// hdma_uart5_tx), and the protocol never routes a downlink to kUartDbus anyway --
+// usb/vendor.hpp's uart_deserialized_callback dispatches kUart1/kUart2/kUart3 and
+// falls through for everything else. Only kUartDbusConfig is routed here, and
+// that lands in UartCommon::handle_config.
+class UartRxOnly
+    : public UartCommon
+    , private RxBuffer<UartRxOnly> {
+    friend class RxBuffer<UartRxOnly>;
+
+public:
+    using Lazy = utility::Lazy<UartRxOnly, data::DataId, UART_HandleTypeDef*>;
+
+    UartRxOnly(data::DataId data_id, UART_HandleTypeDef* hal_uart_handle)
+        : UartCommon(data_id, hal_uart_handle)
+        , RxBuffer(hal_uart_handle) {}
+
+    // Named to match the full-duplex port so app.cpp can poll every port
+    // uniformly; here it only drains the receive ring.
+    void try_transmit() { RxBuffer::try_dequeue(); }
+
+    void uart_error_callback() {
+        if (has_rx_error())
+            RxBuffer::rx_error_callback();
+    }
+
+    void rx_dma_tc_callback() { RxBuffer::dma_tc_callback(); }
+
+    void rx_dma_error_callback() {
+        flag_dma_error();
+        RxBuffer::rx_error_callback();
+    }
+
+    void rx_event_callback() { RxBuffer::uart_idle_event_callback(); }
+
+private:
+    static void hal_rx_dma_tc_callback(DMA_HandleTypeDef* hal_dma_handle);
+
+    static void hal_rx_dma_error_callback(DMA_HandleTypeDef* hal_dma_handle);
+};
+
+inline constinit Uart::Lazy uart1{data::DataId::kUart1, &huart1};
+inline constinit Uart::Lazy uart2{data::DataId::kUart2, &huart7};
+inline constinit Uart::Lazy uart3{data::DataId::kUart3, &huart10};
+inline constinit UartRxOnly::Lazy uart_dbus{data::DataId::kUartDbus, &huart5};
 
 } // namespace librmcs::firmware::uart
