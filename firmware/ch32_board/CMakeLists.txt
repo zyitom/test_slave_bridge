@@ -75,6 +75,14 @@ set(CH32_WCH_INCLUDE_DIRS
 # ---- CH372 USBSS device stack (vendored, V5F only) ---------------------------
 file(GLOB CH32_USB_SOURCES CONFIGURE_DEPENDS "${CH32_BSP_ROOT}/usb/*.c")
 
+# USB SuperSpeed bulk benchmark build. OFF by default and it must stay that way
+# for anything but a measurement run: it hands EP1 to app/src/usb/bench.cpp,
+# which bypasses the deserializer, the session and the framing entirely, so the
+# board no longer speaks the librmcs protocol. Use Release (the Debug image is
+# already at ~96% of the 128 KB slot):
+#   cmake --preset release -S firmware/ch32_board -DLIBRMCS_CH32_USB_BENCH=ON
+option(LIBRMCS_CH32_USB_BENCH "Build the V5F app in USB SS bulk benchmark mode" OFF)
+
 # ---- V5F application ---------------------------------------------------------
 # The librmcs C++ app (app/src) provides main() via app.cpp, replacing the WCH
 # demo's app/User/main.c (which is intentionally excluded). The shared core
@@ -160,6 +168,7 @@ target_compile_definitions(ch32_board_app PRIVATE
     # The bootloader target sets this to 1 and gets the DFU-mode descriptor
     # instead; both live in bsp/usb/usb_desc.c.
     LIBRMCS_DFU_DEVICE=0
+    LIBRMCS_CH32_USB_BENCH=$<BOOL:${LIBRMCS_CH32_USB_BENCH}>
     LIBRMCS_PROJECT_VERSION_STRING="${LIBRMCS_PROJECT_VERSION}"
     $<$<CONFIG:Release>:NDEBUG>
 )
@@ -233,6 +242,13 @@ target_include_directories(ch32_board_boot PRIVATE
 target_compile_definitions(ch32_board_boot PRIVATE
     Core_V3F
     Run_Core=Run_Core_V3FandV5F
+    # Console selection for the vendor Debug/debug.c printf. Its per-core default
+    # would put the V3F console on USART1/PA9 -- which is the librmcs uart1 TX
+    # pin on this board (board_app.hpp), so every boot would shift a 921600-baud
+    # banner onto a forwarding port. USART8 is PB4/PB3 = J4.5/J4.6, the 1x06
+    # header the schematic labels TX8/RX8, and is what the V5F application core
+    # already defaults to -- so both cores share one physical console.
+    DEBUG=DEBUG_UART8
     LIBRMCS_USBSS_HS_FALLBACK=0
     # 1 = enumerate as a DFU-mode device (single interface, no endpoints, DFU
     # functional descriptor), which is what boot/src/usb/dfu_transport.cpp serves.

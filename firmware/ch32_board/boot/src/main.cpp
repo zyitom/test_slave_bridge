@@ -113,7 +113,11 @@ void allocate_v5f_irqs() {
     NVIC_SetAllocateIRQ(CAN1_RX0_IRQn, Core_ID_V5F);
     NVIC_SetAllocateIRQ(CAN2_RX0_IRQn, Core_ID_V5F);
     NVIC_SetAllocateIRQ(USART1_IRQn, Core_ID_V5F);
-    NVIC_SetAllocateIRQ(USART2_IRQn, Core_ID_V5F);
+    // uart2 is USART3, not USART2 -- see the routing table in
+    // app/src/board_app.hpp. This list is keyed by PERIPHERAL, so it has to
+    // follow whatever kUartPorts/kCanPorts actually select; allocating the wrong
+    // vector leaves the driver's interrupt on this core and the port deaf.
+    NVIC_SetAllocateIRQ(USART3_IRQn, Core_ID_V5F);
 }
 
 [[noreturn]] void boot_main() {
