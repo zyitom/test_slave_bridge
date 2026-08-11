@@ -31,6 +31,15 @@ namespace librmcs::firmware::uart {
 // buffer was 64 bytes, any stream longer than 64 bytes hit that window once per
 // 64 bytes and lost whatever arrived inside it.
 //
+// Reception errors are absorbed rather than recovered from. STM32H7 can keep the
+// DMA request alive across a line error (CR3.DDRE) and can stop raising overruns
+// altogether (CR3.OVRDIS); see configure_rx_error_policy(). STM32F407 has neither
+// bit, so c_board is forced to tear the stream down and restart it every time a
+// glitch arrives. Restarting is still implemented here for genuine DMA
+// controller faults, and the restart path uses two more registers c_board does
+// not have: ICR to drop sticky flags without a destructive RDR read, and
+// RQR.RXFRQ to empty the 16-entry RXFIFO.
+//
 // The consumer runs in the main loop (try_dequeue), so the interrupt path only
 // advances an index and never touches USB.
 template <typename T>
@@ -93,8 +102,15 @@ public:
     }
 
 private:
+    // Bounds the ISR.REACK poll in wait_receiver_ready(). RE is already
+    // acknowledged in steady state, so the loop normally exits on its first
+    // read; this only stops restart_rx_dma() from spinning forever inside the
+    // DMA error interrupt if the receiver never comes back.
+    static constexpr uint32_t kReceiverAckPollLimit = 1024;
+
     explicit RxBuffer(UART_HandleTypeDef* hal_uart_handle)
         : hal_uart_handle_(hal_uart_handle) {
+        configure_rx_error_policy();
         bind_rx_dma_callbacks();
         start_rx_dma();
     }
@@ -105,6 +121,69 @@ private:
     // the D3 domain, and UART5/UART7/USART1/USART10 all live in D2.
     [[nodiscard]] DMA_Stream_TypeDef* rx_dma_stream() const {
         return static_cast<DMA_Stream_TypeDef*>(hal_uart_handle_->hdmarx->Instance);
+    }
+
+    // Reception error policy, applied once before any DMA is armed.
+    //
+    //   CR3.DDRE = 1    a parity/framing/noise error no longer disables the DMA
+    //                   request. The suspect byte lands in the ring like any
+    //                   other and the protocol layer decides what to do with it,
+    //                   instead of one glitch costing the whole 2048-byte ring.
+    //   CR3.OVRDIS = 1  overrun detection off. start_rx_dma() deliberately
+    //                   leaves CR3.EIE clear, so nothing would ever clear a
+    //                   sticky ORE and a set ORE stalls reception. Continuous
+    //                   DMA drains RDR fast enough that the flag carried no
+    //                   information here anyway.
+    //
+    // This is also what the mainline Linux driver does for DMA reception:
+    // stm32_usart_set_termios() sets USART_CR3_DDRE alongside DMAR whenever an
+    // RX channel is present. Neither bit exists on STM32F407.
+    //
+    // Both are writable only while the USART is disabled, so UE is cycled around
+    // the write. TxBuffer's constructor only binds callbacks, so nothing is
+    // transmitting or receiving at this point.
+    void configure_rx_error_policy() const {
+        auto* instance = hal_uart_handle_->Instance;
+        const bool was_enabled = (instance->CR1 & USART_CR1_UE) != 0U;
+
+        ATOMIC_CLEAR_BIT(instance->CR1, USART_CR1_UE);
+        ATOMIC_SET_BIT(instance->CR3, USART_CR3_DDRE | USART_CR3_OVRDIS);
+        if (was_enabled)
+            ATOMIC_SET_BIT(instance->CR1, USART_CR1_UE);
+    }
+
+    // Drop the sticky RX status through the dedicated clear register, which
+    // leaves RDR untouched. On STM32F407 the only way to clear ORE is the "read
+    // SR, then read DR" sequence, which would steal a byte from the DMA stream.
+    void clear_rx_error_flags() const {
+        WRITE_REG(
+            hal_uart_handle_->Instance->ICR,
+            USART_ICR_PECF | USART_ICR_FECF | USART_ICR_NECF | USART_ICR_ORECF | USART_ICR_IDLECF);
+    }
+
+    // Discard whatever is still held in RDR and in the 16-entry RXFIFO (DS13313
+    // Table 5 gives the depth). UART5 and UART7 run with FIFO mode enabled --
+    // HAL_UARTEx_EnableFifoMode() in MX_UART5_Init/MX_UART7_Init, while USART1
+    // and USART10 disable it -- so without this up to 16 bytes captured before
+    // an abort would survive it and be written at ring offset 0 as if they had
+    // just arrived. That is the same class of stale-fragment bug that resetting
+    // CT in start_rx_dma() prevents. STM32F407 has no request register at all.
+    void flush_rx_fifo() const { WRITE_REG(hal_uart_handle_->Instance->RQR, USART_RQR_RXFRQ); }
+
+    // The receiver acknowledges RE asynchronously: it is only sampling the line
+    // once ISR.REACK reads back as 1, and STM32F407 has no such handshake. RE is
+    // never cleared once CubeMX has enabled it, so this normally exits on the
+    // first read.
+    void wait_receiver_ready() const {
+        auto* instance = hal_uart_handle_->Instance;
+        if ((instance->CR1 & USART_CR1_RE) == 0U)
+            return;
+
+        for (uint32_t i = 0; i < kReceiverAckPollLimit; ++i) {
+            if ((instance->ISR & USART_ISR_REACK) != 0U)
+                return;
+        }
+        core::utility::assert_debug_lazy([]() noexcept { return false; });
     }
 
     void bind_rx_dma_callbacks() {
@@ -155,15 +234,44 @@ private:
         // DMAR or aborting the stream.
         hal_uart_handle_->RxState = HAL_UART_STATE_BUSY_RX;
         hal_uart_handle_->ReceptionType = HAL_UART_RECEPTION_TOIDLE;
-        hal_uart_handle_->RxXferSize = static_cast<uint16_t>(kIrqFragmentSize);
+
+        // RxXferSize is deliberately one larger than the bank. The IDLE branch of
+        // HAL_UART_IRQHandler only reports the event when
+        // `0 < __HAL_DMA_GET_COUNTER(hdmarx) < huart->RxXferSize`, and in circular
+        // double-buffer mode NDTR reloads to kIrqFragmentSize the moment a bank
+        // completes. So a frame whose length is an exact multiple of the bank size
+        // and which then goes idle leaves NDTR == kIrqFragmentSize, the comparison
+        // fails, HAL_UARTEx_RxEventCallback is never raised, and idle_count never
+        // advances -- the consumer would hold that frame until the next fragment
+        // arrived. Reporting one byte more than the bank makes the comparison true
+        // for every NDTR the hardware can actually present here.
+        //
+        // The HAL reads RxXferSize nowhere else on this path: UART_DMAReceiveCplt
+        // is replaced by hal_rx_dma_tc_callback in bind_rx_dma_callbacks(), and
+        // RxXferCount is only written by that IDLE branch, never read by us.
+        hal_uart_handle_->RxXferSize = static_cast<uint16_t>(kIrqFragmentSize + 1);
         hal_uart_handle_->RxXferCount = static_cast<uint16_t>(kIrqFragmentSize);
 
-        // Clear stale RX/IDLE flags before enabling DMAR to avoid consuming fresh bytes
-        // through ISR/RDR reads while DMA reception is active.
-        __HAL_UART_CLEAR_IDLEFLAG(hal_uart_handle_);
-        ATOMIC_SET_BIT(hal_uart_handle_->Instance->CR3, USART_CR3_EIE);
-        if (hal_uart_handle_->Init.Parity != UART_PARITY_NONE)
-            ATOMIC_SET_BIT(hal_uart_handle_->Instance->CR1, USART_CR1_PEIE);
+        // Drop every sticky RX flag and every byte still held in RDR/RXFIFO, then
+        // confirm the receiver is live, so DMA requests resume on a real byte
+        // boundary instead of on leftovers from before the restart.
+        clear_rx_error_flags();
+        flush_rx_fifo();
+        wait_receiver_ready();
+
+        // CR3.EIE and CR1.PEIE stay clear on purpose, and that is what makes
+        // CR3.DDRE worth setting at all. HAL_UART_IRQHandler() classifies *any*
+        // RX error as blocking whenever DMAR is set -- the condition it tests is
+        // `HAL_IS_BIT_SET(huart->Instance->CR3, USART_CR3_DMAR) || ...` -- and
+        // responds with UART_EndRxTransfer() followed by HAL_DMA_Abort_IT(). So
+        // with the error interrupts enabled the hardware would keep the stream
+        // running exactly as DDRE intends and the HAL would abort it anyway,
+        // reproducing the F407 behaviour on a part that does not need it.
+        //
+        // Line errors are absorbed by DDRE/OVRDIS instead. Genuine DMA
+        // controller faults still arrive through the stream's own error
+        // interrupt (hal_rx_dma_error_callback -> rx_error_callback), which is
+        // what restart_rx_dma() now exists for.
         ATOMIC_SET_BIT(hal_uart_handle_->Instance->CR3, USART_CR3_DMAR);
         ATOMIC_SET_BIT(hal_uart_handle_->Instance->CR1, USART_CR1_IDLEIE);
     }
@@ -179,10 +287,15 @@ private:
     void dma_tc_callback() { update_in_and_switch_bank_if_requested(false, true); }
 
     void rx_error_callback() {
-        // Deliberately no debug assert here, unlike c_board: mc02 drives DBUS and
-        // hot-pluggable ports where a framing/overrun glitch is a normal event, and
-        // the port must recover instead of trapping the debug build. One corrupted
-        // frame is the whole cost.
+        // Reached for DMA controller faults (transfer/FIFO/direct-mode errors),
+        // not for line errors: with CR3.EIE left clear, a framing/noise/parity
+        // glitch no longer raises the UART interrupt at all and DDRE keeps the
+        // stream running through it. The HAL error callback in uart.cpp can still
+        // route here if the HAL sets an RX ErrorCode by some other path.
+        //
+        // Deliberately no debug assert, unlike c_board: mc02 drives DBUS and
+        // hot-pluggable ports, so the port must recover rather than trap the
+        // debug build.
         restart_rx_dma();
     }
 

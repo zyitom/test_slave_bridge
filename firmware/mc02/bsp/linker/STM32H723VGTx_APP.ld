@@ -217,3 +217,22 @@ SECTIONS
         libgcc.a:*(*)
     }
 }
+
+/* Every DMA buffer on this board (the four UART rings, the USB endpoint buffers,
+ * the SPI transfer buffers) lives in .data or .bss, so all of them sit below
+ * _ebss. MPU region 0 -- Core/Src/main.c MPU_Config -- maps only the first 32 KB
+ * of AXI SRAM as non-cacheable, which is what keeps DMA writes visible to the
+ * CPU without explicit cache maintenance.
+ *
+ * Nothing pins those buffers below that line: today they fit only because
+ * .data + .bss happen to end around 24.7 KB. Adding globals could push a ring
+ * past 0x24008000, where the D-cache would start serving the core stale copies
+ * of DMA-written bytes -- silent corruption, and invisible to a UART7 <-> UART10
+ * loopback because both ends would corrupt identically only by luck. Turn that
+ * into a link error instead.
+ *
+ * ._user_heap_stack sits above _ebss and may cross the line freely: _estack is
+ * in DTCM (see the top of this file) and no DMA touches the heap. */
+ASSERT(
+    _ebss <= ORIGIN(RAM) + 32K,
+    "AXI SRAM .data+.bss exceeds the 32 KB non-cacheable MPU region 0; DMA buffers past 0x24008000 would lose cache coherency. Either shrink .data/.bss, enlarge MPU region 0 in CubeMX, or move the DMA buffers into a dedicated section.")

@@ -80,6 +80,31 @@ App::App() {
     HAL_PWREx_EnableUSBVoltageDetector();
     __HAL_RCC_USB_OTG_HS_CLK_ENABLE();
 
+    // Trim HSI48 against the host's start-of-frame packets. The USB clock above
+    // is the free-running HSI48, and DS13313 Table 35 gives its accuracy as
+    // ACCHSI48_REL = -4.5% .. +3.5% over TJ = -40..125 C (47.5..48.5 MHz even at
+    // room temperature). USB 2.0 full speed allows +-0.25%, so the raw oscillator
+    // is out of specification by more than an order of magnitude once the board
+    // heats up -- it only enumerates reliably on the bench because the factory
+    // trim is centred near 25 C. The Clock Recovery System locks HSI48 to the
+    // 1 kHz SOF and pulls it to the host's accuracy, which is what makes HSI48
+    // usable as a USB clock at all.
+    //
+    // STM32F407 has neither HSI48 nor CRS; c_board derives its USB clock from
+    // the crystal-fed PLL, so it is accurate by construction and has nothing to
+    // recover. Sync source USB1: the H723 exposes a single OTG_HS instance,
+    // enabled just above.
+    __HAL_RCC_CRS_CLK_ENABLE();
+    RCC_CRSInitTypeDef crs_init = {};
+    crs_init.Prescaler = RCC_CRS_SYNC_DIV1;
+    crs_init.Source = RCC_CRS_SYNC_SOURCE_USB1;
+    crs_init.Polarity = RCC_CRS_SYNC_POLARITY_RISING;
+    // 48 MHz counted over one 1 kHz SOF period, minus one.
+    crs_init.ReloadValue = __HAL_RCC_CRS_RELOADVALUE_CALCULATE(48000000U, 1000U);
+    crs_init.ErrorLimitValue = RCC_CRS_ERRORLIMIT_DEFAULT;
+    crs_init.HSI48CalibrationValue = RCC_CRS_HSI48CALIBRATION_DEFAULT;
+    HAL_RCCEx_CRSConfig(&crs_init);
+
     MX_GPIO_Init();
     MX_DMA_Init();
     // BDMA is the only DMA controller that reaches SPI6 (D3 domain), so the

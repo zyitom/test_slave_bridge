@@ -125,7 +125,29 @@ public:
         if (is_busy_.load(std::memory_order::acquire))
             return false;
 
-        if (!is_idle_)
+        // DMA completion only means the last byte reached TDR. On STM32H7 that is
+        // not the end of transmission: UART7 runs with FIFO mode enabled
+        // (HAL_UARTEx_EnableFifoMode in MX_UART7_Init) and the TXFIFO is 16 deep
+        // (DS13313 Table 5), so up to 16 more bytes can still be queued behind
+        // it -- roughly 173 us at 921600 baud, the same order as the 300 us idle
+        // window this feeds. Timing the window from DMA completion would declare
+        // the line idle while it was still transmitting, and the whole point of
+        // the checkpoint below is that idle-delimited packets stay separated.
+        //
+        // ISR.TC is the flag that actually reports "TXFIFO drained and the last
+        // stop bit sent"; start_tx_dma() clears TCF before arming, so a set TC
+        // here always refers to the transfer that just finished. STM32F407 has
+        // no TXFIFO, which is why c_board can time this from DMA completion and
+        // still be approximately right.
+        if (awaiting_line_completion_ && (hal_uart_handle_->Instance->ISR & USART_ISR_TC) != 0U) {
+            awaiting_line_completion_ = false;
+            tx_complete_timepoint_ = timer::timer->timepoint();
+        }
+
+        // Only the idle window waits on the line draining. Queuing the next chunk
+        // behind a partially full TXFIFO is harmless and keeps throughput up, so
+        // the dequeue itself is not gated on TC.
+        if (!is_idle_ && !awaiting_line_completion_)
             is_idle_ =
                 timer::timer->check_expired(tx_complete_timepoint_, std::chrono::microseconds(300));
 
@@ -198,7 +220,11 @@ public:
     void tx_complete_callback() {
         // DMA writes the last byte into the UART TDR, then stop DMA requests from UART.
         ATOMIC_CLEAR_BIT(hal_uart_handle_->Instance->CR3, USART_CR3_DMAT);
+        // Provisional stamp; try_dequeue() replaces it with the instant ISR.TC
+        // reports the line actually drained. Both writes are published by the
+        // release store below and read after the matching acquire load.
         tx_complete_timepoint_ = timer::timer->timepoint();
+        awaiting_line_completion_ = true;
         is_busy_.store(false, std::memory_order::release);
     }
 
@@ -206,6 +232,10 @@ public:
         ATOMIC_CLEAR_BIT(hal_uart_handle_->Instance->CR3, USART_CR3_DMAT);
         core::utility::assert_debug_lazy([]() noexcept { return false; });
         tx_complete_timepoint_ = timer::timer->timepoint();
+        // The transfer was aborted mid-flight, so TC carries no useful boundary
+        // here; fall back to timing the idle window from the abort itself rather
+        // than risk waiting on a flag that may describe a partial frame.
+        awaiting_line_completion_ = false;
         is_busy_.store(false, std::memory_order::release);
     }
 
@@ -264,6 +294,9 @@ private:
     bool idle_boundary_before_in_{false};
     bool trailing_boundary_segmentable_{false};
     bool is_idle_{true};
+    // Set by the DMA completion interrupt, cleared by try_dequeue() once ISR.TC
+    // confirms the TXFIFO and shift register are empty. See the comment there.
+    bool awaiting_line_completion_{false};
     timer::Timer::TimePoint tx_complete_timepoint_{timer::Timer::TimePoint::min()};
 
     utility::RingBuffer<IndexType, kMaxIdleCheckpointCount> idle_checkpoints_;
