@@ -76,6 +76,24 @@ endif()
 
 # Same switch and same default as rmcs_board's: OFF, because it adds counters to
 # the CAN forwarding hot path and occupies DataId::kUart0 on the uplink.
+# Main-loop section timing on the kUart0 uplink, using the DWT cycle counter.
+# OFF by default: it costs about one counter read per section boundary, and it
+# shares DataId::kUart0 with LIBRMCS_APP_CAN_DIAG, so the two are mutually
+# exclusive.
+# RS-485 port on USART2 (hardware Driver Enable on PD4). OFF by default: the
+# board does not currently have a transceiver in use, and the port occupies
+# DataId::kUart0 -- the same slot the two diagnostic channels below emit on.
+# Needs the USART2 DMA entries in mc02_slave.ioc to have been regenerated.
+option(LIBRMCS_APP_RS485_ENABLE "Expose the USART2 RS-485 port as UART0" OFF)
+if(LIBRMCS_APP_RS485_ENABLE)
+    target_compile_definitions(mc02_app PRIVATE LIBRMCS_APP_RS485_ENABLE=1)
+endif()
+
+option(LIBRMCS_APP_LOOP_PROFILE "Emit main-loop section timing on the kUart0 uplink" OFF)
+if(LIBRMCS_APP_LOOP_PROFILE)
+    target_compile_definitions(mc02_app PRIVATE LIBRMCS_APP_LOOP_PROFILE=1)
+endif()
+
 option(LIBRMCS_APP_CAN_DIAG "Emit CAN telemetry on the kUart0 uplink" OFF)
 if(LIBRMCS_APP_CAN_DIAG)
     target_compile_definitions(mc02_app PRIVATE LIBRMCS_APP_CAN_DIAG=1)

@@ -205,8 +205,6 @@ public:
             RxBuffer::rx_error_callback();
     }
 
-    void rx_dma_tc_callback() { RxBuffer::dma_tc_callback(); }
-
     void rx_dma_error_callback() {
         flag_dma_error();
         RxBuffer::rx_error_callback();
@@ -217,8 +215,6 @@ public:
     void rx_event_callback() { RxBuffer::uart_idle_event_callback(); }
 
 private:
-    static void hal_rx_dma_tc_callback(DMA_HandleTypeDef* hal_dma_handle);
-
     static void hal_rx_dma_error_callback(DMA_HandleTypeDef* hal_dma_handle);
 
     static void hal_tx_dma_complete_callback(DMA_HandleTypeDef* hal_dma_handle);
@@ -255,8 +251,6 @@ public:
             RxBuffer::rx_error_callback();
     }
 
-    void rx_dma_tc_callback() { RxBuffer::dma_tc_callback(); }
-
     void rx_dma_error_callback() {
         flag_dma_error();
         RxBuffer::rx_error_callback();
@@ -265,14 +259,57 @@ public:
     void rx_event_callback() { RxBuffer::uart_idle_event_callback(); }
 
 private:
-    static void hal_rx_dma_tc_callback(DMA_HandleTypeDef* hal_dma_handle);
-
     static void hal_rx_dma_error_callback(DMA_HandleTypeDef* hal_dma_handle);
 };
 
-inline constinit Uart::Lazy uart1{data::DataId::kUart1, &huart1};
-inline constinit Uart::Lazy uart2{data::DataId::kUart2, &huart7};
-inline constinit Uart::Lazy uart3{data::DataId::kUart3, &huart10};
-inline constinit UartRxOnly::Lazy uart_dbus{data::DataId::kUartDbus, &huart5};
+// In D2 SRAM (.d2_sram, 0x30000000). Each object carries its own DMA rings, and
+// DMA1 -- which drives all four RX streams and the three TX streams -- is a
+// D2-domain master: keeping the rings in D2 SRAM keeps every transfer inside the
+// domain instead of crossing the D2-to-D1 interconnect to the AXI SRAM and
+// contending there with the M7. See the .d2_sram comment in
+// bsp/linker/STM32H723VGTx_APP.ld for the second reason (AXI SRAM headroom under
+// the non-cacheable MPU window) and for what app.cpp has to do at boot.
+//
+// Do NOT move these into .dtcm the way can.hpp places its objects: DTCM is
+// reachable only by the core, so a DMA stream targeting it silently transfers
+// nothing.
+[[gnu::section(".d2_sram")]] inline constinit Uart::Lazy uart1{data::DataId::kUart1, &huart1};
+[[gnu::section(".d2_sram")]] inline constinit Uart::Lazy uart2{data::DataId::kUart2, &huart7};
+[[gnu::section(".d2_sram")]] inline constinit Uart::Lazy uart3{data::DataId::kUart3, &huart10};
+[[gnu::section(".d2_sram")]] inline constinit UartRxOnly::Lazy uart_dbus{
+    data::DataId::kUartDbus, &huart5};
+
+// RS-485 port on USART2, off by default.
+//
+// Nothing about the driver differs from the ports above: the transceiver's
+// direction pin is driven by the USART itself, not by software. CubeMX wires
+// PD4 as USART2_DE and MX_USART2_UART_Init calls HAL_RS485Ex_Init, which sets
+// CR3.DEM -- the hardware then asserts DE before the start bit and releases it
+// after the stop bit, so the same Uart, the same RxBuffer and the same TxBuffer
+// work unchanged. STM32F407's USART has no DEM/DEP at all, which is why c_board
+// could never do this without a GPIO and software timing.
+//
+// Three things still need attention before trusting it on a real bus:
+//
+//   - Half-duplex echo. A 2-wire bus feeds your own transmission back into your
+//     own receiver unless the transceiver's /RE follows DE. The .ioc assigns no
+//     RE pin, so the board either ties /RE to DE or uses an auto-direction
+//     transceiver -- confirm against the schematic, because if the receiver
+//     stays enabled every byte sent is also forwarded upstream as received.
+//   - Turnaround. HAL_RS485Ex_Init is generated with DEAT = DEDT = 0, CubeMX's
+//     default rather than a decision. RS-485 normally wants a deassertion delay
+//     of a sample time or two so the final bit is fully driven before the line
+//     is released.
+//   - Bus arbitration. TxBuffer's idle checkpoints keep packet boundaries
+//     intact, which on a shared bus also has to mean "do not start talking while
+//     the peer is answering". The 300 us window is a starting point, not a
+//     protocol-correct turnaround time.
+//
+// Uses DataId::kUart0, the one channel slot mc02 leaves free -- which is also
+// what diag/can_diag.cpp and diag/loop_profile.cpp emit on, hence the guard in
+// app/CMakeLists.txt making the three mutually exclusive.
+#if defined(LIBRMCS_APP_RS485_ENABLE) && LIBRMCS_APP_RS485_ENABLE
+[[gnu::section(".d2_sram")]] inline constinit Uart::Lazy uart0{data::DataId::kUart0, &huart2};
+#endif
 
 } // namespace librmcs::firmware::uart

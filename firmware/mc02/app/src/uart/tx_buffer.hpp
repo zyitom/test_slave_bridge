@@ -126,13 +126,14 @@ public:
             return false;
 
         // DMA completion only means the last byte reached TDR. On STM32H7 that is
-        // not the end of transmission: UART7 runs with FIFO mode enabled
-        // (HAL_UARTEx_EnableFifoMode in MX_UART7_Init) and the TXFIFO is 16 deep
-        // (DS13313 Table 5), so up to 16 more bytes can still be queued behind
-        // it -- roughly 173 us at 921600 baud, the same order as the 300 us idle
-        // window this feeds. Timing the window from DMA completion would declare
-        // the line idle while it was still transmitting, and the whole point of
-        // the checkpoint below is that idle-delimited packets stay separated.
+        // not the end of transmission: every port runs with FIFO mode enabled
+        // (RxBuffer::enable_fifo_mode, which explains why that decision lives in
+        // the driver) and the TXFIFO is 16 deep (DS13313 Table 5), so up to 16
+        // more bytes can still be queued behind it -- roughly 173 us at 921600
+        // baud, the same order as the 300 us idle window this feeds. Timing the
+        // window from DMA completion would declare the line idle while it was
+        // still transmitting, and the whole point of the checkpoint below is that
+        // idle-delimited packets stay separated.
         //
         // ISR.TC is the flag that actually reports "TXFIFO drained and the last
         // stop bit sent"; start_tx_dma() clears TCF before arming, so a set TC
@@ -229,7 +230,10 @@ public:
     }
 
     void tx_error_callback() {
+        // Order matters: stop the DMA requests first, so nothing refills the
+        // TXFIFO between the clear and the flush below.
         ATOMIC_CLEAR_BIT(hal_uart_handle_->Instance->CR3, USART_CR3_DMAT);
+        flush_tx_fifo();
         core::utility::assert_debug_lazy([]() noexcept { return false; });
         tx_complete_timepoint_ = timer::timer->timepoint();
         // The transfer was aborted mid-flight, so TC carries no useful boundary
@@ -256,6 +260,22 @@ private:
         dma->XferAbortCallback = nullptr;
     }
 
+    // Discard whatever the aborted transfer left in the 16-entry TXFIFO, the
+    // mirror of RxBuffer::flush_rx_fifo().
+    //
+    // A TX DMA error stops the transfer part-way, but the bytes already handed to
+    // the peripheral are still queued: clearing CR3.DMAT only stops new requests.
+    // Without this they would go out ahead of the next packet, so a downstream
+    // device that delimits on idle would see the tail of a dead frame glued to
+    // the head of a live one -- and the checkpoint machinery above, which exists
+    // precisely to keep those frames apart, would have no way to know.
+    //
+    // STM32F407 has no request register at all, so c_board cannot do this; it is
+    // also why the gap was easy to miss when the ring buffers were ported over.
+    // It applies to every port now that enable_fifo_mode() turns the FIFO on
+    // everywhere, rather than only to the two ports CubeMX had it enabled for.
+    void flush_tx_fifo() const { WRITE_REG(hal_uart_handle_->Instance->RQR, USART_RQR_TXFRQ); }
+
     void start_tx_dma(const uint8_t* data, uint16_t size) {
         auto* dma = tx_dma_handle();
         bind_tx_dma_callbacks();
@@ -277,8 +297,9 @@ private:
     void (*dma_complete_callback_)(DMA_HandleTypeDef*);
     void (*dma_error_callback_)(DMA_HandleTypeDef*);
 
-    // Both buffers land in .bss -> AXI SRAM, which MPU region 0 maps as
-    // non-cacheable, so the DMA sees these writes without cache maintenance.
+    // Both buffers sit inside the port object, which uart.hpp places in
+    // .d2_sram -- D2 SRAM at 0x30000000, mapped non-cacheable by MPU region 1
+    // (app.cpp), so the DMA sees these writes without cache maintenance.
     alignas(uint32_t) std::array<std::byte, kBufferSize> ring_buffer_{};
     alignas(uint32_t) std::array<std::byte, kStagingBufferSize> staging_buffer_{};
 

@@ -3,7 +3,7 @@
 > **文档类型**：现行规范（板级）
 > **适用范围**：`firmware/mc02/`，DM-MC02 / CtrBoard-H7（STM32H723VGT6）
 > **状态**：现行有效
-> **相关文档**：[仓库根 AGENTS.md](../../AGENTS.md) · [本目录 README.md](README.md)（外设与低延迟设计） · [仓库根 README.md](../../README.md)（烧录流程）
+> **相关文档**：[仓库根 AGENTS.md](../../AGENTS.md) · [本目录 README.md](README.md)（外设与低延迟设计） · [UART_RING_LOG.md](UART_RING_LOG.md)（UART 实录与实测） · [仓库根 README.md](../../README.md)（烧录流程）
 
 > 本目录专属指南，叠加在仓库根 `AGENTS.md` 之上。深入的外设/时钟/低延迟设计见本目录 `README.md`，此处只列 agent 关键点。
 
@@ -25,6 +25,37 @@ cmake --build firmware/mc02/build --target mc02_app mc02_bootloader
 ```
 - preset：`debug` / `release`。target：`mc02_app`、`mc02_bootloader`。
 
+### build 目录已存在时，`option()` 的默认值不生效 [实测 2026-08-12]
+
+`cmake --preset debug` 在**已有** `firmware/mc02/build/` 上运行时**沿用旧 cache**，
+`app/CMakeLists.txt` 里 `option(... ON)` 的默认值不会被应用。曾经因此整整一轮测试都跑在
+一个自以为是 ON、实际是 OFF 的配置上，连带做出错误结论。
+
+改开关必须显式传：
+
+```bash
+cmake -DLIBRMCS_APP_IMU_ENABLE=ON firmware/mc02/build && cmake --build firmware/mc02/build --target mc02_app
+```
+
+核对当前生效值：
+
+```bash
+grep LIBRMCS_APP firmware/mc02/build/CMakeCache.txt
+arm-none-eabi-nm firmware/mc02/build/app/mc02_app.elf | grep -c bmi088   # IMU: OFF=3, ON=57
+```
+
+## 编译开关
+
+全部定义在 `app/CMakeLists.txt`，默认值即下表。**后三个都占用 `DataId::kUart0`，互斥。**
+
+| 开关 | 默认 | 作用 |
+|---|---|---|
+| `LIBRMCS_APP_IMU_ENABLE` | ON | BMI088 初始化与采样 |
+| `LIBRMCS_APP_USB_DWC2_DMA` | OFF | DWC2 控制器内部 DMA（省掉 USB 中断里的 FIFO 拷贝） |
+| `LIBRMCS_APP_RS485_ENABLE` | OFF | 把 USART2 的 RS-485 口暴露为 UART0；需 `.ioc` 的 USART2 DMA 已 Generate |
+| `LIBRMCS_APP_LOOP_PROFILE` | OFF | 主循环分段耗时（DWT）在 kUart0 上以 ASCII 输出 |
+| `LIBRMCS_APP_CAN_DIAG` | OFF | CAN 遥测记录在 kUart0 上输出 |
+
 ## 目录结构
 - `app/`、`bootloader/`：两套独立镜像。`app/src/app.cpp` 提供自己的 `main()`，直接驱动生成的 `*_Config()` / `MX_*_Init()`。
 - `bsp/cubemx/`：CubeMX 生成产物。`bsp/linker/`：手维护链接脚本（如 `STM32H723VGTx_APP.ld`，含 `.itcm` 热路径段）。
@@ -34,6 +65,9 @@ cmake --build firmware/mc02/build --target mc02_app mc02_bootloader
 - USB：OTG_HS 跑 **Full-Speed**（LQFP100 无 HS PHY 引出）；吞吐杠杆在 CAN 侧（CAN-FD），不是 USB。
 - CAN：FDCAN1/2/3 常驻 FD+BRS，逐帧按 host `is_fdcan` 切换，不做 INIT 重配。
 - 热路径 `Can::handle_uplink/handle_downlink/try_transmit` 等放 `.itcm`，启动时从 FLASH 拷入。
+- UART：四个口各一条**永不停的整环 circular DMA**，写指针由主循环读 `NDTR` 推导，不由中断维护。端口对象（含 DMA 环）放 `.d2_sram`，启动时从 FLASH 拷入，MPU region 1 在 `app.cpp` 里设为非缓存。**不要给 UART 的 DMA 开 FIFO/burst**——`NDTR` 只统计到 DMA FIFO，写指针会算错。
+- UART 错误策略：`CR3.OVRDIS=1`、**`CR3.DDRE=0`**、`CR3.EIE=0`。`DDRE` 是"出错时禁用 DMA"，**置 1 会让一个坏字符永久杀死端口**——细节见 [UART_RING_LOG.md](UART_RING_LOG.md) 第 1 章。
+- 实测吞吐天花板约 **800 KB/s 聚合**（USB Full-Speed 决定），781 KB/s 时零丢失；主循环在满过载下仍有约 10 倍余量。
 
 ## 不要用 HAL_RCCEx_GetPeriphCLKFreq() 取 UART 内核时钟 [实测 2026-08-05]
 

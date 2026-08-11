@@ -162,6 +162,35 @@ SECTIONS
         _edtcm = .;
     } >DTCMRAM AT> FLASH
 
+    /* The four UART port objects, each carrying its DMA rings.
+     *
+     * DMA1 and DMA2 are D2-domain masters. Reaching the AXI SRAM at 0x24000000
+     * means crossing the D2-to-D1 interconnect for every byte and contending
+     * with the M7's own AXI traffic; SRAM1/SRAM2 at 0x30000000 are on the D2 AHB
+     * matrix the streams already sit on, so the transfers stay inside the
+     * domain. (DTCM is not an option: DMA1/DMA2 cannot reach it at all -- that
+     * is why .dtcm above is restricted to CPU-only structures.)
+     *
+     * The second effect is the one that shows up in the link: these objects
+     * total ~18.7 KB and were in .data, which is what pushed AXI .data+.bss to
+     * 26 KB against the 32 KB non-cacheable MPU window asserted at the end of
+     * this file. Moving them out drops that to about 7 KB. FLASH cost is
+     * unchanged -- the load image was already being paid for in .data.
+     *
+     * Loaded from FLASH and copied at boot by app.cpp, which also enables the
+     * D2 SRAM clocks first and installs the MPU region that makes this range
+     * non-cacheable. Nothing here may be touched before that copy runs. */
+    _sid2sram = LOADADDR(.d2_sram);
+    .d2_sram :
+    {
+        . = ALIGN(32);
+        _sd2sram = .;
+        *(.d2_sram)
+        *(.d2_sram*)
+        . = ALIGN(32);
+        _ed2sram = .;
+    } >RAM_D2 AT> FLASH
+
     .tbss (NOLOAD) : ALIGN(4)
     {
         _sbss = .;
@@ -218,21 +247,31 @@ SECTIONS
     }
 }
 
-/* Every DMA buffer on this board (the four UART rings, the USB endpoint buffers,
- * the SPI transfer buffers) lives in .data or .bss, so all of them sit below
- * _ebss. MPU region 0 -- Core/Src/main.c MPU_Config -- maps only the first 32 KB
- * of AXI SRAM as non-cacheable, which is what keeps DMA writes visible to the
- * CPU without explicit cache maintenance.
+/* DMA buffers that remain in AXI SRAM (the USB endpoint buffers and the SPI
+ * transfer buffers) live in .data or .bss, so they sit below _ebss. MPU region 0
+ * -- Core/Src/main.c MPU_Config -- maps the first 32 KB of AXI SRAM as
+ * non-cacheable, which is what keeps DMA writes visible to the CPU without
+ * explicit cache maintenance.
  *
- * Nothing pins those buffers below that line: today they fit only because
- * .data + .bss happen to end around 24.7 KB. Adding globals could push a ring
- * past 0x24008000, where the D-cache would start serving the core stale copies
- * of DMA-written bytes -- silent corruption, and invisible to a UART7 <-> UART10
- * loopback because both ends would corrupt identically only by luck. Turn that
- * into a link error instead.
+ * Nothing in the toolchain pins those buffers below that line, so a buffer that
+ * drifted past 0x24008000 would have the D-cache serving the core stale copies
+ * of DMA-written bytes -- silent corruption, and invisible to a two-board UART
+ * test because both ends would have to corrupt identically to compare equal.
+ * Turn it into a link error instead.
+ *
+ * The UART rings are no longer counted here: they moved to .d2_sram above. That
+ * left roughly 25 KB of headroom under the 32 KB line rather than the 6 KB this
+ * assert used to leave.
  *
  * ._user_heap_stack sits above _ebss and may cross the line freely: _estack is
  * in DTCM (see the top of this file) and no DMA touches the heap. */
 ASSERT(
     _ebss <= ORIGIN(RAM) + 32K,
-    "AXI SRAM .data+.bss exceeds the 32 KB non-cacheable MPU region 0; DMA buffers past 0x24008000 would lose cache coherency. Either shrink .data/.bss, enlarge MPU region 0 in CubeMX, or move the DMA buffers into a dedicated section.")
+    "AXI SRAM .data+.bss exceeds the 32 KB non-cacheable MPU region 0; DMA buffers past 0x24008000 would lose cache coherency. Either shrink .data/.bss, enlarge MPU region 0 in CubeMX, or move the DMA buffers into .d2_sram.")
+
+/* D2 SRAM is 32 KB and holds whole port objects, so overflowing it is easy to do
+ * by adding a port or growing a ring. The linker would report a region overflow
+ * anyway; this names the section so the message says which one. */
+ASSERT(
+    _ed2sram - _sd2sram <= LENGTH(RAM_D2),
+    ".d2_sram exceeds the 32 KB D2 SRAM. Shrink the UART rings or move a port back to AXI SRAM.")

@@ -34,10 +34,12 @@ public:
     // context.
     //
     // The tick MUST be a millisecond count, not a loop-iteration count: run()
-    // spins at roughly 380 kHz, so counting iterations ran every pattern ~380x
-    // too fast -- the buffer-full blink landed near 1.5 kHz and the breathing
-    // cycle near 190 Hz, both far above flicker fusion, so each one read as a
-    // steady half-brightness colour rather than an animation. Gating here also
+    // spins at 69-85 kHz depending on build options and load (measured with
+    // LIBRMCS_APP_LOOP_PROFILE; an earlier version of this comment said 380 kHz,
+    // which was never measured and is out by about 4.5x). Counting iterations
+    // therefore ran every pattern tens of times too fast -- the buffer-full blink
+    // and the breathing cycle both landed far above flicker fusion, so each read
+    // as a steady half-brightness colour rather than an animation. Gating here also
     // makes the 5000-count reset windows below span the 5 seconds their
     // magnitude implies instead of 13 ms, and stops the WS2812 frame from being
     // re-sent thousands of times a second.
