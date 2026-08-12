@@ -52,6 +52,19 @@ enum class DataId : uint8_t {
     kUart1Config = 27,
     kUart2Config = 28,
     kUart3Config = 29,
+
+    // A fifth UART channel, added after kUart0..3 were all spoken for. Appended
+    // rather than renumbered so the ids above keep their wire values; a board
+    // that does not implement these simply rejects them, and a host only sends
+    // them to a board whose interface declares them.
+    //
+    // Named for what the protocol carries -- a UART byte stream -- not for the
+    // physical layer underneath it. Whether a port is TTL, RS-485 or anything
+    // else is a property of the board, so it is the board's host interface that
+    // gives it a name (mc02 surfaces kUart0 and kUart4 as rs485_1 / rs485_2).
+    // Every other board reuses these ids for whatever its fifth UART is.
+    kUart4 = 30,
+    kUart4Config = 31,
 };
 
 enum class SessionType : uint8_t {

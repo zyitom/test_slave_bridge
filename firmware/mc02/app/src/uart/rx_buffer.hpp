@@ -60,12 +60,18 @@ namespace librmcs::firmware::uart {
 //
 // The consumer runs in the main loop (try_dequeue), so the interrupt path only
 // bumps a counter and never touches USB.
-template <typename T>
+// buffer_size is the ring, and what it has to cover is one thing only: the
+// consumer must come back before the DMA laps it. The default suits a port
+// carrying a continuous stream. A port that only ever sees short
+// request/response transactions needs far less, and on this board the ring is
+// charged against a 32 KB region -- see the sizes chosen at the bottom of
+// uart.hpp for the two RS-485 ports.
+template <typename T, size_t buffer_size = 2048>
 class RxBuffer {
     friend T;
 
 public:
-    static constexpr size_t kBufferSize = 2048;
+    static constexpr size_t kBufferSize = buffer_size;
     static constexpr size_t kBufferMask = kBufferSize - 1;
     static_assert((kBufferSize & (kBufferSize - 1)) == 0);
     using IndexType = uint16_t;
@@ -75,6 +81,11 @@ public:
     static constexpr size_t kProtocolMaxPayloadSize =
         core::protocol::kProtocolBufferSize - sizeof(core::protocol::UartHeaderExtended);
     static_assert(0 < kMinFragmentSize && kMinFragmentSize <= kProtocolMaxPayloadSize);
+    // Below this the ring could not even hold the bytes try_dequeue() waits for
+    // before forwarding a non-idle fragment, so it would stall instead of
+    // batching. Half the ring is also where sample_write_position()'s
+    // fallen-behind assert sits, so leave clear room under it.
+    static_assert(kMinFragmentSize * 4 <= kBufferSize);
 
     bool try_dequeue() {
         // Sample the idle counter BEFORE the write position. The IDLE interrupt
@@ -365,6 +376,15 @@ private:
         // what restart_rx_dma() now exists for.
         ATOMIC_SET_BIT(hal_uart_handle_->Instance->CR3, USART_CR3_DMAR);
         ATOMIC_SET_BIT(hal_uart_handle_->Instance->CR1, USART_CR1_IDLEIE);
+    }
+
+    // Published for the half-duplex turnaround gate in TxBuffer, which uses a
+    // change in this counter as "the peer has finished answering". Relaxed
+    // rather than acquire because only the change matters here: nothing is
+    // published through the counter, unlike try_dequeue() above, which acquires
+    // it precisely to pair the boundary with ring contents.
+    [[nodiscard]] uint16_t idle_count() const {
+        return idle_count_.load(std::memory_order::relaxed);
     }
 
     void uart_idle_event_callback() {

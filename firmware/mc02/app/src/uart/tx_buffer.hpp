@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <type_traits>
 
 #include <main.h>
 #include <usart.h>
@@ -30,18 +31,64 @@ namespace librmcs::firmware::uart {
 // packet framing intact for devices that delimit on idle. The old path simply
 // concatenated whatever had accumulated into a single DMA burst and dropped the
 // flag on the floor.
+//
+// half_duplex is the single thing that varies between a port that owns its
+// transmit line and one sharing two wires with every other node on a bus. It is
+// a bare bool rather than a policy type because on this board there is exactly
+// one such distinction and it is inherent to RS-485: the only half-duplex ports
+// are the two RS-485 transceivers, and no third duplex mode is possible. Every
+// branch it guards sits behind `if constexpr`, so TxBuffer<false> compiles to
+// exactly what this class was before the parameter existed -- no extra test, no
+// extra load, no extra storage, and try_dequeue() keeps its zero-argument form.
+// The three sizes default to what a streaming port wants. A port carrying short
+// request/response transactions needs a fraction of it, and on this board every
+// byte is charged against a 32 KB region -- see the values chosen for the two
+// RS-485 ports at the bottom of uart.hpp.
+//
+// staging_size deserves attention when tuning them: try_dequeue() clamps every
+// chunk to it, so a packet longer than staging_size leaves in two DMA bursts
+// with a main-loop gap between them. On a stream that is invisible, but on a
+// half-duplex bus it puts silence in the middle of a frame and the peer's
+// framing breaks. Keeping staging_size equal to buffer_size makes that
+// impossible, since a packet that fits the ring then always fits one burst.
+template <
+    bool half_duplex, size_t buffer_size = 2048, size_t staging_size = 1024,
+    size_t checkpoint_count = 256>
 class TxBuffer {
 public:
-    static constexpr size_t kBufferSize = 2048;
+    // Ceiling on how long a half-duplex port stays quiet waiting to be answered.
+    //
+    // RS-485 provides no arbitration whatsoever: its drivers are push-pull, so
+    // unlike CAN's wired-AND there is no way for a losing talker to back off, and
+    // two nodes transmitting at once simply destroy each other's data. Nor can
+    // this port listen before talking -- the transceiver's RE# is tied to DE, so
+    // it is deaf for exactly as long as it drives. Collision avoidance is
+    // therefore pure bookkeeping by the one master: having sent a request, stay
+    // quiet until the addressed node has answered.
+    //
+    // Deliberately generous, because it only governs the case where no answer is
+    // ever coming -- an absent node, a rejected frame, or a protocol's broadcast
+    // address, which such protocols usually define as unanswered precisely
+    // because N nodes replying at once would collide. Whenever the peer does
+    // answer, the IDLE event releases the port early and this value is never
+    // reached, so erring large costs nothing on the working path while erring
+    // small would collide. Unused when half_duplex is false.
+    static constexpr auto kTurnaroundDeadline = std::chrono::microseconds(1000);
+
+    static constexpr size_t kBufferSize = buffer_size;
     static constexpr size_t kBufferMask = kBufferSize - 1;
     static_assert((kBufferSize & (kBufferSize - 1)) == 0);
     using IndexType = uint16_t;
     static_assert(kBufferSize <= std::numeric_limits<IndexType>::max());
 
-    static constexpr size_t kStagingBufferSize = 1024;
+    static constexpr size_t kStagingBufferSize = staging_size;
     static_assert(kStagingBufferSize <= std::numeric_limits<IndexType>::max());
+    static_assert(kStagingBufferSize <= kBufferSize);
+    // A half-duplex port must never split a packet, so its staging buffer has to
+    // cover anything the ring can hold. See the note above the template.
+    static_assert(!half_duplex || kStagingBufferSize == kBufferSize);
 
-    static constexpr size_t kMaxIdleCheckpointCount = 256;
+    static constexpr size_t kMaxIdleCheckpointCount = checkpoint_count;
     static_assert((kMaxIdleCheckpointCount & (kMaxIdleCheckpointCount - 1)) == 0);
 
     explicit TxBuffer(
@@ -68,7 +115,20 @@ public:
 
         const auto offset = in & kBufferMask;
 
-        if (data_view.idle_delimited) {
+        // On a half-duplex port every enqueued packet is one bus transaction, so
+        // it becomes a boundary whether or not the host asked for one. The flag
+        // cannot be trusted to carry this: idle_delimited means "this device
+        // frames on silence", which is false for a protocol like Unitree's that
+        // carries a sync header, a fixed length and a CRC -- a host driving such
+        // a device has every reason to leave it clear. Were the boundary to
+        // depend on it, three queued commands would leave the ring as one
+        // contiguous DMA burst and the second would go out while the first
+        // node was still answering, which on two shared wires means both frames
+        // are destroyed. Turnaround is a property of the port, not a per-packet
+        // request, so it is decided here.
+        const bool delimited = half_duplex || data_view.idle_delimited;
+
+        if (delimited) {
             const auto begin_boundary = in;
             const auto end_boundary = static_cast<IndexType>(in + static_cast<IndexType>(size));
 
@@ -103,7 +163,7 @@ public:
             const auto slice = std::min(size, kBufferSize - offset);
             const bool wrapped = size != slice;
             if (wrapped)
-                trailing_boundary_segmentable_ = !data_view.idle_delimited;
+                trailing_boundary_segmentable_ = !delimited;
 
             std::memcpy(ring_buffer_.data() + offset, data_view.uart_data.data(), slice);
             std::memcpy(ring_buffer_.data(), data_view.uart_data.data() + slice, size - slice);
@@ -112,16 +172,21 @@ public:
                 static_cast<IndexType>(in + static_cast<IndexType>(size)),
                 std::memory_order::release);
 
-            idle_boundary_before_in_ = data_view.idle_delimited;
+            idle_boundary_before_in_ = delimited;
         } else {
             // Zero-length non-idle packets should not clear an existing boundary.
-            idle_boundary_before_in_ |= data_view.idle_delimited;
+            idle_boundary_before_in_ |= delimited;
         }
 
         return true;
     }
 
-    bool try_dequeue() {
+    // peer_idle_count is RxBuffer's IDLE counter, and is read only by the
+    // half-duplex instantiation -- the owning port passes it under its own
+    // `if constexpr` so the full-duplex path never even performs the atomic load
+    // behind it. The default keeps the zero-argument call form for that path,
+    // where the parameter is unreferenced and disappears when this inlines.
+    bool try_dequeue(uint16_t peer_idle_count = 0) {
         if (is_busy_.load(std::memory_order::acquire))
             return false;
 
@@ -148,9 +213,27 @@ public:
         // Only the idle window waits on the line draining. Queuing the next chunk
         // behind a partially full TXFIFO is harmless and keeps throughput up, so
         // the dequeue itself is not gated on TC.
-        if (!is_idle_ && !awaiting_line_completion_)
-            is_idle_ =
-                timer::timer->check_expired(tx_complete_timepoint_, std::chrono::microseconds(300));
+        if (!is_idle_ && !awaiting_line_completion_) {
+            if constexpr (half_duplex) {
+                // Bus turnaround, not frame spacing. The peer raising IDLE means
+                // it has finished answering and the two wires are free again, so
+                // release on that as soon as it happens and fall back on the
+                // deadline only when no answer is coming at all. Taking the
+                // earlier of the two is what makes the deadline safe to set
+                // generously: it governs the broadcast and absent-node cases and
+                // never delays a working exchange.
+                //
+                // The IDLE counter is produced by hardware the port is otherwise
+                // not using -- CR1.IDLEIE is already enabled for RxBuffer's
+                // framing, so this costs no extra interrupt, no extra register
+                // access, and needs no knowledge of what the peer said.
+                is_idle_ = peer_idle_count != peer_idle_count_at_tx_
+                        || timer::timer->check_expired(tx_complete_timepoint_, kTurnaroundDeadline);
+            } else {
+                is_idle_ = timer::timer->check_expired(
+                    tx_complete_timepoint_, std::chrono::microseconds(300));
+            }
+        }
 
         core::utility::assert_debug_lazy(
             [&]() noexcept { return (tx_dma_stream()->CR & DMA_SxCR_EN) == 0U; });
@@ -190,6 +273,18 @@ public:
         } while (true);
         is_idle_ = false;
         is_busy_.store(true, std::memory_order::relaxed);
+        // Baseline for the turnaround gate, taken where the port commits to
+        // transmitting rather than where the transmission finishes. Nothing can
+        // slip between the two: DE goes high with the start bit and RE# is tied
+        // to it, so the receiver is deaf for the whole transfer and cannot count
+        // an IDLE during it. Taking it here instead keeps the baseline correct
+        // when tx_error_callback() ends a transfer early -- that path runs in the
+        // DMA error interrupt and has no peer count to record, and a baseline
+        // left over from the previous exchange would let the very next poll
+        // mistake a stale IDLE for this exchange's answer and release the bus
+        // while the far end was still driving it.
+        if constexpr (half_duplex)
+            peer_idle_count_at_tx_ = peer_idle_count;
 
         const auto offset = out & kBufferMask;
         const auto slice = std::min(size, kBufferSize - offset);
@@ -318,6 +413,16 @@ private:
     // Set by the DMA completion interrupt, cleared by try_dequeue() once ISR.TC
     // confirms the TXFIFO and shift register are empty. See the comment there.
     bool awaiting_line_completion_{false};
+    // RxBuffer's IDLE counter as of the moment our own transmission left the
+    // line. Only the half-duplex instantiation has anything to store here, so
+    // the full-duplex one gets an empty type instead: with [[no_unique_address]]
+    // that occupies no storage at all, and the port objects stay byte-for-byte
+    // the size they were before this policy existed. Both statements that touch
+    // this member sit behind `if constexpr (half_duplex)`, so the empty type is
+    // never assigned to or compared.
+    struct Unused {};
+    [[no_unique_address]] std::conditional_t<half_duplex, uint16_t, Unused>
+        peer_idle_count_at_tx_{};
     timer::Timer::TimePoint tx_complete_timepoint_{timer::Timer::TimePoint::min()};
 
     utility::RingBuffer<IndexType, kMaxIdleCheckpointCount> idle_checkpoints_;

@@ -114,15 +114,22 @@ App::App() {
     __DSB();
     __ISB();
 
-    MPU_Config();
+    // Wrapper around the generated MPU_Config(), defined in main.c's
+    // USER CODE BEGIN 4. CubeMX regenerates MPU_Config's prototype as `static`
+    // outside any USER CODE block, so it cannot be declared in main.h directly;
+    // see the comment on librmcs_mpu_config in main.h.
+    librmcs_mpu_config();
     configure_d2_sram_mpu_region();
     SCB_EnableICache();
     SCB_EnableDCache();
     HAL_Init();
     SystemClock_Config();
-    // Enables PLL2 (80 MHz) and selects it as the FDCAN kernel clock for the
-    // 1 Mbit/s arbitration + 5 Mbit/s CAN-FD data phase. Generated from the .ioc;
-    // must be called here since app.cpp replaces the CubeMX main().
+    // Enables PLL2 (80 MHz) as the FDCAN kernel clock for the 1 Mbit/s
+    // arbitration + 5 Mbit/s CAN-FD data phase, and PLL3 (96 MHz) as the kernel
+    // clock for the USART2/3/4/5/7/8 group -- 96 MHz divides exactly into 4.8 M,
+    // 4 M, 2 M and 100 k, so every baudrate those ports run lands on an integer
+    // BRR with zero error. Generated from the .ioc; must be called here since
+    // app.cpp replaces the CubeMX main().
     PeriphCommonClock_Config();
 
     utility::boot_mailbox.clear();
@@ -187,9 +194,11 @@ App::App() {
 #endif
     MX_UART5_Init();
 #if defined(LIBRMCS_APP_RS485_ENABLE) && LIBRMCS_APP_RS485_ENABLE
-    // RS-485 on USART2: MX_USART2_UART_Init also runs HAL_RS485Ex_Init, which is
-    // what turns CR3.DEM on. Left out of the default build -- see uart.hpp.
+    // The two RS-485 ports. Both MX_*_Init functions also run HAL_RS485Ex_Init,
+    // which is what turns CR3.DEM on. Left out of the default build because the
+    // pair costs 11 KB of the 32 KB D2 SRAM region -- see uart.hpp.
     MX_USART2_UART_Init();
+    MX_USART3_UART_Init();
 #endif
     MX_TIM1_Init();
     MX_TIM2_Init();
@@ -198,8 +207,6 @@ App::App() {
     // Start the quarter-microsecond timestamp source before anything that stamps
     // events (UART tx timeouts, IMU data-ready EXTI, SPI uplinks).
     timer::timer.init();
-
-    HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
     led::led.init();
     gpio::gpio.init();
@@ -213,6 +220,7 @@ App::App() {
     uart::uart_dbus.init();
 #if defined(LIBRMCS_APP_RS485_ENABLE) && LIBRMCS_APP_RS485_ENABLE
     uart::uart0.init();
+    uart::uart4.init();
 #endif
 #ifdef LIBRMCS_APP_IMU_ENABLE
     spi::bmi088::accelerometer.init();
@@ -290,6 +298,8 @@ App::App() {
 #if defined(LIBRMCS_APP_RS485_ENABLE) && LIBRMCS_APP_RS485_ENABLE
         usb::vendor->try_transmit();
         uart::uart0->try_transmit();
+        usb::vendor->try_transmit();
+        uart::uart4->try_transmit();
 #endif
 
         diag::profile::end_pass();

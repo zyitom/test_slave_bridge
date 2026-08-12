@@ -176,7 +176,7 @@ protected:
 // stream wired up by CubeMX.
 class Uart
     : public UartCommon
-    , private TxBuffer
+    , private TxBuffer</*half_duplex=*/false>
     , private RxBuffer<Uart> {
     friend class RxBuffer<Uart>;
 
@@ -262,6 +262,100 @@ private:
     static void hal_rx_dma_error_callback(DMA_HandleTypeDef* hal_dma_handle);
 };
 
+// Half-duplex RS-485 port, used for USART2.
+//
+// On the wire nothing distinguishes this from Uart. CubeMX assigns PD4 as
+// USART2_DE and MX_USART2_UART_Init calls HAL_RS485Ex_Init, which sets CR3.DEM,
+// so the USART asserts DE before the start bit and releases it after the stop
+// bit with no software involvement; the schematic ties the transceiver's RE# to
+// that same net, so the receiver is disabled exactly while the driver is on and
+// the port never hears its own transmission. RxBuffer is therefore used
+// unchanged, and there is no direction GPIO anywhere in this driver. STM32F407's
+// USART has no DEM/DEP at all, which is why c_board could not have done this.
+//
+// The difference is the bus discipline, and it lives entirely in
+// TxBuffer<true> -- see the comment on kTurnaroundDeadline there. A
+// distinct type rather than a runtime flag is what keeps every branch of it out
+// of the three full-duplex ports, and it also makes it impossible to hand this
+// port to code that assumes it owns its transmit line.
+//
+// Rings an eighth the size of a streaming port's, because a bus master never has
+// more than one transaction on the wire. The ports above are sized for a device
+// that talks continuously; here the sequence is bounded by construction -- send a
+// request, stay quiet, receive one answer -- so what the ring must cover is a
+// single exchange plus slack, not a stream.
+//
+// 256 bytes is a full lap in 533 us at 4.8 Mbaud while the main loop comes back
+// every 12.5 us, a margin of 42x; sample_write_position()'s fallen-behind assert
+// sits at half a lap and still has 21x. It holds three of the 78-byte replies
+// this bus carries. On the transmit side 256 bytes is seven queued 34-byte
+// commands, and 32 checkpoints is twice as many boundaries as the ring can hold
+// packets, so neither runs out first.
+//
+// The staging buffer deliberately matches the ring rather than being smaller:
+// try_dequeue() clamps each burst to it, and a packet split across two bursts
+// would put main-loop silence in the middle of a frame -- harmless on a stream,
+// fatal to a peer that frames on the bus going quiet.
+//
+// Together this is about 890 bytes per port instead of 5696. The two ports pay
+// 1.8 KB of the 32 KB D2 SRAM region instead of 11.4 KB, which is what makes
+// having both of them affordable at all.
+inline constexpr size_t kRs485BufferSize = 256;
+inline constexpr size_t kRs485CheckpointCount = 32;
+
+class UartRs485
+    : public UartCommon
+    , private TxBuffer<
+          /*half_duplex=*/true, kRs485BufferSize, kRs485BufferSize, kRs485CheckpointCount>
+    , private RxBuffer<UartRs485, kRs485BufferSize> {
+    friend class RxBuffer<UartRs485, kRs485BufferSize>;
+
+public:
+    using Lazy = utility::Lazy<UartRs485, data::DataId, UART_HandleTypeDef*>;
+
+    UartRs485(data::DataId data_id, UART_HandleTypeDef* hal_uart_handle)
+        : UartCommon(data_id, hal_uart_handle)
+        , TxBuffer(hal_uart_handle, &hal_tx_dma_complete_callback, &hal_tx_dma_error_callback)
+        , RxBuffer(hal_uart_handle) {}
+
+    void handle_downlink(const data::UartDataView& data) {
+        if (!TxBuffer::try_enqueue(data))
+            led::led->downlink_buffer_full();
+    }
+
+    // Feeds the raw IDLE counter to the turnaround gate, deliberately not the
+    // consumed_idle_count_ bookkeeping RxBuffer::try_dequeue() keeps: whether
+    // the bus is free again depends only on the peer having stopped talking, not
+    // on whether the host has picked the bytes up yet.
+    void try_transmit() {
+        RxBuffer::try_dequeue();
+        TxBuffer::try_dequeue(RxBuffer::idle_count());
+    }
+
+    void tx_complete_callback() { TxBuffer::tx_complete_callback(); }
+
+    void uart_error_callback() {
+        if (has_rx_error())
+            RxBuffer::rx_error_callback();
+    }
+
+    void rx_dma_error_callback() {
+        flag_dma_error();
+        RxBuffer::rx_error_callback();
+    }
+
+    void tx_dma_error_callback() { TxBuffer::tx_error_callback(); }
+
+    void rx_event_callback() { RxBuffer::uart_idle_event_callback(); }
+
+private:
+    static void hal_rx_dma_error_callback(DMA_HandleTypeDef* hal_dma_handle);
+
+    static void hal_tx_dma_complete_callback(DMA_HandleTypeDef* hal_dma_handle);
+
+    static void hal_tx_dma_error_callback(DMA_HandleTypeDef* hal_dma_handle);
+};
+
 // In D2 SRAM (.d2_sram, 0x30000000). Each object carries its own DMA rings, and
 // DMA1 -- which drives all four RX streams and the three TX streams -- is a
 // D2-domain master: keeping the rings in D2 SRAM keeps every transfer inside the
@@ -279,37 +373,50 @@ private:
 [[gnu::section(".d2_sram")]] inline constinit UartRxOnly::Lazy uart_dbus{
     data::DataId::kUartDbus, &huart5};
 
-// RS-485 port on USART2, off by default.
+// RS-485 port on USART2, off by default. See UartRs485 for how it differs from
+// the ports above, and the kTurnaroundDeadline comment in tx_buffer.hpp for why.
 //
-// Nothing about the driver differs from the ports above: the transceiver's
-// direction pin is driven by the USART itself, not by software. CubeMX wires
-// PD4 as USART2_DE and MX_USART2_UART_Init calls HAL_RS485Ex_Init, which sets
-// CR3.DEM -- the hardware then asserts DE before the start bit and releases it
-// after the stop bit, so the same Uart, the same RxBuffer and the same TxBuffer
-// work unchanged. STM32F407's USART has no DEM/DEP at all, which is why c_board
-// could never do this without a GPIO and software timing.
+// Settled against schematic CtrBoard-H7_V1.0-240124 sheet 5 (transceiver U5):
 //
-// Three things still need attention before trusting it on a real bus:
+//   - No echo. Pins 2 (RE#) and 3 (DE) are tied to one net driven by
+//     USART2_DE(PD04), so the receiver is off for the whole of our own
+//     transmission and nothing we send comes back up. R11 pulls RO to 3V3
+//     meanwhile, holding the idle level so the disabled receiver cannot present
+//     a false start bit. Nothing upstream has to filter an echo.
+//   - R17 pulls the DE net low, so the port powers up receiving and never
+//     squats on the bus before software runs.
+//   - R15 fits the 120R termination on-board, between A and B at this end.
+//     Check the far end before adding another.
+//   - DEAT/DEDT are 16/16 in the .ioc, one bit time either side at 4.8 Mbaud
+//     with oversampling by 16, rather than CubeMX's default of 0.
 //
-//   - Half-duplex echo. A 2-wire bus feeds your own transmission back into your
-//     own receiver unless the transceiver's /RE follows DE. The .ioc assigns no
-//     RE pin, so the board either ties /RE to DE or uses an auto-direction
-//     transceiver -- confirm against the schematic, because if the receiver
-//     stays enabled every byte sent is also forwarded upstream as received.
-//   - Turnaround. HAL_RS485Ex_Init is generated with DEAT = DEDT = 0, CubeMX's
-//     default rather than a decision. RS-485 normally wants a deassertion delay
-//     of a sample time or two so the final bit is fully driven before the line
-//     is released.
-//   - Bus arbitration. TxBuffer's idle checkpoints keep packet boundaries
-//     intact, which on a shared bus also has to mean "do not start talking while
-//     the peer is answering". The 300 us window is a starting point, not a
-//     protocol-correct turnaround time.
+// Still unverified, and only a bench can answer:
+//
+//   - Whether re-enabling the receiver at the end of our own transmission can
+//     itself raise IDLE. It should not -- the flag needs a received character
+//     first -- but if it does, the turnaround gate would release early and
+//     collide, and the fallback is to drop the IDLE term and run on
+//     kTurnaroundDeadline alone.
+//   - Whether one bit time of DEAT is enough for this transceiver, whose part
+//     number the schematic does not give.
 //
 // Uses DataId::kUart0, the one channel slot mc02 leaves free -- which is also
 // what diag/can_diag.cpp and diag/loop_profile.cpp emit on, hence the guard in
 // app/CMakeLists.txt making the three mutually exclusive.
 #if defined(LIBRMCS_APP_RS485_ENABLE) && LIBRMCS_APP_RS485_ENABLE
-[[gnu::section(".d2_sram")]] inline constinit Uart::Lazy uart0{data::DataId::kUart0, &huart2};
+[[gnu::section(".d2_sram")]] inline constinit UartRs485::Lazy uart0{data::DataId::kUart0, &huart2};
+
+// Second RS-485 port, on USART3 through transceiver U6 -- 485_DIR1 driven by
+// USART3_DE on PB14, data on PD8/PD9, bus on connector P5. Electrically the same
+// circuit as U5 above: RE# tied to DE, R12 pulling RO to 3V3 so the disabled
+// receiver holds the idle level, R18 pulling the DE net low so the port powers
+// up receiving, and R16 fitting the 120R termination at this end.
+//
+// Uses DataId::kUart4, added to the protocol for it. kUart0 was the last free id
+// when the first port was wired up, and it is contended by the two diagnostic
+// builds, so a second port had nowhere to go until that id existed. Having one
+// of its own, this port is not mutually exclusive with anything.
+[[gnu::section(".d2_sram")]] inline constinit UartRs485::Lazy uart4{data::DataId::kUart4, &huart3};
 #endif
 
 } // namespace librmcs::firmware::uart
