@@ -108,6 +108,13 @@ protected:
 
     void handle_uplink(
         std::span<const std::byte> payload, std::span<const std::byte> payload2, bool is_idle) {
+        // Nothing written without a session survives: activate_session() clears
+        // the ring when a host arrives. RxBuffer::try_dequeue() advances out_
+        // either way, so the receive ring still drains here rather than backing
+        // up into its wrapped-around fail-fast path.
+        if (!usb::uplink_session_active())
+            return;
+
         auto& serializer = usb::get_serializer();
         core::utility::assert_always(
             serializer.write_uart(

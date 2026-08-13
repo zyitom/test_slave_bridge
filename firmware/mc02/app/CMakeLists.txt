@@ -69,6 +69,31 @@ if(LIBRMCS_APP_IMU_ENABLE)
     target_compile_definitions(mc02_app PRIVATE LIBRMCS_APP_IMU_ENABLE=1)
 endif()
 
+# Bytes one bulk OUT transfer requests. The endpoint stays a 64-byte Full-Speed
+# bulk endpoint either way; this only asks DWC2 to accept N packets back to back
+# before the device has to re-arm. 64 is the old behaviour exactly. See the
+# comment in app/include/tusb_config.h.
+#
+# 1024 measured on two boards [2026-08-12]: bulk OUT payload throughput at
+# 256-byte records, 8 per transfer, against this value --
+#
+#     64 -> 652 KB/s   128 -> 708   256 -> 856   512 -> 971
+#   1024 -> 1034 KB/s  2048 -> 1034 (saturated)
+#
+# so 1024 is the knee, +59% over the old 64, and 85% of the 1216 KB/s the
+# Full-Speed bulk schedule allows. Costs 960 bytes of AXI SRAM for the endpoint
+# buffer. Small single-record packets are unaffected either way (~22600/s at
+# every size): those are short packets, so the transfer completes on arrival and
+# never waits to fill. Round-trip latency measured unchanged (rs485_cross_test
+# ping-pong p50 3298 us at 1024 vs 3324 us at 64).
+set(LIBRMCS_APP_USB_RX_XFER_SIZE
+    "1024"
+    CACHE STRING "Bytes requested per bulk OUT transfer (multiple of 64)")
+target_compile_definitions(
+    tinyusb_app PUBLIC LIBRMCS_APP_USB_RX_XFER_SIZE=${LIBRMCS_APP_USB_RX_XFER_SIZE})
+target_compile_definitions(
+    mc02_app PRIVATE LIBRMCS_APP_USB_RX_XFER_SIZE=${LIBRMCS_APP_USB_RX_XFER_SIZE})
+
 option(LIBRMCS_APP_USB_DWC2_DMA "Use the DWC2 device controller internal DMA" OFF)
 if(LIBRMCS_APP_USB_DWC2_DMA)
     target_compile_definitions(tinyusb_app PUBLIC LIBRMCS_APP_USB_DWC2_DMA=1)
@@ -92,6 +117,18 @@ endif()
 option(LIBRMCS_APP_LOOP_PROFILE "Emit main-loop section timing on the kUart0 uplink" OFF)
 if(LIBRMCS_APP_LOOP_PROFILE)
     target_compile_definitions(mc02_app PRIVATE LIBRMCS_APP_LOOP_PROFILE=1)
+endif()
+
+# Measurement instrument for "is the main loop on the critical path". Busy-waits
+# this many DWT cycles per loop pass (550 per microsecond at 550 MHz), so
+# throughput can be plotted against loop period. 0 compiles the ballast out.
+# Never set in a shipped build.
+set(LIBRMCS_APP_LOOP_BALLAST_CYCLES
+    "0"
+    CACHE STRING "Busy-wait cycles added to each main-loop pass (0 = disabled)")
+if(NOT LIBRMCS_APP_LOOP_BALLAST_CYCLES STREQUAL "0")
+    target_compile_definitions(
+        mc02_app PRIVATE LIBRMCS_APP_LOOP_BALLAST_CYCLES=${LIBRMCS_APP_LOOP_BALLAST_CYCLES})
 endif()
 
 option(LIBRMCS_APP_CAN_DIAG "Emit CAN telemetry on the kUart0 uplink" OFF)

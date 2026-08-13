@@ -233,6 +233,26 @@ App::App() {
 [[noreturn]] void App::run() {
     while (true) {
         diag::note_main_loop();
+
+#if defined(LIBRMCS_APP_LOOP_BALLAST_CYCLES) && LIBRMCS_APP_LOOP_BALLAST_CYCLES
+        // Measurement instrument, never shipped: lengthens the main-loop period
+        // by a known number of DWT cycles (550 per microsecond at 550 MHz) so
+        // that throughput can be plotted against loop period.
+        //
+        // This is the only way to tell the two candidate bottlenecks apart. If
+        // packet rate tracks the ballast, the loop is on the critical path and
+        // code placement, memory ordering and atomics are worth optimising. If
+        // it does not move, the ceiling belongs to host scheduling and every
+        // board-side optimisation is unfalsifiable until that changes.
+        //
+        // Deliberately a busy-wait rather than a sleep: the point is to occupy
+        // the CPU exactly as real work would, leaving interrupts free to run.
+        {
+            const std::uint32_t ballast_start = DWT->CYCCNT;
+            while ((DWT->CYCCNT - ballast_start) < (LIBRMCS_APP_LOOP_BALLAST_CYCLES)) {}
+        }
+#endif
+
         diag::profile::mark(diag::profile::Section::kTudTask);
         tud_task();
         usb::poll_dfu_runtime_reboot();

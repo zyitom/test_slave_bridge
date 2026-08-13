@@ -28,6 +28,8 @@ namespace librmcs::firmware::usb {
 
 core::protocol::Serializer& get_serializer() { return vendor->serializer(); }
 
+bool uplink_session_active() { return vendor->session_established(); }
+
 // Deferred half of tud_dfu_runtime_reboot_to_dfu_cb(): resets once the control
 // transfer that requested DFU has had time to complete. Polled from the main
 // loop, so CAN/UART forwarding keeps running during the delay.
@@ -48,8 +50,14 @@ void tud_vendor_rx_cb(uint8_t itf, const uint8_t* buffer, uint32_t size) {
     if (itf != 0) [[unlikely]]
         return;
 
+    // "The host's transfer ended here" is a short transfer, not a short packet:
+    // DWC2 completes an OUT transfer either when the requested rx_xfer_len is
+    // full or when a packet shorter than wMaxPacketSize arrives. Anything below
+    // the requested length therefore means the second case. Comparing against
+    // the endpoint's 64 bytes instead would end the transfer after every packet
+    // once rx_xfer_len exceeds 64, splitting protocol frames.
     usb::vendor->handle_downlink(
-        {reinterpret_cast<const std::byte*>(buffer), size}, size < Vendor::kMaxPacketSize);
+        {reinterpret_cast<const std::byte*>(buffer), size}, size < CFG_TUD_VENDOR_RX_EPSIZE);
 }
 
 void tud_dfu_runtime_reboot_to_dfu_cb() {

@@ -64,7 +64,28 @@ extern "C" {
 #define CFG_TUD_DFU_RUNTIME 1
 #define CFG_TUD_DFU         0
 
-#define CFG_TUD_VENDOR_RX_EPSIZE 64
+// How many bytes one OUT transfer requests. This is NOT the endpoint's
+// wMaxPacketSize: that stays 64 in the descriptor (usb_descriptors.hpp), which is
+// the USB-spec maximum for a Full-Speed bulk endpoint and cannot be raised.
+//
+// The two are separable because vendor_device.c only ever uses
+// CFG_TUD_VENDOR_RX_EPSIZE for the endpoint buffer and, when
+// CFG_TUD_VENDOR_RX_NEED_ZLP is set, for rx_xfer_len -- never for the
+// descriptor. Asking for N x 64 bytes lets DWC2 accept N back-to-back packets
+// per transfer, so the device stops NAKing between packets while it re-arms.
+//
+// At 64 the NEED_ZLP branch is deliberately left off, so rx_xfer_len falls back
+// to tu_edpt_packet_size() and the build is bit-for-bit the old behaviour --
+// that is the A/B baseline, not an approximation of it.
+#ifndef LIBRMCS_APP_USB_RX_XFER_SIZE
+# define LIBRMCS_APP_USB_RX_XFER_SIZE 64
+#endif
+
+#define CFG_TUD_VENDOR_RX_EPSIZE LIBRMCS_APP_USB_RX_XFER_SIZE
+#if LIBRMCS_APP_USB_RX_XFER_SIZE > 64
+# define CFG_TUD_VENDOR_RX_NEED_ZLP 1
+#endif
+
 #define CFG_TUD_VENDOR_TX_EPSIZE 64
 
 // Direct mode to match the existing per-packet framing behavior: zeroing both FIFO
