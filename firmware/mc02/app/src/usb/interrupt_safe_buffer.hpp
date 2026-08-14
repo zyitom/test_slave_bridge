@@ -11,6 +11,7 @@
 #include "core/src/utility/assert.hpp"
 #include "core/src/utility/immovable.hpp"
 #include "firmware/mc02/app/src/led/led.hpp"
+#include "firmware/mc02/app/src/usb/helper.hpp"
 
 namespace librmcs::firmware::usb {
 
@@ -43,7 +44,14 @@ public:
 
             auto writeable = kBatchCount - readable - 1;
             if (!writeable) {
-                led::led->uplink_buffer_full();
+                // Only a fault while a host is draining. With no session
+                // try_transmit() never pops a batch, so the ring fills once and
+                // stays full until activate_session() clears it -- reporting
+                // that would leave an idle, healthy board blinking the
+                // buffer-full pattern indefinitely, since every later allocate()
+                // lands here and re-arms the 5 s window.
+                if (uplink_session_active())
+                    led::led->uplink_buffer_full();
                 return {};
             }
 

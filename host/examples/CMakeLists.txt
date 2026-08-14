@@ -126,3 +126,22 @@ target_link_libraries(mc02_tinyusb_probe PRIVATE librmcs-sdk)
 
 add_executable(mc02_dual_can_probe mc02_dual_can_probe.cpp)
 target_link_libraries(mc02_dual_can_probe PRIVATE librmcs-sdk)
+
+# Two mc02 boards wired TX<->RX on one UART port (default UART10). Exists because
+# a same-board loopback cannot fail the way this firmware can: both ends ignoring
+# a baudrate request identically still passes a loopback.
+add_executable(uart_cross_test uart_cross_test.cpp)
+target_link_libraries(uart_cross_test PRIVATE librmcs-sdk)
+
+# Two mc02 boards wired A-A / B-B on the USART3 RS-485 port. Separate from
+# uart_cross_test because kUart4 is absent from Spec::kUarts by design, so this
+# port is unreachable through the board-agnostic BoardTransmitter. Needs both
+# ends flashed with -DLIBRMCS_APP_RS485_ENABLE=ON.
+add_executable(rs485_cross_test rs485_cross_test.cpp)
+target_link_libraries(rs485_cross_test PRIVATE librmcs-sdk)
+
+# Bare USB packet-rate probe for mc02: one record per USB packet, no CAN and no
+# UART line rate in the number. Pair with -DLIBRMCS_APP_LOOP_BALLAST_CYCLES to
+# A/B throughput against main-loop period.
+add_executable(mc02_packet_rate mc02_packet_rate.cpp)
+target_link_libraries(mc02_packet_rate PRIVATE librmcs-sdk)

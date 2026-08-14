@@ -69,6 +69,10 @@ extern DMA_HandleTypeDef hdma_uart7_rx;
 extern DMA_HandleTypeDef hdma_uart7_tx;
 extern DMA_HandleTypeDef hdma_usart1_rx;
 extern DMA_HandleTypeDef hdma_usart1_tx;
+extern DMA_HandleTypeDef hdma_usart2_rx;
+extern DMA_HandleTypeDef hdma_usart2_tx;
+extern DMA_HandleTypeDef hdma_usart3_rx;
+extern DMA_HandleTypeDef hdma_usart3_tx;
 extern DMA_HandleTypeDef hdma_usart10_rx;
 extern DMA_HandleTypeDef hdma_usart10_tx;
 extern UART_HandleTypeDef huart5;
@@ -442,8 +446,22 @@ void EXTI15_10_IRQHandler(void)
   HAL_GPIO_EXTI_IRQHandler(INT1_ACC_Pin);
   HAL_GPIO_EXTI_IRQHandler(INT1_GYRO_Pin);
   /* USER CODE BEGIN EXTI15_10_IRQn 1 */
-  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_13); /* GPIO channel 3 (PE13) edge input */
+
   /* USER CODE END EXTI15_10_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA1 stream7 global interrupt.
+  */
+void DMA1_Stream7_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA1_Stream7_IRQn 0 */
+
+  /* USER CODE END DMA1_Stream7_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_usart2_rx);
+  /* USER CODE BEGIN DMA1_Stream7_IRQn 1 */
+
+  /* USER CODE END DMA1_Stream7_IRQn 1 */
 }
 
 /**
@@ -486,6 +504,48 @@ void DMA2_Stream1_IRQHandler(void)
   /* USER CODE BEGIN DMA2_Stream1_IRQn 1 */
 
   /* USER CODE END DMA2_Stream1_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA2 stream2 global interrupt.
+  */
+void DMA2_Stream2_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA2_Stream2_IRQn 0 */
+
+  /* USER CODE END DMA2_Stream2_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_usart2_tx);
+  /* USER CODE BEGIN DMA2_Stream2_IRQn 1 */
+
+  /* USER CODE END DMA2_Stream2_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA2 stream3 global interrupt.
+  */
+void DMA2_Stream3_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA2_Stream3_IRQn 0 */
+
+  /* USER CODE END DMA2_Stream3_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_usart3_rx);
+  /* USER CODE BEGIN DMA2_Stream3_IRQn 1 */
+
+  /* USER CODE END DMA2_Stream3_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA2 stream4 global interrupt.
+  */
+void DMA2_Stream4_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA2_Stream4_IRQn 0 */
+
+  /* USER CODE END DMA2_Stream4_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_usart3_tx);
+  /* USER CODE BEGIN DMA2_Stream4_IRQn 1 */
+
+  /* USER CODE END DMA2_Stream4_IRQn 1 */
 }
 
 /**

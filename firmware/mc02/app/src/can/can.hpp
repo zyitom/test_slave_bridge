@@ -80,6 +80,31 @@ private:
         // core::utility::assert_always(
         //     HAL_FDCAN_EnableTimestampCounter(hal_can_handle_, FDCAN_TIMESTAMP_INTERNAL) == ok);
 
+        // Transmitter delay compensation. The data phase runs at
+        // 80 MHz / (DataPrescaler 1 * (1 + DataTimeSeg1 13 + DataTimeSeg2 2)) =
+        // 5 Mbit/s, so a data bit is 200 ns and the primary sample point sits at
+        // 14/16 = 87.5%, i.e. 175 ns. A high-speed CAN transceiver's loop delay
+        // is typically 120-255 ns, so it can exceed that sample point: while
+        // transmitting the data phase the node would monitor its own bit too
+        // early, read the previous bit, and raise a bit error. TDC moves the
+        // check to a secondary sample point placed at
+        // (measured loop delay + TdcOffset), which tracks the transceiver
+        // instead of assuming it is fast.
+        //
+        // TdcOffset is expressed in data-phase time quanta and set to
+        // DataPrescaler * DataTimeSeg1, the standard recipe that puts the
+        // secondary sample point at the same relative position inside the bit as
+        // the primary one. TdcFilter = 0 leaves the filter window off, which is
+        // the usual choice when the transceiver has no glitch problem.
+        //
+        // STM32F407 has no CAN-FD at all, so c_board has no counterpart to this.
+        // Must run in READY state, before HAL_FDCAN_Start below.
+        const uint32_t tdc_offset =
+            hal_can_handle_->Init.DataPrescaler * hal_can_handle_->Init.DataTimeSeg1;
+        core::utility::assert_always(
+            HAL_FDCAN_ConfigTxDelayCompensation(hal_can_handle_, tdc_offset, 0) == ok);
+        core::utility::assert_always(HAL_FDCAN_EnableTxDelayCompensation(hal_can_handle_) == ok);
+
         core::utility::assert_always(HAL_FDCAN_Start(hal_can_handle_) == ok);
         core::utility::assert_always(
             HAL_FDCAN_ActivateNotification(

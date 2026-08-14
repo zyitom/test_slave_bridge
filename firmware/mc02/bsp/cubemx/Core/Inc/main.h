@@ -58,7 +58,13 @@ void Error_Handler(void);
 // regeneration preserves the declarations.
 void SystemClock_Config(void);
 void PeriphCommonClock_Config(void);
-void MPU_Config(void);
+// librmcs: MPU_Config() cannot be declared here. CubeMX emits itsprototype in
+// main.c as `static void MPU_Config(void);`, outside any USERCODE block, so it
+// comes back on every Generate; a non-static declaration reachingmain.c ahead
+// of it makes GCC reject the file outright. The wrapper below isefined in
+// main.c's USER CODE BEGIN 4 (which Generate preserves) and callsit from
+// inside that translation unit, where the static prototype is in scope.
+void librmcs_mpu_config(void);
 
 // librmcs: called from the fault handlers in stm32h7xx_it.c. Requests DFU
 // through the boot mailbox and resets, so an application that faults cannot

@@ -3,7 +3,7 @@
 > **文档类型**：背景说明（外设、低延迟设计、CubeMX 复原清单）
 > **适用范围**：`firmware/mc02/`，达妙 DM-MC02 板（STM32H723VGT6）
 > **状态**：现行有效
-> **相关文档**：[AGENTS.md](AGENTS.md)（命令与约束以那份为准） · [仓库根 README.md](../../README.md)（DFU 烧录流程） · [仓库根 AGENTS.md](../../AGENTS.md)
+> **相关文档**：[AGENTS.md](AGENTS.md)（命令与约束以那份为准） · [UART_RING_LOG.md](UART_RING_LOG.md)（UART 环形缓冲实录与实测数据） · [仓库根 README.md](../../README.md)（DFU 烧录流程） · [仓库根 AGENTS.md](../../AGENTS.md)
 
 ## 摘要
 
@@ -21,7 +21,7 @@ CAN/UART <-> USB 转发固件。它与其他板共用 `core/` 和主机 SDK；�
 |---|---|
 | [外设一览](#外设一览) | CAN/UART/USB/IMU/LED 分别挂在哪 |
 | [为什么 USB 只能跑 Full-Speed](#为什么-usb-只能跑-full-speed) | 封装限制，非软件问题 |
-| [低延迟设计](#低延迟设计) | 时钟、CAN-FD、中断优先级、ITCM 热路径 |
+| [低延迟设计](#低延迟设计) | 时钟、CAN-FD、中断优先级、ITCM 热路径、UART 环与 D2 SRAM |
 | [重要：每次 CubeMX Generate 之后](#重要每次-cubemx-generate-code-之后) | **必做**的复原清单 |
 | [已配置但未启用的外设](#已配置但未启用的外设) | 为什么它们不影响转发延迟 |
 | [引脚与 DMA 余量](#引脚与-dma-余量) | 加外设前先看这里 |
@@ -71,6 +71,22 @@ Full-Speed，**转发吞吐的杠杆在 CAN 侧（CAN-FD），不在 USB 侧**�
   仍在 FLASH。占用约 5.6 KB / 64 KB。见 `bsp/linker/STM32H723VGTx_APP.ld`——那里的
   注释说明了为什么 `.itcm` 必须排在 `.text` 前面，以及哪些东西**不能**收进去
   （启动期就会执行的代码，例如 `Lazy<App>::init`）。
+- **UART 接收 = 一条永不停的环形 DMA**：每个口一条 circular DMA 盖住整个 2048 字节环，
+  `CR3.DMAR` 从初始化到掉电一直置位，**没有任何窗口是关着接收的**。写指针不由中断维护，
+  消费者在主循环里读 `NDTR` 推导（`2048 - NDTR`）。中断只剩 IDLE（一条
+  `idle_count_.fetch_add`）和 DMA 错误两条。相比原来的 32 字节双 bank 方案：ISR 容忍窗口
+  从 32 字节时间放大到 2048 字节时间，RX 中断率从 ~9000/s/口 降到按帧率，并且**去掉了主
+  循环之外唯一会全局关中断的地方**（bank 记账要读写多个 stream 寄存器，原本跑在
+  `__disable_irq()` 里，挡的正是优先级 1 的 FDCAN）。细节与实测见
+  [UART_RING_LOG.md](UART_RING_LOG.md)。
+- **UART 的 DMA 环放在 D2 SRAM**（`.d2_sram`，0x30000000）。DMA1 是 D2 域主设备，环放在
+  D2 SRAM 就不必跨 D2→D1 互联去写 AXI SRAM、也不和 M7 自己的 AXI 访问抢总线。附带效果更
+  实在：这四个端口对象共 18.7 KB，原本占在 `.data` 里，搬走后 AXI 的 `.data+.bss` 从
+  26160 降到 7024 字节，链接脚本尾部那条 32 KB 非缓存 MPU 窗口的 ASSERT 余量从 6.5 KB
+  变成 25 KB。**MPU region 1 在 `app.cpp` 里配**（不是 CubeMX 的 `MPU_Config()`），所以
+  重新 Generate 不会覆盖、也不进复原清单。
+- **不要把 DMA 缓冲移进 `.dtcm`**（像 `can.hpp` 放 CAN 对象那样）：DTCM 只有内核够得到，
+  DMA 流指向它会静默地什么也不搬。
 
 ## 重要：每次 CubeMX "Generate Code" 之后
 
@@ -113,6 +129,33 @@ Full-Speed，**转发吞吐的杠杆在 CAN 侧（CAN-FD），不在 USB 侧**�
 当前**已配置但 `app.cpp` 未调用**：DCMI、SPI1（LCD）、UART8、UART9、USART2、USART3、
 TIM3、TIM12。
 
+### USART2 / USART3：RS-485 硬件 Driver Enable
+
+这两个口在 `.ioc` 里配的是 **Hardware Flow Control (RS485)**：`PD4=USART2_DE`、
+`PB14=USART3_DE`，生成的 `MX_USARTx_UART_Init` 里已经有
+`HAL_RS485Ex_Init(&huartX, UART_DE_POLARITY_HIGH, 0, 0)`，也就是 `CR3.DEM` 已经打开。
+**这是 F407 完全没有的能力**——USART 自己在起始位前拉高 DE、停止位后放开，方向控制不需要
+任何软件时序。
+
+固件侧的驱动**已经写好**（`LIBRMCS_APP_RS485_ENABLE`，默认 OFF），它就是原样复用 `Uart`
+类：同样的 `RxBuffer`、同样的 `TxBuffer`、同样的缓冲区大小，一行都没改。占用
+`DataId::kUart0`——mc02 唯一空着的通道槽，也是两个诊断通道用的槽，三者互斥。
+
+上真实总线前还有三件事要处理，代码注释里也记了：
+
+1. **半双工回声**。2 线总线会把自己发的内容送回自己的接收器，除非收发器的 `/RE` 跟随
+   DE。`.ioc` 没有分配 RE 引脚，所以板上要么把 `/RE` 接到了 DE、要么用自动方向收发器——
+   **必须对照原理图确认**，否则发出去的每个字节都会被当成收到的转发给上位机。
+2. **DEAT/DEDT 现在是 0**，CubeMX 默认值而非决定。RS-485 通常要留 1~2 个采样时间的释放
+   延迟，保证最后一位被完整驱动完再松手。
+3. **总线周转**。`TxBuffer` 的 idle checkpoint 现在保证的是"包边界不粘连"，在共享总线上
+   还得意味着"不在对方回复时插话"。300 µs 窗口是雏形，不是协议正确的 turnaround。
+
+**一处对本节规则的已知偏离**：下面第 2 条说"不打算启用的外设不要在 `.ioc` 里给它配
+DMA"，而 `.ioc` 现在给 USART2 配了 RX（DMA1_Stream7，circular）+ TX（DMA2_Stream2，
+normal）——因为 `RxBuffer` 硬性要求 circular RX 流，不配就没法启用。这是有意为之：
+USART2 时钟门控关着时那两个中断永远触发不了，是个**惰性哑弹**。知道它在那儿即可。
+
 三个例外，配了就会真的生效：
 
 1. **`MX_GPIO_Init()` 一定会被调用**（`app.cpp`），所以在 CubeMX 里点成 `GPIO_Output`
@@ -138,8 +181,8 @@ TIM3、TIM12。
 | 资源 | 容量 | 已用 | 说明 |
 |---|---|---|---|
 | GPIO（LQFP100） | 82 | 81 | **只剩 PB4**，且它是 SPI1_MISO |
-| DMA1 stream | 8 | 7 | UART5_RX、USART1/10 RX+TX、UART7 RX+TX |
-| DMA2 stream | 8 | 2 | SPI2 RX+TX |
+| DMA1 stream | 8 | **8** | UART5_RX、USART1/10 RX+TX、UART7 RX+TX、**USART2_RX** |
+| DMA2 stream | 8 | **3** | SPI2 RX+TX、**USART2_TX** |
 | BDMA channel | 8 | 1 | SPI6_TX（WS2812） |
 | MDMA channel | 16 | 0 | 存储器间搬运 |
 
@@ -152,8 +195,9 @@ TIM3、TIM12。
   `bsp/linker/STM32H723VGTx_APP.ld` 的 `RAM_D3` 区。
 
 FDCAN 不占 DMA（用内部 Message RAM），USB OTG 也不占（自带 DMA 引擎）。
-若把 USART2/3、UART8/9、SPI1_TX、DCMI 的 DMA 全配上，总需求约 19 个，
-**会超过 DMA1+DMA2 的 16 个上限**——DCMI 那一路不能省，优先留给它。
+若把 USART3、UART8/9、SPI1_TX、DCMI 的 DMA 也全配上，总需求约 19 个，
+**会超过 DMA1+DMA2 的 16 个上限**——DCMI 那一路不能省，优先留给它。USART2 的两条已经
+占掉（见上一节），DMA1 现在满了，新的请求只能落在 DMA2 剩下的 5 个 stream 上。
 
 引脚上最紧的是这两组互斥（LQFP100 上各自只有这些候选）：
 
@@ -171,4 +215,5 @@ cmake --preset debug -S firmware/mc02
 cmake --build firmware/mc02/build --target mc02_app mc02_bootloader
 ```
 
-preset 与 target 的完整说明见 [AGENTS.md](AGENTS.md#构建)。
+preset 与 target 的完整说明见 [AGENTS.md](AGENTS.md#构建)，编译开关见
+[AGENTS.md 的「编译开关」](AGENTS.md#编译开关)。

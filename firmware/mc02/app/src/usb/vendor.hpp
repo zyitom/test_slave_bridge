@@ -150,6 +150,10 @@ private:
         if (!session_established_)
             return true;
         switch (id) {
+#if defined(LIBRMCS_APP_RS485_ENABLE) && LIBRMCS_APP_RS485_ENABLE
+        case data::DataId::kUart0: uart::uart0->handle_downlink(data); return true;
+        case data::DataId::kUart4: uart::uart4->handle_downlink(data); return true;
+#endif
         case data::DataId::kUart1: uart::uart1->handle_downlink(data); return true;
         case data::DataId::kUart2: uart::uart2->handle_downlink(data); return true;
         case data::DataId::kUart3: uart::uart3->handle_downlink(data); return true;
@@ -163,6 +167,10 @@ private:
             return true;
         switch (id) {
         case data::DataId::kUartDbusConfig: return uart::uart_dbus->handle_config(data);
+#if defined(LIBRMCS_APP_RS485_ENABLE) && LIBRMCS_APP_RS485_ENABLE
+        case data::DataId::kUart0Config: return uart::uart0->handle_config(data);
+        case data::DataId::kUart4Config: return uart::uart4->handle_config(data);
+#endif
         case data::DataId::kUart1Config: return uart::uart1->handle_config(data);
         case data::DataId::kUart2Config: return uart::uart2->handle_config(data);
         case data::DataId::kUart3Config: return uart::uart3->handle_config(data);

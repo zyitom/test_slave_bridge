@@ -36,7 +36,16 @@ extern "C" {
 // All device-transfer buffers are linked into the MPU non-cacheable AXI SRAM
 // region. Keep TinyUSB's cache-line alignment while avoiding redundant cache
 // maintenance on each 64-byte transfer.
-# define CFG_DWC2_MEM_UNCACHED_REGIONS {.start = 0x24000000U, .end = 0x2401FFFFU},
+//
+// 32 KB, not the full 128 KB of AXI SRAM. Two configurations disagree about how
+// much of it region 0 actually covers -- bsp/cubemx/Core/Src/main.c programs
+// 128 KB while mc02_slave.ioc now says 32 KB, so the next CubeMX regeneration
+// shrinks it -- and declaring more than is really uncached is the dangerous
+// direction: TinyUSB would skip cache maintenance on a buffer the D-cache is
+// still caching. Under-declaring only costs a clean/invalidate that turns out to
+// be unnecessary. Everything in AXI SRAM now ends by 0x24001b70 anyway (the UART
+// rings moved to .d2_sram), so nothing is actually left out.
+# define CFG_DWC2_MEM_UNCACHED_REGIONS {.start = 0x24000000U, .end = 0x24007FFFU},
 #endif
 
 //--------------------------------------------------------------------
@@ -55,7 +64,28 @@ extern "C" {
 #define CFG_TUD_DFU_RUNTIME 1
 #define CFG_TUD_DFU         0
 
-#define CFG_TUD_VENDOR_RX_EPSIZE 64
+// How many bytes one OUT transfer requests. This is NOT the endpoint's
+// wMaxPacketSize: that stays 64 in the descriptor (usb_descriptors.hpp), which is
+// the USB-spec maximum for a Full-Speed bulk endpoint and cannot be raised.
+//
+// The two are separable because vendor_device.c only ever uses
+// CFG_TUD_VENDOR_RX_EPSIZE for the endpoint buffer and, when
+// CFG_TUD_VENDOR_RX_NEED_ZLP is set, for rx_xfer_len -- never for the
+// descriptor. Asking for N x 64 bytes lets DWC2 accept N back-to-back packets
+// per transfer, so the device stops NAKing between packets while it re-arms.
+//
+// At 64 the NEED_ZLP branch is deliberately left off, so rx_xfer_len falls back
+// to tu_edpt_packet_size() and the build is bit-for-bit the old behaviour --
+// that is the A/B baseline, not an approximation of it.
+#ifndef LIBRMCS_APP_USB_RX_XFER_SIZE
+# define LIBRMCS_APP_USB_RX_XFER_SIZE 64
+#endif
+
+#define CFG_TUD_VENDOR_RX_EPSIZE LIBRMCS_APP_USB_RX_XFER_SIZE
+#if LIBRMCS_APP_USB_RX_XFER_SIZE > 64
+# define CFG_TUD_VENDOR_RX_NEED_ZLP 1
+#endif
+
 #define CFG_TUD_VENDOR_TX_EPSIZE 64
 
 // Direct mode to match the existing per-packet framing behavior: zeroing both FIFO

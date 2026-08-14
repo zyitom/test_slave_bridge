@@ -70,6 +70,23 @@ public:
         virtual void uart1_receive_callback(const librmcs::data::UartDataView& data) { (void)data; }
         virtual void uart2_receive_callback(const librmcs::data::UartDataView& data) { (void)data; }
         virtual void uart3_receive_callback(const librmcs::data::UartDataView& data) { (void)data; }
+
+        // RS-485 port on USART2, present only in a -DLIBRMCS_APP_RS485_ENABLE
+        // firmware. It shares kUart0 with the diagnostic channel below because
+        // that is the one channel id mc02 leaves free, which is also why
+        // app/CMakeLists.txt makes RS485, CAN_DIAG and LOOP_PROFILE mutually
+        // exclusive -- at most one of the two meanings is live in any build.
+        // Defaulting to the diagnostic behaviour means an application that
+        // overrides neither keeps working exactly as it did before this existed.
+        virtual void rs485_1_receive_callback(const librmcs::data::UartDataView& data) {
+            diagnostic_receive_callback(data);
+        }
+        // Second RS-485 port, on USART3. Unlike rs485_1 it owns kUart4 outright,
+        // an id added to the protocol for it, so it collides with nothing and
+        // ignores by default rather than falling through to the diagnostics.
+        virtual void rs485_2_receive_callback(const librmcs::data::UartDataView& data) {
+            (void)data;
+        }
         // Telemetry from a -DLIBRMCS_APP_CAN_DIAG firmware, on the otherwise
         // unused kUart0 id. Ignored by default so ordinary applications are
         // unaffected by a diagnostic build.
@@ -119,13 +136,16 @@ public:
             case data::DataId::kUart1: uart1_receive_callback(data); return true;
             case data::DataId::kUart2: uart2_receive_callback(data); return true;
             case data::DataId::kUart3: uart3_receive_callback(data); return true;
-            // kUart0 is not a port on this board (its UARTs are kUart1..3 plus
-            // DBUS), so a LIBRMCS_APP_CAN_DIAG firmware uses that free id for
-            // telemetry -- the same convention rmcs_board follows. Accepting it
-            // here matters: returning false makes the deserializer treat the frame
-            // as a protocol error and tear the session down, so a diagnostic build
-            // would kill the link it is meant to be diagnosing.
-            case data::DataId::kUart0: diagnostic_receive_callback(data); return true;
+            // kUart0 is not one of this board's ordinary UARTs (those are
+            // kUart1..3 plus DBUS), so it carries whichever optional channel the
+            // firmware was built with: the RS-485 port, or LIBRMCS_APP_CAN_DIAG /
+            // LOOP_PROFILE telemetry, the same convention rmcs_board follows.
+            // Accepting it here matters either way: returning false makes the
+            // deserializer treat the frame as a protocol error and tear the
+            // session down, so a diagnostic build would kill the link it is meant
+            // to be diagnosing.
+            case data::DataId::kUart0: rs485_1_receive_callback(data); return true;
+            case data::DataId::kUart4: rs485_2_receive_callback(data); return true;
             default: return false;
             }
         }
@@ -221,6 +241,51 @@ public:
         PacketBuilder& uart3_config(const librmcs::data::UartConfigView& config) {
             if (!builder_.write_uart_config(data::DataId::kUart3Config, config)) [[unlikely]]
                 throw std::invalid_argument{"UART3 configuration failed: Invalid UART config"};
+            return *this;
+        }
+
+        // RS-485 port on USART2, reachable only from a -DLIBRMCS_APP_RS485_ENABLE
+        // firmware. Addressing it on any other build is not merely ignored: that
+        // firmware's downlink switch has no kUart0 case, returns false, and the
+        // deserializer reports a protocol error and drops the session. That is
+        // also why kUart0 is deliberately absent from Spec::kUarts -- generic
+        // code walking every descriptor would otherwise take a default firmware
+        // offline. Reach this port through these two methods only.
+        //
+        // It is a byte pipe like the ports above; nothing here knows what device
+        // is on the bus. Firmware owns the half-duplex turnaround alone -- one
+        // queued packet per bus transaction, released once the peer answers or a
+        // deadline expires -- so a caller need not pace its requests by hand.
+        // Everything above that layer is the caller's: framing, checksums, node
+        // addressing, retry policy and offline detection.
+        PacketBuilder& rs485_1_transmit(const librmcs::data::UartDataView& data) {
+            if (!builder_.write_uart(data::DataId::kUart0, data)) [[unlikely]]
+                throw std::invalid_argument{"RS485-1 transmission failed: Invalid UART data"};
+            return *this;
+        }
+
+        // Runtime reconfiguration of the RS-485 port. Rides the same downlink
+        // stream as the data above, so it is ordered against it: bytes queued
+        // earlier in this batch are sent at the old baudrate, later ones at the
+        // new one.
+        PacketBuilder& rs485_1_config(const librmcs::data::UartConfigView& config) {
+            if (!builder_.write_uart_config(data::DataId::kUart0Config, config)) [[unlikely]]
+                throw std::invalid_argument{"RS485-1 configuration failed: Invalid UART config"};
+            return *this;
+        }
+
+        // Second RS-485 port, on USART3. Same firmware build requirement as
+        // rs485_1 above -- both come from -DLIBRMCS_APP_RS485_ENABLE, and a
+        // firmware without it rejects kUart4 the same way, dropping the session.
+        PacketBuilder& rs485_2_transmit(const librmcs::data::UartDataView& data) {
+            if (!builder_.write_uart(data::DataId::kUart4, data)) [[unlikely]]
+                throw std::invalid_argument{"RS485-2 transmission failed: Invalid UART data"};
+            return *this;
+        }
+
+        PacketBuilder& rs485_2_config(const librmcs::data::UartConfigView& config) {
+            if (!builder_.write_uart_config(data::DataId::kUart4Config, config)) [[unlikely]]
+                throw std::invalid_argument{"RS485-2 configuration failed: Invalid UART config"};
             return *this;
         }
 
