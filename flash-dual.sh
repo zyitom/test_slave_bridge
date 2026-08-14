@@ -10,7 +10,7 @@
 # The HPM5321 board carries the same "RMCS DFU Bootloader" as mc02/c_board, so the
 # app is flashed with dfu-util -- no debugger (J-Link/OpenOCD) needed. A debugger
 # is only required to put the DFU bootloader onto a blank chip the first time
-# (see flash-dual-bootloader.sh / README).
+# (see ozone/hpm5321.jdebug, or ./jlink-debug.sh hpm5321 with LOAD=1).
 #
 # Prerequisite: the DFU bootloader is already on the board. Put the device into
 # DFU mode first:

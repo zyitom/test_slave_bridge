@@ -17,13 +17,12 @@
 * HPM6E8YxVMx -- the other package -- and the HPM SDK's own EVK profile is
 * HPM6E80xVMx. If a connection fails, that suffix is the first thing to change.
 *
-* CAVEAT SPECIFIC TO THIS PART: the XPI0 NOR at 0x80000000 is not AHB-mapped
-* embedded flash, it looks like external QSPI flash to J-Link and needs its flash
-* loader (firmware/rmcs_board/boards/hpm6e8y/README.md, "HPM6E00 的 Flash 对
-* J-Link 来说是 QSPI"). If the download step of CM_DOWNLOAD_RESET fails, program
-* with ./flash-ecat-bootloader.sh and switch this to CM_ATTACH_HALT -- but note
-* that attaching then only catches the bootloader if you reset the board while
-* the debugger is connected.
+* NOTE ON THIS PART: the XPI0 NOR at 0x80000000 is not AHB-mapped embedded flash,
+* it looks like external QSPI flash to J-Link and needs its flash loader
+* (firmware/rmcs_board/boards/hpm6e8y/README.md, "HPM6E00 的 Flash 对 J-Link
+* 来说是 QSPI"). The J-Link now ships that loader ("HPM XPI Nor Flash XPI0"), so
+* CM_DOWNLOAD_RESET programs the bootloader directly. The old
+* flash-ecat-bootloader.sh (HPM Boot ROM manufacturing tool) is gone.
 *
 * To debug the EtherCAT application on core0 instead, change File.Open to
 * ../firmware/rmcs_board/ecat/build/rmcs_ecat_core0/output/demo.elf AND the

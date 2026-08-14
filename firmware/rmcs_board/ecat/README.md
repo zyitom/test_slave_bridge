@@ -254,7 +254,7 @@ transport 实现:`host/src/transport/soem/soem.cpp`(实现 `transport::Transport
 其中,由 core0 上电拷入 core1 ILM 后释放。仓库根目录:
 
 ```bash
-./flash-ecat-bootloader.sh   # 一次性:OpenOCD + 板载 FT2232 烧 DFU bootloader
+./ozone-debug.sh hpm6e8y     # 一次性:J-Link 烧 DFU bootloader(现已内置 XPI Nor flash loader)
 ./flash-ecat.sh              # 日常:USB DFU 烧应用(协议镜像)
 LOOPBACK=1 ./flash-ecat.sh   # P1 回环镜像(配 ecat_stream_latency)
 HYBRID=1 ./flash-ecat.sh     # 28 槽周期 CAN + 可靠配置流

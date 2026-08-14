@@ -125,12 +125,12 @@ hpm5321)
     # against SEGGER's device DB, libjlinkarm). Do not "fix" this back to
     # HPM5361xEGx from the yaml -- that name is for the SDK, not the debugger.
     #
-    # RESET_TO_MAIN below does a JTAG-level `monitor reset` + break-at-main, not
-    # a flash `load` -- it works with no NOR flash algorithm at all, unlike the
-    # one-time bootloader programming in flash-dual-bootloader.sh (which needs
-    # OpenOCD's hpm_xpi driver because SEGGER ships no flash loader for this
-    # part's XPI NOR). Do not pass LOAD=1 here; it would need that missing
-    # loader. Program with ./flash-dual-bootloader.sh instead, then attach.
+    # RESET_TO_MAIN below does a JTAG-level `monitor reset` + break-at-main. To
+    # actually program the bootloader, pass LOAD=1 -- the J-Link now ships an
+    # open flash loader for this part's XPI NOR ("HPM XPI Nor Flash XPI0", built
+    # by SEGGER from the HPM SDK's hpm_xpi driver). That replaced the old
+    # flash-dual-bootloader.sh, which drove OpenOCD because SEGGER used to ship
+    # no loader for this part.
     DEFAULT_DEVICE="HPM5321xEGx"
     DEFAULT_IFACE="JTAG"
     DEFAULT_ELF="$SCRIPT_DIR/firmware/rmcs_board/build/bootloader/output/rmcs_board_bootloader_hpm5321.elf"
@@ -223,10 +223,10 @@ fi
 
 GDB_ARGS=(-q "$ELF" -ex "target extended-remote 127.0.0.1:$PORT")
 if [[ -n "${LOAD:-}" ]]; then
-    # NOTE for hpm6e8y: its flash is not AHB-mapped embedded flash but XPI0/QSPI
-    # NOR (README "HPM6E00 的 Flash 对 J-Link 来说是 QSPI"), so a gdb `load`
-    # depends on the J-Link flash algorithm for that profile. If it fails,
-    # program with the normal flash-ecat*.sh path and attach without LOAD.
+    # NOTE for hpm6e8y: its flash is XPI0/QSPI NOR (README "HPM6E00 的 Flash 对
+    # J-Link 来说是 QSPI"), so a gdb `load` needs the J-Link flash algorithm for
+    # that profile -- which the J-Link now ships ("HPM XPI Nor Flash XPI0"), so
+    # LOAD works where it used to fail.
     GDB_ARGS+=(-ex "load")
 fi
 if [[ "$RESET_TO_MAIN" == 1 ]]; then

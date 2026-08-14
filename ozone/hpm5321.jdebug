@@ -1,5 +1,5 @@
 /*********************************************************************
-* Ozone project: hpm5321 BOOTLOADER -- JTAG, attach only.
+* Ozone project: hpm5321 BOOTLOADER -- JTAG, download-and-reset.
 *
 *   /opt/SEGGER/Ozone_V340j/Ozone ozone/hpm5321.jdebug
 *   ./ozone-debug.sh hpm5321
@@ -10,17 +10,16 @@
 *   cmake --preset debug -S firmware/rmcs_board -DBOARD=hpm5321
 *   cmake --build firmware/rmcs_board/build --target rmcs_board_bootloader
 *
-* CM_ATTACH_HALT, NOT CM_DOWNLOAD_RESET like mc02/c_board -- this part's XPI0
-* NOR has NO SEGGER flash loader at all (flash-dual-bootloader.sh drives it via
-* OpenOCD's hpm_xpi flash driver instead, precisely because JLinkExe/J-Flash/
-* Ozone have no algorithm for this NOR). A download step here would just fail,
-* so this project only ever attaches.
+* CM_DOWNLOAD_RESET, same as mc02/c_board: this part's XPI0 NOR now HAS a SEGGER
+* flash loader ("HPM XPI Nor Flash XPI0", built by SEGGER from the HPM SDK's
+* hpm_xpi driver). Older J-Link releases shipped no loader at all, which is why
+* this project used to be attach-only and flash-dual-bootloader.sh drove OpenOCD
+* instead -- that script is now gone, so the download step here is the way to
+* program the bootloader.
 *
-* Program the bootloader first with ./flash-dual-bootloader.sh (one-time, same
-* J-Link, JTAG). The bootloader then hands off to the app within milliseconds
-* of reset -- same as every other board here -- so a plain attach usually lands
-* in app code. To catch the bootloader itself, set a breakpoint on main() and
-* reset the board (Ozone's Reset button, or power-cycle) while attached.
+* The bootloader hands off to the app within milliseconds of reset, so to catch
+* the bootloader itself, set a breakpoint on main() and reset the board (Ozone's
+* Reset button, or power-cycle).
 *
 * DEVICE NAME: ../firmware/rmcs_board/boards/hpm5321/hpm5321.yaml declares
 * soc=HPM5361, device=HPM5361xEGx -- that is the SDK's build target (register-
@@ -42,7 +41,7 @@ void OnProjectLoad (void) {
   Project.SetTargetIF ("JTAG");
   Project.SetTIFSpeed ("4 MHz");
 
-  Debug.SetConnectMode (CM_ATTACH_HALT);
+  Debug.SetConnectMode (CM_DOWNLOAD_RESET);
 
   File.Open ("../firmware/rmcs_board/build/bootloader/output/rmcs_board_bootloader_hpm5321.elf");
 }
