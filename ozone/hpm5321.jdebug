@@ -1,7 +1,7 @@
 /*********************************************************************
 * Ozone project: hpm5321 BOOTLOADER -- JTAG, download-and-reset.
 *
-*   /opt/SEGGER/Ozone_V340j/Ozone ozone/hpm5321.jdebug
+*   /opt/SEGGER/Ozone_V350a/Ozone ozone/hpm5321.jdebug
 *   ./ozone-debug.sh hpm5321
 *
 * Build first (see ../firmware/rmcs_board/BUILD_ENVIRONMENT.md for the

@@ -3,7 +3,7 @@
 > **文档类型**：背景说明 + 操作指引
 > **适用范围**：`firmware/rmcs_board/ecat/`，HPM6E8Y 上的 EtherCAT 桥固件
 > **状态**：现行有效
-> **相关文档**：[DESIGN.md](DESIGN.md)（选型论证） · [LINKX_HW_ACCEL_PLAN.md](LINKX_HW_ACCEL_PLAN.md)（硬件加速规划） · [../AGENTS.md](../AGENTS.md) · [../BUILD_ENVIRONMENT.md](../BUILD_ENVIRONMENT.md)
+> **相关文档**：[DESIGN.md](DESIGN.md)（选型论证） · [FOE_FIRMWARE_UPDATE.md](FOE_FIRMWARE_UPDATE.md)（经 EtherCAT 升级固件） · [LINKX_HW_ACCEL_PLAN.md](LINKX_HW_ACCEL_PLAN.md)（硬件加速规划） · [../AGENTS.md](../AGENTS.md) · [../BUILD_ENVIRONMENT.md](../BUILD_ENVIRONMENT.md)
 
 ## 摘要
 
@@ -276,4 +276,9 @@ sudo ./host/build/examples/ecat_board_test <网口名> [秒数]
 
 - 在目标 4 路 CAN 接线和实际总线利用率下运行 28 槽锁相基准,据实测决定
   SM-synchron(PDI ISR)、中断优先级和控制 tick 相位。
-- 多从站同步控制验证 DC SYNC0;FoE 固件升级。
+- 多从站同步控制验证 DC SYNC0。
+- ~~FoE 固件升级~~ **已实现并上板验证**，见
+  [FOE_FIRMWARE_UPDATE.md](FOE_FIRMWARE_UPDATE.md)：下载与安装两条路径均通过，
+  读回（upload）仍失败。注意该文第 5 节——**开 FoE 需要用
+  `tools/HPM_ECAT_RMCS_Config.xml` 重新生成 SSC**，本目录「构建前提」一节描述的
+  原样例程配置不含 FoE。

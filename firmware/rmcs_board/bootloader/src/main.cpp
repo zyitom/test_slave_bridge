@@ -3,6 +3,7 @@
 #include <device/usbd.h>
 #include <tusb.h>
 
+#include "firmware/rmcs_board/bootloader/src/flash/staging.hpp"
 #include "firmware/rmcs_board/bootloader/src/flash/validation.hpp"
 #include "firmware/rmcs_board/bootloader/src/usb/dfu.hpp"
 #include "firmware/rmcs_board/bootloader/src/usb/usb_descriptors.hpp"
@@ -29,6 +30,19 @@ int main() {
     // needs PA07 pulled to GND or a J-Link. That is the accepted trade for never
     // mis-driving a transceiver against an LED network.
     const bool board_recognized = board::board_identity().recognized();
+
+    // Install a firmware image the app staged for us (FoE, or the USB self-test
+    // path). Runs before the jump decision so the freshly installed image is the
+    // one validated and entered below -- and before board_init(), like the rest
+    // of this path, because the ROM flash API works at reset-time clocks.
+    //
+    // Gated on the same two conditions as the jump: a held key means the operator
+    // wants DFU, not an install, and an unrecognized board must not be handed new
+    // firmware any more than it may be handed control. No BootMailbox request is
+    // involved -- a committed staging record IS the request, which is what lets a
+    // power loss mid-install resume on the next boot with no volatile state.
+    if (board_recognized && !force_stay)
+        (void)flash::install_staged_image_if_ready();
 
 #if LIBRMCS_BOOTLOADER_MODE_AUTO
     if (board_recognized && !force_stay && !boot::BootMailbox::consume_enter_dfu_request()

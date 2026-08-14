@@ -43,6 +43,10 @@
 #include "ecat_doorbell.h"
 #include "ecat_pd.h"
 
+#if defined(RMCS_SSC_HAS_FOE) && RMCS_SSC_HAS_FOE
+# include "ecat_foe_support.h"
+#endif
+
 /* Uplink doorbell transport. core0 pokes MBX0A, this core takes MBX0B.
  *
  * Priority 1 is strictly below the ESC PDI interrupt (4, set by the SDK port
@@ -66,8 +70,20 @@ void APPL_AckErrorInd(UINT16 stateTrans) { (void)stateTrans; }
 /* INIT -> PREOP: start the mailbox handler. */
 UINT16 APPL_StartMailboxHandler(void) { return ALSTATUSCODE_NOERROR; }
 
-/* PREOP -> INIT: stop the mailbox handler. */
-UINT16 APPL_StopMailboxHandler(void) { return ALSTATUSCODE_NOERROR; }
+/* PREOP -> INIT: stop the mailbox handler.
+ *
+ * Also the point where a completed FoE download turns into a reboot. The master
+ * reaches here by leaving BOOT, which means the transfer is finished on the wire
+ * and its last response has been sent -- resetting any earlier aborts a transfer
+ * that actually succeeded, which was measured: the master reported
+ * FOE_RECEIVE_ERROR for a download whose every byte had been staged. */
+UINT16 APPL_StopMailboxHandler(void) {
+#if defined(RMCS_SSC_HAS_FOE) && RMCS_SSC_HAS_FOE
+    if (ecat_foe_download_complete())
+        ecat_foe_request_reset();
+#endif
+    return ALSTATUSCODE_NOERROR;
+}
 
 /* Republish freshly staged uplink into the ESC input image.
  *

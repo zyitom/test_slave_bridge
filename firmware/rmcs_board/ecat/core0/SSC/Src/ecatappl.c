@@ -744,6 +744,11 @@ pAPPL_EEPROM_Read = NULL;
 
 
 
+    pAPPL_FoeRead = NULL;
+    pAPPL_FoeReadData = NULL;
+    pAPPL_FoeError = NULL;
+    pAPPL_FoeWrite = NULL;
+    pAPPL_FoeWriteData = NULL;
 
     /* ECATCHANGE_START(V5.13) COE4*/
     pAPPL_CoeReadInd = NULL;

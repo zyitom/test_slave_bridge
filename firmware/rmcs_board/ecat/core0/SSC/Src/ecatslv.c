@@ -207,6 +207,7 @@ V4.00 ECAT 7: The return values for the AL-StatusCode were changed to UINT16
 #include "ecatappl.h"
 
 
+#include    "bootmode.h"
 
 
 
@@ -1602,14 +1603,76 @@ void AL_ControlInd(UINT8 alControl, UINT16 alStatusCode)
         switch ( stateTrans )
         {
         case INIT_2_BOOT    :
-            result = ALSTATUSCODE_BOOTNOTSUPP;
+            /* if the application has to execute code when going to BOOT this shall be done at this place */
+            bBootMode = TRUE;
+
+            if ( CheckSmSettings(MAILBOX_READ+1) != 0 )
+            {
+                bBootMode = FALSE;
+                result = ALSTATUSCODE_INVALIDMBXCFGINBOOT;
+                break;
+            }
+/*ECATCHANGE_START(V5.13) ECAT1*/
+/*ECATCHANGE_END(V5.13) ECAT1*/
+            /* disable all events in BOOT state */
+            ResetALEventMask(0);
+
+            /* MBX_StartMailboxHandler (in mailbox.c) checks if the areas of the mailbox
+               sync managers SM0 and SM1 overlap each other
+              if result is unequal 0, the slave will stay in INIT
+              and sets the ErrorInd Bit (bit 4) of the AL-Status */
+            result = MBX_StartMailboxHandler();
+            if (result == 0)
+            {
+                bApplEsmPending = FALSE;
+                /* additionally there could be an application specific check (in ecatappl.c)
+                    if the state transition from INIT to BOOT should be done
+                    if result is NOERROR_INWORK, the slave will stay in INIT until timeout 
+                    or transition is complete by AL_ControlRes*/
+            
+                result = APPL_StartMailboxHandler();
+                if ( result == 0 )
+                {
+                    /*transition successful*/
+                    bMbxRunning = TRUE;
+                }
+            }
+
+            if(result != 0 && result != NOERROR_INWORK)
+            {
+                /*Stop APPL Mbx handler if the APPL start handler was called before*/
+                    if (!bApplEsmPending)
+                    {
+                        APPL_StopMailboxHandler();
+                    }
+
+                 MBX_StopMailboxHandler();
+            }
+
+            BL_Start( STATE_BOOT );
+
+            if (result != 0)
+            {
+                bBootMode = FALSE;
+            }
 
 
 
             break;
 
         case BOOT_2_INIT    :
-            result = ALSTATUSCODE_BOOTNOTSUPP;
+            if(bBootMode)
+            {
+                bBootMode = FALSE;
+/*ECATCHANGE_START(V5.13) ECAT1*/
+/*ECATCHANGE_END(V5.13) ECAT1*/
+                /* disable all events in BOOT state */
+                ResetALEventMask(0);
+                MBX_StopMailboxHandler();
+                result = APPL_StopMailboxHandler();
+            }
+
+            BL_Stop();
 
             BackToInitTransition();
 
@@ -2585,6 +2648,7 @@ void ECAT_Init(void)
     MBX_Init();
 
     /* initialize variables */
+    bBootMode = FALSE;
     bApplEsmPending = FALSE;
     bEcatWaitForAlControlRes = FALSE;
     bEcatFirstOutputsReceived = FALSE;

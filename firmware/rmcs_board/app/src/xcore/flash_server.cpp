@@ -17,6 +17,7 @@
 # include <hpm_soc.h>
 
 # include "firmware/rmcs_board/app/src/xcore/secondary_core.hpp"
+# include "firmware/rmcs_board/common/foe_staging.hpp"
 # include "firmware/rmcs_board/ecat/common/xcore_channel.hpp"
 
 # if !defined(BOARD_ECAT_FLASH_EMULATE_EEPROM_ADDR)
@@ -36,6 +37,55 @@ constexpr std::uint32_t kWindowStart =
 constexpr std::uint32_t kWindowSize = 0x10000U;
 constexpr std::uint32_t kWindowEnd = kWindowStart + kWindowSize;
 constexpr std::uint32_t kSectorSize = 4096U;
+
+// Second accepted range: the FoE staging region (metadata sector + candidate
+// image, which are adjacent, so one range covers both). See
+// common/foe_staging.hpp.
+//
+// This is an ADDITIONAL window, not a relaxation. core1 is the side holding
+// master-supplied bytes, so it must never be able to name an address outside
+// what this core is willing to write -- above all not the bootloader, and not
+// the app slot core0 is executing from. Adding FoE means listing one more
+// legal destination here, never removing the check.
+//
+// Unlike the EEPROM window this one is not published through the channel:
+// both images derive it from the same board.h constants at compile time, so
+// there is nothing for core1 to discover, and one fewer runtime value that
+// could disagree between the two halves.
+struct FlashWindow {
+    std::uint32_t start;
+    std::uint32_t end;
+};
+
+constexpr FlashWindow kWindows[] = {
+    {kWindowStart, kWindowEnd},
+#if defined(BOARD_FOE_STAGING_ADDR)
+    {static_cast<std::uint32_t>(foe::kStagingMetadataStart),
+     static_cast<std::uint32_t>(foe::kStagingImageEnd)},
+#endif
+};
+
+// Program: the whole [address, address+size) must sit inside ONE window.
+// Ordered so the subtraction cannot underflow.
+bool program_range_allowed(std::uint32_t address, std::uint32_t size) {
+    for (const auto& window : kWindows) {
+        if (address >= window.start && address < window.end && size <= window.end - address)
+            return true;
+    }
+    return false;
+}
+
+// Erase: the address must be a sector boundary MEASURED FROM ITS OWN WINDOW's
+// start, not from the flash base, so a window that is not itself sector-aligned
+// can never be erased past its own edge.
+bool erase_sector_allowed(std::uint32_t address) {
+    for (const auto& window : kWindows) {
+        if (address >= window.start && address < window.end
+            && ((address - window.start) % kSectorSize) == 0U)
+            return true;
+    }
+    return false;
+}
 
 // Strictly below the USB (2) and CAN interrupts: this handler can hold the core
 // for a whole sector erase, so it must never be the reason a higher-priority
@@ -87,9 +137,8 @@ ecat::XcoreFlashStatus execute(ecat::XcoreFlashOp op, std::uint32_t address, std
 
     switch (op) {
     case ecat::XcoreFlashOp::kProgram: {
-        // Ordered so the subtraction below cannot underflow.
-        if (size == 0 || size > ecat::kXcoreFlashPayloadSize || address < kWindowStart
-            || address >= kWindowEnd || size > kWindowEnd - address)
+        if (size == 0 || size > ecat::kXcoreFlashPayloadSize
+            || !program_range_allowed(address, size))
             return ecat::XcoreFlashStatus::kBadRange;
         // The payload buffer is 4-byte aligned inside SHARE_RAM, which is what
         // rom_xpi_nor_program's uint32_t* source wants; e2p's own callers pass
@@ -104,8 +153,7 @@ ecat::XcoreFlashStatus execute(ecat::XcoreFlashOp op, std::uint32_t address, std
         return ecat::XcoreFlashStatus::kOk;
     }
     case ecat::XcoreFlashOp::kEraseSector: {
-        if (address < kWindowStart || address >= kWindowEnd
-            || ((address - kWindowStart) % kSectorSize) != 0)
+        if (!erase_sector_allowed(address))
             return ecat::XcoreFlashStatus::kBadRange;
         const hpm_stat_t status =
             erase_sector_masked(address - static_cast<std::uint32_t>(BOARD_FLASH_BASE_ADDRESS));

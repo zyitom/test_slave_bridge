@@ -1,7 +1,7 @@
 /*********************************************************************
 * Ozone project: c_board BOOTLOADER -- STM32F407IGH6, SWD.
 *
-*   /opt/SEGGER/Ozone_V340j/Ozone ozone/c_board.jdebug
+*   /opt/SEGGER/Ozone_V350a/Ozone ozone/c_board.jdebug
 *   ./ozone-debug.sh c_board
 *
 * Build first:

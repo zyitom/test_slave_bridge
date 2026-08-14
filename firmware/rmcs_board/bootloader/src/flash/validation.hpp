@@ -15,9 +15,11 @@ inline constexpr uint32_t kImageHashMagic = 0x48415348U; // "HASH"
 inline constexpr uint32_t kImageHashSuffixSize =
     sizeof(uint32_t) + static_cast<uint32_t>(crypto::kSha256DigestSize);
 
-inline bool has_valid_app_signature() {
-    return *reinterpret_cast<volatile const uint32_t*>(kAppStartAddress) == BOARD_UF2_SIGNATURE;
+inline bool has_valid_signature_at(uintptr_t address) {
+    return *reinterpret_cast<volatile const uint32_t*>(address) == BOARD_UF2_SIGNATURE;
 }
+
+inline bool has_valid_app_signature() { return has_valid_signature_at(kAppStartAddress); }
 
 inline void compute_image_sha256(uintptr_t address, uint32_t size, uint8_t* hash) {
     const auto* data = reinterpret_cast<const uint8_t*>(address);
@@ -53,14 +55,23 @@ inline bool validate_image_hash(uintptr_t address, uint32_t size) {
     return std::memcmp(computed_sha256, expected_sha256, crypto::kSha256DigestSize) == 0;
 }
 
+// Same checks the app slot gets, applied at an arbitrary address so a staged
+// candidate can be proven intact BEFORE the app slot is erased for it. Keeping
+// one implementation matters more than the parameter: a staged image that the
+// bootloader would later reject must be rejected here, while the running image
+// is still the one that boots.
+inline bool validate_image_at(uintptr_t address, uint32_t size, size_t max_size) {
+    if (size == 0U || size > max_size)
+        return false;
+
+    if (!has_valid_signature_at(address))
+        return false;
+
+    return validate_image_hash(address, size);
+}
+
 inline bool validate_candidate_image(uint32_t size) {
-    if (size == 0U || size > kAppMaxImageSize)
-        return false;
-
-    if (!has_valid_app_signature())
-        return false;
-
-    return validate_image_hash(kAppStartAddress, size);
+    return validate_image_at(kAppStartAddress, size, kAppMaxImageSize);
 }
 
 inline bool validate_app_image() {

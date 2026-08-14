@@ -90,6 +90,29 @@
 
 /* Flash offset of the emulated ESC EEPROM (see BOARD_APP_FLASH_END_OFFSET). */
 #define BOARD_ECAT_FLASH_EMULATE_EEPROM_ADDR (0x200000)
+#define BOARD_ECAT_FLASH_EMULATE_EEPROM_SIZE (0x10000)
+
+/* FoE staging region.
+ *
+ * A firmware image received over FoE (or pushed over USB by the self-test path)
+ * is written here by the RUNNING app through the cross-core flash RPC, and is
+ * installed into the app slot by the bootloader after a cold reset. The app can
+ * never write the app slot itself: core0 executes from it over XIP, so erasing
+ * it would pull the ground out from under the very code doing the erase.
+ *
+ * It sits ABOVE the emulated EEPROM, in the upper half of the flash that nothing
+ * else uses. That placement is deliberate: no existing boundary has to move --
+ * not BOARD_APP_FLASH_END_OFFSET, not the app linker script, not the range the
+ * bootloader accepts for a DFU download.
+ *
+ * First sector holds the staging metadata (the same append-only DataSlot format
+ * as the app metadata sector, so the commit-barrier semantics are shared rather
+ * than reimplemented); the candidate image follows it.
+ */
+#define BOARD_FOE_STAGING_ADDR                                                                     \
+    (BOARD_ECAT_FLASH_EMULATE_EEPROM_ADDR + BOARD_ECAT_FLASH_EMULATE_EEPROM_SIZE)
+#define BOARD_FOE_STAGING_METADATA_SIZE (0x1000UL)
+#define BOARD_FOE_STAGING_END_OFFSET    (BOARD_FLASH_SIZE)
 
 #ifdef __cplusplus
 extern "C" {

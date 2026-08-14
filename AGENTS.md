@@ -44,21 +44,23 @@
 
 - 这些是**上一台开发机上真实可用的安装位置**，不是示例、不是占位符。原样保留是为了
   让换机器的人有一份"确实跑通过"的配置可以照抄。
-- **当前机器上的实际安装情况（2026-08-05 逐条 `ls` 复核，取代 2026-08-01 那份，
-  后者对本机已不准确）**：
+- **当前机器上的实际安装情况（2026-08-14 逐条 `ls` 复核，取代 2026-08-05 那份，
+  后者对本机已不准确——RISC-V 工具链的位置又搬回顶层了，WCH 整套和 HPM OpenOCD
+  已不在本机）**：
 
   | 路径 | 本机 | 说明 |
   |---|---|---|
-  | `~/3rd_party/rv32imac_zicsr_zifencei_multilib_b_ext-linux` | **不存在** | HPM GCC 13.2.0 的实际位置是下方 `~/3rd_party/hpm/rv32imac_zicsr_zifencei_multilib_b_ext-linux` |
-  | `~/3rd_party/hpm` | **已装** | HPM GCC 13.2.0、`hpm_sdk`、HPM OpenOCD 和 `HPMicro_Manufacturing_Tool_v0.6.0` |
-  | OpenOCD | **已装 HPM + WCH 版本** | HPM 版本在 `~/3rd_party/hpm/openocd-build/bin/openocd`；WCH 版本在下方 MRS 目录 |
-  | `~/3rd_party/MRS_Toolchain_Linux_X64_V240` | **已装** | MounRiver V240：WCH GCC15 15.2.0、GCC12 GDB 和 WCH OpenOCD。已实测 GCC15 可生成 CH32H417 的 ilp32f ELF |
+  | `~/3rd_party/rv32imac_zicsr_zifencei_multilib_b_ext-linux` | **已装** | HPM GCC 13.2.0 就在这里（**不在** `~/3rd_party/hpm/` 下面）。`GNURISCV_TOOLCHAIN_PATH` 指这个 |
+  | `~/3rd_party/hpm` | **只剩制造工具** | 现在只有 `HPMicro_Manufacturing_Tool_v0.6.0`；GCC、`hpm_sdk`、OpenOCD 都不在这里了（SDK 本来就随仓库 submodule 自带） |
+  | OpenOCD | **不存在** | HPM 版和 WCH 版本机都没有 |
+  | `~/3rd_party/MRS_Toolchain_Linux_X64_V240` | **不存在** | 本机编不了 `ch32_board` |
   | `~/3rd_party/wch-openocd` | 不存在 | 见 `firmware/ch32_board/AGENTS.md` |
-  | `/opt/SEGGER/JLink_V948` | **已装** | SEGGER J-Link Software V9.48，用于 STM32 / HPM 的宿主机调试；不支持当前 CH32H417 链路 |
-  | `/opt/SEGGER/Ozone_V340j` | **已装** | SEGGER Ozone V3.40j，仓库 `ozone/` 工程的 GUI 调试器；不用于 `ch32_board` |
+  | `/opt/SEGGER/JLink_V968` | **已装** | SEGGER J-Link Software **V9.68**（`jlink 9.68.0`），`/opt/SEGGER/JLink` 是指向它的符号链接；用于 STM32 / HPM 的宿主机调试，不支持当前 CH32H417 链路 |
+  | `/opt/SEGGER/Ozone_V350a` | **已装** | SEGGER Ozone **V3.501**，仓库 `ozone/` 工程的 GUI 调试器；不用于 `ch32_board` |
 
-  由此，本机可用的组合是：**host SDK + `rmcs_board` 全部固件 + `ch32_board` 正式构建 +
-  HPM/WCH OpenOCD + SEGGER J-Link/Ozone + DFU 烧录**。即使现场没有接 JTAG，
+  由此，本机可用的组合是：**host SDK + `rmcs_board` 全部固件 + SEGGER J-Link/Ozone +
+  DFU 烧录**。`ch32_board` 与任何 OpenOCD 流程本机都跑不了（缺 MounRiver 工具链）。
+  即使现场没有接 JTAG，
   `rmcs_board` 仍有两条走 USB 的带内诊断通道，见
   `firmware/rmcs_board/AGENTS.md`「板上没有调试器时怎么看现场」。
 

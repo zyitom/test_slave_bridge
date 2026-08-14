@@ -45,7 +45,7 @@ import sys
 
 PD_CHUNK_SIZE = 48   # bytes per direction; must match rmcs_pd.h
 ENTRY_COUNT = 12     # 12 x UNSIGNED32 = 48 bytes
-REVISION = 7         # bump whenever the SII changes so already-flashed boards
+REVISION = 8         # bump whenever the SII changes so already-flashed boards
                      # refresh their emulated EEPROM on next boot. Must stay
                      # ABOVE HYBRID_REVISION: a board that ever booted the
                      # hybrid image stores 5, and a stock image numbered <= 5
@@ -53,6 +53,17 @@ REVISION = 7         # bump whenever the SII changes so already-flashed boards
                      # while the firmware serves 48 -- see the ROLLBACK TRAP
                      # note above. Raised 3 -> 6 on 2026-07-31 for exactly that
                      # reason (this board had run the hybrid variant).
+                     #
+                     # Raised 7 -> 8 on 2026-08-14 for the FoE regeneration: it
+                     # changes the SII in two ways that a stale stored copy would
+                     # hide. MAX_MBX_SIZE goes 0x80 -> 0x10C, so SM0/SM1 grow;
+                     # and BOOTSTRAPMODE_SUPPORTED adds the bootstrap mailbox
+                     # section. A master enumerating from the stored rev-7 image
+                     # would size the mailbox at 128 bytes while the firmware
+                     # serves 268, and would not offer BOOT at all. Note this
+                     # script does NOT write either of those itself -- both come
+                     # from the SSC-generated header, which is why only the
+                     # revision needs touching here.
 
 # Hybrid fixed-PDO variant (RMCS_ECAT_HYBRID_PD): 352-byte SMs and a two-object
 # split per direction (mailbox array + stream array), mirroring the hybrid

@@ -132,17 +132,36 @@ SEGGER 工具只安装在需要连接实体调试器的 Linux x86_64 开发机�
 - J-Link Software：<https://www.segger.com/downloads/jlink/JLink_Linux_x86_64.deb>
 - Ozone：<https://www.segger.com/downloads/jlink/Ozone_Linux_x86_64.deb>
 
-J-Link 下载页要求用户在网页中接受 SEGGER Terms of Use；对该地址直接执行 `curl` / `wget`
-会得到许可确认 HTML，而不是 `.deb`，因此不要把下载写进 Dockerfile 或无人值守 CI。
-Ozone 当前可以从固定入口直接取得 `.deb`，但它是依赖实体 J-Link 的 GUI 调试器，也只在
-宿主机安装。用浏览器下载后执行（版本号按实际文件名替换）：
+**不用开浏览器也能装**（2026-08-14 补充）。J-Link 的下载地址对 `curl` / `wget` 直接
+GET 只返回许可确认 HTML（约 27 KB），不是 `.deb`——这一点没有变。变的是知道了它要的
+只是一个表单字段：`accept_license_agreement=accepted` 用 POST 提交即可拿到真包
+（约 59 MB）。Ozone 没有这道门，GET 就能直接下（约 21 MB）。`[实测]`
 
 ```bash
 cd ~/Downloads
-sudo apt install ./JLink_Linux_V948_x86_64.deb
-sudo apt install ./Ozone_Linux_V350a_x86_64.deb
+# J-Link：POST 提交许可接受；直接 GET 只会拿到 HTML
+curl -L -X POST -d "accept_license_agreement=accepted" \
+     -o JLink_Linux_x86_64.deb \
+     https://www.segger.com/downloads/jlink/JLink_Linux_x86_64.deb
+# Ozone：无许可门，直接下
+curl -L -o Ozone_Linux_x86_64.deb \
+     https://www.segger.com/downloads/jlink/Ozone_Linux_x86_64.deb
+
+# 下之前先确认拿到的是包不是 HTML
+file JLink_Linux_x86_64.deb Ozone_Linux_x86_64.deb   # 应为 "Debian binary package"
+
+sudo apt install ./JLink_Linux_x86_64.deb ./Ozone_Linux_x86_64.deb
 dpkg-query -W jlink ozone
 ```
+
+> **那个 POST 是在代替使用者接受 SEGGER Terms of Use，不要当成纯技术步骤。** 它只适合
+> 使用者本人（或已明确授权的自动化）在自己的开发机上执行；**仍然不要写进 Dockerfile
+> 或无人值守 CI**——原因不是技术上做不到，而是许可接受需要有一个确定的责任人。
+> J-Link 软件本身免费，但授权范围限于配正版 SEGGER 探针使用。
+
+Ozone 是依赖实体 J-Link 的 GUI 调试器，同样只在宿主机安装。本机当前版本
+`jlink 9.68.0` / `ozone 3.501`，二进制落在 `/usr/bin/JLinkExe`、`/usr/bin/JLinkGDBServer`、
+`/usr/bin/ozone`，`.deb` 安装时会自动装 udev 规则。`[实测 2026-08-14]`
 
 安装后，`./jlink-debug.sh` 提供命令行 J-Link GDB Server 流程，`./ozone-debug.sh` 打开
 仓库中预设的 Ozone 工程；可用 `--list` 查看目标。它们用于 `c_board`、`mc02` 和

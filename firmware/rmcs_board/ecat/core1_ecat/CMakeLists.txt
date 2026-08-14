@@ -145,6 +145,28 @@ sdk_src(${RMCS_SSC_DIR}/mailbox.c)
 sdk_src(${RMCS_SSC_DIR}/objdef.c)
 sdk_src(${RMCS_SSC_DIR}/sdoserv.c)
 
+# FoE + BOOT state. The SSC Tool emits these three only when FOE_SUPPORTED and
+# BOOTSTRAPMODE_SUPPORTED are set -- which is the difference between the stock
+# ECAT_IO configuration and tools/HPM_ECAT_RMCS_Config.xml.
+#
+# Detected rather than required, so ONE source tree builds against either
+# generation. A repository that still holds a pre-FoE SSC keeps building (with
+# firmware update over EtherCAT simply absent); regenerating with the RMCS
+# config turns it on with no CMake edit. RMCS_SSC_HAS_FOE is what the sources
+# gate on -- never test for the files again outside this block.
+if(EXISTS "${RMCS_SSC_DIR}/foeappl.c")
+    set(RMCS_SSC_HAS_FOE 1)
+    sdk_src(${RMCS_SSC_DIR}/bootmode.c)
+    sdk_src(${RMCS_SSC_DIR}/ecatfoe.c)
+    sdk_src(${RMCS_SSC_DIR}/foeappl.c)
+    message(STATUS "SSC has FoE: firmware update over EtherCAT is enabled")
+else()
+    set(RMCS_SSC_HAS_FOE 0)
+    message(STATUS
+        "SSC has no FoE (regenerate with ecat/tools/HPM_ECAT_RMCS_Config.xml to enable)")
+endif()
+sdk_compile_definitions(-DRMCS_SSC_HAS_FOE=${RMCS_SSC_HAS_FOE})
+
 # --- SDK EtherCAT port layer -------------------------------------------------
 #
 # hpm_ecat_hw.c and hpm_ecat_phy.c come from the SDK unchanged. Its third file,
@@ -158,6 +180,19 @@ set(ECAT_PORT_DIR ${HPM_SDK_BASE}/samples/ethercat/port)
 sdk_inc(${ECAT_PORT_DIR})
 sdk_src(${ECAT_PORT_DIR}/hpm_ecat_hw.c)
 sdk_src(${ECAT_PORT_DIR}/hpm_ecat_phy.c)
+
+# The SDK's generic FoE glue: it holds the file-name/password gate and the block
+# sequencing, and reaches the board through four function pointers. Those four
+# are where this project diverges from the SDK sample -- the sample programs the
+# flash inline, which this core cannot do, so src/ecat_foe_support.cpp routes the
+# two writing ones through the MBX1 flash RPC instead. Added here, next to the
+# port layer it belongs to, because ECAT_PORT_DIR is only defined above.
+if(RMCS_SSC_HAS_FOE)
+    # NOT hpm_ecat_foe.c: its hardcoded password locks out IgH masters and it
+    # programs the NOR inline, which this core cannot do. src/ecat_foe_support.cpp
+    # implements the four SSC callbacks directly instead -- see its header comment.
+    sdk_app_src(src/ecat_foe_support.cpp)
+endif()
 if(CONFIG_EEPROM_EMULATION)
     sdk_src(src/hpm_ecat_e2p_emulation.c)
 endif()
@@ -169,7 +204,7 @@ sdk_inc(src)
 
 # ../../../../core/include: librmcs/ecat/pd_stream.hpp, the ARQ line format
 # shared verbatim with the host transport (step 1).
-sdk_app_inc(src ../common ../../../../core/include)
+sdk_app_inc(src ../common ../../common ../../../../core/include)
 sdk_app_src(src/ecat_main.c)
 sdk_app_src(src/ecat_appl.c)
 sdk_app_src(src/ecat_diag.c)

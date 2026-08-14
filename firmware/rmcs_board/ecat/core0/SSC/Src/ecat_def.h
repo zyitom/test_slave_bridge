@@ -350,7 +350,7 @@ STATIC_ETHERNET_BUFFER: If this switch is set a static buffer is used to store e
 /** 
 FOE_SUPPORTED: If the FoE services should be supported, then this switch shall be set.  */
 #ifndef FOE_SUPPORTED
-#define FOE_SUPPORTED                             0 //This define was already evaluated by ET9300 Project Handler(V. 1.5.3.0)!
+#define FOE_SUPPORTED                             1 //This define was already evaluated by ET9300 Project Handler(V. 1.5.3.0)!
 #endif
 
 /** 
@@ -363,7 +363,7 @@ MAILBOX_SUPPORTED: This switch is set automatically if at least one mailbox prot
 BOOTSTRAPMODE_SUPPORTED: If the firmware update over FoE services should be supported, then this switch shall be set.<br>
 If this switch is set, then also "FOE_SUPPORTED" shall be set.  */
 #ifndef BOOTSTRAPMODE_SUPPORTED
-#define BOOTSTRAPMODE_SUPPORTED                   0 //This define was already evaluated by ET9300 Project Handler(V. 1.5.3.0)!
+#define BOOTSTRAPMODE_SUPPORTED                   1 //This define was already evaluated by ET9300 Project Handler(V. 1.5.3.0)!
 #endif
 
 /** 
@@ -992,7 +992,7 @@ MIN_MBX_SIZE: Minimum mailbox size (Sync Manager 0 and 1) which could be set by 
 /** 
 MAX_MBX_SIZE: Maximum mailbox size (Sync Manager 0 and 1) which could be set by the master. */
 #ifndef MAX_MBX_SIZE
-#define MAX_MBX_SIZE                              0x0080
+#define MAX_MBX_SIZE                              0x10C
 #endif
 
 /** 

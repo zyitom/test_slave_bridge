@@ -5,6 +5,8 @@
 
 #include <board.h>
 
+#include "firmware/rmcs_board/common/foe_staging.hpp"
+
 namespace librmcs::firmware::flash {
 
 // Boards can reserve flash above the app image (e.g. the EtherCAT bridge's
@@ -27,5 +29,30 @@ static_assert(kMetadataEndAddress == kAppStartAddress);
 static_assert((kMetadataStartAddress % kFlashSectorSize) == 0U);
 static_assert((kAppStartAddress % kFlashSectorSize) == 0U);
 static_assert((kAppEndAddress % kFlashSectorSize) == 0U);
+
+// FoE staging region. Addresses and the on-flash record live in common/, because
+// the RUNNING APP writes them and the bootloader reads them -- see
+// common/foe_staging.hpp for the ownership split and the crash-safety argument.
+#if defined(BOARD_FOE_STAGING_ADDR)
+
+// The cap itself lives in common/foe_staging.hpp, because the app enforces it
+// while receiving and the bootloader enforces it while installing; a cap that
+// differed between the two would let the app stage an image the bootloader then
+// refuses, which is the one failure this whole design is meant to avoid.
+inline constexpr size_t kStagingMaxImageSize = foe::kStagingMaxImageSize;
+
+// foe_staging.hpp has to spell the app slot out from board.h alone (the app must
+// not include bootloader headers). This is where the two derivations meet, so
+// assert they agree rather than trusting that they do.
+static_assert(
+    foe::kAppSlotCapacity == kAppMaxImageSize,
+    "foe_staging.hpp's app-slot arithmetic drifted from layout.hpp's kAppStartAddress");
+
+static_assert((foe::kStagingMetadataStart % kFlashSectorSize) == 0U);
+static_assert((foe::kStagingImageStart % kFlashSectorSize) == 0U);
+static_assert((foe::kStagingImageEnd % kFlashSectorSize) == 0U);
+static_assert(foe::kStagingMetadataStart >= kAppEndAddress, "staging overlaps the app slot");
+
+#endif
 
 } // namespace librmcs::firmware::flash

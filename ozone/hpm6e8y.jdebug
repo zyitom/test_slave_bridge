@@ -1,12 +1,13 @@
 /*********************************************************************
 * Ozone project: hpm6e8y BOOTLOADER -- JTAG.
 *
-*   /opt/SEGGER/Ozone_V340j/Ozone ozone/hpm6e8y.jdebug
+*   /opt/SEGGER/Ozone_V350a/Ozone ozone/hpm6e8y.jdebug
 *   ./ozone-debug.sh hpm6e8y
 *
 * Build first:
-*   export PATH=~/3rd_party/hpm/bin:$PATH
-*   cmake --build firmware/rmcs_board/ecat/build
+*   export PATH=~/3rd_party/rv32imac_zicsr_zifencei_multilib_b_ext-linux/bin:$PATH
+*   cmake --preset release -S firmware/rmcs_board -DBOARD=hpm6e8y
+*   cmake --build firmware/rmcs_board/build --target rmcs_board_bootloader
 *
 * Bootloader rather than the EtherCAT application, and download-and-reset rather
 * than attach: same reasoning as ozone/mc02.jdebug -- the bootloader is only
@@ -24,9 +25,16 @@
 * CM_DOWNLOAD_RESET programs the bootloader directly. The old
 * flash-ecat-bootloader.sh (HPM Boot ROM manufacturing tool) is gone.
 *
-* To debug the EtherCAT application on core0 instead, change File.Open to
-* ../firmware/rmcs_board/ecat/build/rmcs_ecat_core0/output/demo.elf AND the
-* connect mode to CM_ATTACH_HALT.
+* To debug the RUNNING APPLICATION on core0 instead (USB + CAN + protocol stack +
+* the MBX1 flash RPC server), change File.Open to
+* ../firmware/rmcs_board/build_hpm6e8y_swap/app/output/rmcs_board_app_hpm6e8y.elf
+* AND the connect mode to CM_ATTACH_HALT.
+*
+* PATHS UPDATED 2026-08-14: both ELF paths used to point into
+* firmware/rmcs_board/ecat/build/, which is the RETIRED core0=SSC layout. The
+* mainline is the core-swap build (flash-ecat-swap.sh -> build_hpm6e8y_swap/),
+* and the bootloader now comes from the plain superbuild. The old paths no
+* longer exist, so this project failed to load any symbols at all.
 **********************************************************************/
 
 void OnProjectLoad (void) {
@@ -37,5 +45,5 @@ void OnProjectLoad (void) {
 
   Debug.SetConnectMode (CM_DOWNLOAD_RESET);
 
-  File.Open ("../firmware/rmcs_board/ecat/build/rmcs_ecat_bootloader/output/rmcs_board_bootloader_hpm6e8y.elf");
+  File.Open ("../firmware/rmcs_board/build/bootloader/output/rmcs_board_bootloader_hpm6e8y.elf");
 }

@@ -147,6 +147,21 @@ DIAG_USB=1 ./flash-ecat-swap.sh   # core1 日志经 USB 送出，配 host/exampl
 ./flash-ecat.sh                   # EtherCAT 桥旧布局（对照基线）
 ```
 
+**第三条烧录途径：经 EtherCAT FoE**（核对调布局，已上板验证）。主站把镜像推进板上的
+暂存区，冷复位后由 bootloader 校验并装入 app 槽——不需要 USB，适合够不到板子的场合。
+
+```bash
+# 载荷既不是 .bin 也不是 .dfu，是 .dfu 砍掉末尾 16 字节的 DFU 后缀
+python3 -c "d=open('firmware/rmcs_board/build_hpm6e8y_swap/app/output/rmcs_board_app_hpm6e8y.dfu','rb').read(); open('/tmp/fw.img','wb').write(d[:-16])"
+sudo ethercat states BOOT && sleep 3     # 必须确认真的到 BOOT 再发
+sudo ethercat foe_write -o app /tmp/fw.img
+sudo ethercat states PREOP               # 退出 BOOT 触发冷复位 + 安装
+```
+
+**前提是 SSC 带 FoE**：需要用 `ecat/tools/HPM_ECAT_RMCS_Config.xml` 重新生成，
+仓库「构建前提」描述的原样例程配置不含 FoE。完整设计、实测时序、载荷格式陷阱和
+被推翻的判断见 [ecat/FOE_FIRMWARE_UPDATE.md](ecat/FOE_FIRMWARE_UPDATE.md)。
+
 ## CAN 采样点：必须对齐总线，不是对齐推荐表 [实测 2026-08-03]
 
 **结论先行：`can.hpp` 把仲裁域和数据域的采样点都钉死在 87.5%，不要改回 SDK 默认，
