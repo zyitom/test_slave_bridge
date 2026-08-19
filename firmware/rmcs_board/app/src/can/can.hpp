@@ -37,10 +37,8 @@ using board::CanPort;
 class Can : private core::utility::Immovable {
 public:
     // Constructed from the logical CAN index alone, with the CanPort derived from
-    // it via board::can_port(). The port cannot be a Lazy argument: Lazy's
-    // constructor is consteval, and on a board serving two PCBs the port's mode
-    // is only known at run time (boards/hpm5321/app/board_app.hpp). The index is
-    // a compile-time constant either way.
+    // it via board::can_port(). The index, not the port, is the Lazy argument: it
+    // keeps every construction site independent of the port table's contents.
     using Lazy = utility::Lazy<Can, data::DataId, size_t>;
 
     // Baudrates are compile-time constants; the mode is fixed per board via

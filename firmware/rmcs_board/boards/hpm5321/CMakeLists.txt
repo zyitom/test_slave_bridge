@@ -1,8 +1,8 @@
 sdk_inc(.)
 sdk_src(board.c)
 
-# This board directory serves BOTH HPM5321 PCBs -- single classic-CAN and dual
-# CAN-FD -- from one image, so its USB PID is not a build-time constant. The
+# This board directory serves BOTH HPM5321 PCBs -- single-CAN and dual-CAN --
+# from one image, so its USB PID is not a build-time constant. The
 # firmware reports 0xA901 or 0xA902 at run time from the OTP board identity (see
 # common/board_identity.hpp and app/src/usb/usb_descriptors.hpp). The definition
 # below is only the fallback baked into the descriptor constant and the value the

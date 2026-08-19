@@ -27,7 +27,7 @@ SDK 使用的 SoC 模型是 **HPM5361**；板上实际器件为 **HPM5321IEG1**�
 
 | 逻辑名 | 模式 | 说明 |
 | ------- | ---- | ------- |
-| CAN0 | 经典 CAN | 主机请求 CAN-FD 时降级为经典帧 |
+| CAN0 | CAN-FD | 帧格式逐帧由 `is_fdcan` 决定；收发器 5 Mbit 能力未实测 |
 
 **双 CAN-FD 变体（OTP25 = `0x00000002`）：**
 
@@ -36,9 +36,10 @@ SDK 使用的 SoC 模型是 **HPM5361**；板上实际器件为 **HPM5321IEG1**�
 | CAN0 | MCAN0 | PA00 | PA01 | CAN-FD |
 | CAN1 | MCAN3 | PA31 | PA30 | CAN-FD |
 
-端口表和变体选择在 `app/board_app.hpp`（`kCanPorts`、`can_port()`）。CAN0 是 DM（达妙）
-电机总线；单 CAN 变体控制器配置为仅经典模式，主机请求 CAN-FD 的帧会降为经典，见
-[README.md](README.md)。双 CAN-FD 变体启用 MCAN0 和 MCAN3 两路 FD。
+端口表在 `app/board_app.hpp`（`kCanPorts`、`can_port()`）；两个变体的模式相同，变体只
+决定**启用几路**（`can_port_count()`）。CAN0 是 DM（达妙）电机总线。两个变体的控制器都跑
+CAN-FD，经典帧照收照发，见 [README.md](README.md)；单 CAN 变体的收发器 5 Mbit 能力尚未
+实测。
 
 ## UART
 

@@ -22,12 +22,12 @@ namespace librmcs::firmware::board {
 
 // ONE IMAGE, TWO PCBs
 //
-// This board_app serves both HPM5321 variants -- the single classic-CAN board and
-// the dual CAN-FD board -- from a single binary. They were separate `boards/`
+// This board_app serves both HPM5321 variants -- the single-CAN board and the
+// dual-CAN board -- from a single binary. They were separate `boards/`
 // directories with ~700 duplicated lines carrying about fifteen lines of real
-// difference: the CAN port table, the RGB LED pins, and the per-CAN indicator
-// pins. Everything else (board.c, the .yaml, the UART, the clock tree, USB) was
-// already identical.
+// difference: how many CAN ports exist, the RGB LED pins, and the per-CAN
+// indicator pins. Everything else (board.c, the .yaml, the UART, the clock
+// tree, USB) was already identical.
 //
 // The variant is decided at run time from OTP shadow word 25 -- see
 // common/board_identity.hpp for what that word is, what the evidence for it
@@ -61,16 +61,19 @@ constexpr size_t kCanPortCapacity = 2;
 
 // CAN ports in logical order (CAN0, CAN1, ...).
 //
-// The mode differs between variants and is NOT captured here: MCAN0 runs classic
-// on the single-CAN board and CAN-FD on the dual board, so can_port() overrides
-// .mode from the identity. Reading this table directly gives the dual board's
-// modes; call can_port(index) on any path where the mode matters.
+// Both variants run CAN-FD, so the table is the same for both PCBs and the
+// single-CAN board simply brings up one fewer port. FD is a strict superset of
+// classic CAN 2.0: an FD-enabled M_CAN sends and receives classic frames too,
+// with the format chosen per element from the FDF/BRS bits, which can.cpp
+// drives from the host's per-frame is_fdcan flag. Nothing switches mode at run
+// time -- the controller is configured once and stays FD-capable.
 //
-// (The single board's classic-only MCAN0 is a real behavioural difference, not an
-// oversight: with the controller in classic mode it does not receive FD frames at
-// all -- measured 0/50 from an FD peer, versus 50/50 classic [实测 2026-08-05].
-// Preserving kClassic there keeps that board's behaviour byte-identical to what
-// shipped; switching it to FD would be a separate, testable change.)
+// This replaces an earlier classic-only MCAN0 on the single-CAN board, which
+// existed only to keep that board byte-identical to what shipped. Classic mode
+// is strictly weaker with no upside: it cannot receive FD frames at all
+// (measured 0/50 from an FD peer, versus 50/50 classic). What still needs
+// on-target confirmation is the single-CAN PCB's transceiver at the 5 Mbit data
+// phase -- see README.md.
 constexpr CanPort kCanPorts[] = {
     {.base = HPM_MCAN0_BASE, .irq_num = IRQn_MCAN0, .mode = CanMode::kCanFd},
     {.base = HPM_MCAN3_BASE, .irq_num = IRQn_MCAN3, .mode = CanMode::kCanFd},
@@ -83,14 +86,9 @@ static_assert(std::size(kCanPorts) == kCanPortCapacity);
 // and whose pads are LED cathodes.
 inline size_t can_port_count() { return board_identity().dual_can() ? 2U : 1U; }
 
-// The port at `index` with .mode corrected for this board. Entries at or above
-// can_port_count() are not valid on this board.
-inline CanPort can_port(size_t index) {
-    CanPort port = kCanPorts[index];
-    if (!board_identity().dual_can())
-        port.mode = CanMode::kClassic;
-    return port;
-}
+// The port at `index`. Entries at or above can_port_count() are not valid on
+// this board.
+constexpr CanPort can_port(size_t index) { return kCanPorts[index]; }
 
 uint32_t init_can(MCAN_Type* ptr);
 void can_irq_handler(size_t board_can_index);

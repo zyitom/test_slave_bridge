@@ -5,8 +5,9 @@ project(rmcs_board_superbuild LANGUAGES NONE)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/../common/cmake/librmcs_firmware.cmake")
 
-# hpm5321 builds one image serving both HPM5321 PCBs -- single classic-CAN and
-# dual CAN-FD -- selecting its CAN and LED tables at run time from OTP word 25
+# hpm5321 builds one image serving both HPM5321 PCBs -- single-CAN and dual-CAN --
+# selecting how many CAN ports to bring up, and its LED tables, at run time from
+# OTP word 25
 # (common/board_identity.hpp).
 set(BOARD "hpm5321" CACHE STRING "Target board (hpm5321)")
 set_property(CACHE BOARD PROPERTY STRINGS hpm5321)
