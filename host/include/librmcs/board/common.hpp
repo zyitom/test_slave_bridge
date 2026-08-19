@@ -49,6 +49,24 @@ public:
      */
     void (*thread_setup)(const AdvancedOptions&) noexcept = nullptr;
 
+    /**
+     * @brief Runs the shared USB-SOF time base on this link.
+     *
+     * Sends a kTimeAnchor alongside every keepalive and consumes the board's
+     * kTimeStatus reply, feeding librmcs::host::time::timeline().
+     *
+     * @warning Opt-in, and it must stay that way: the time-sync session types
+     * carry a payload after the session header, so a firmware that does not know
+     * them cannot skip it and loses framing on the downlink. Enable it only for
+     * boards built with -DLIBRMCS_TIME_SYNC=ON.
+     */
+    bool enable_time_sync = false;
+
+    AdvancedOptions& set_enable_time_sync(bool value) {
+        enable_time_sync = value;
+        return *this;
+    }
+
     AdvancedOptions& set_dangerously_skip_version_checks(bool value) {
         dangerously_skip_version_checks = value;
         return *this;

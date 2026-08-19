@@ -1,5 +1,7 @@
 #include "firmware/rmcs_board/app/src/can/can.hpp"
 
+#include "firmware/rmcs_board/app/src/sync/timebase.hpp"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
@@ -154,6 +156,23 @@ bool Can::read_uplink(data::CanDataView& data, uint8_t storage[8], bool& valid) 
         const auto ns = static_cast<uint32_t>(ts_value.ts_64bit);
         data.timestamp_us =
             (sec * (1'000'000'000U / kTsNsPerUs)) + ((sec * 2U) / 3U) + (ns / kTsNsPerUs);
+
+        // Cross-board synchronisation probe. Only this one CAN id takes the
+        // branch, so the cost on the forwarding hot path is a compare; the raw
+        // capture is queued untouched because converting it to the shared axis
+        // costs two 64-bit divisions, which have no business running inside the
+        // highest-priority interrupt on this board.
+        if constexpr (sync::timebase::kEnabled) {
+            if (data.can_id == data::kSyncProbeCanId && data_length >= sizeof(uint32_t))
+                [[unlikely]] {
+                uint32_t tag = 0;
+                std::memcpy(&tag, storage, sizeof(tag));
+                // The nanosecond word only, matching how the time base samples
+                // PTPC: the seconds register is not latched with it and a
+                // composed pair is not coherent. Nothing needs the epoch.
+                sync::timebase::note_can_capture(tag, ns, static_cast<uint8_t>(data_id_));
+            }
+        }
     }
 
     valid = true;

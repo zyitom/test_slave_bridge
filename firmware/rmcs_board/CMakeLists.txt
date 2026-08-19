@@ -43,6 +43,15 @@ option(LIBRMCS_RELEASE_CORE1 "Build the EtherCAT core1 image and release CPU1 fr
 # Forwarded to the app sub-build as LIBRMCS_APP_CAN_DIAG; see app/CMakeLists.txt.
 option(LIBRMCS_CAN_DIAG "Emit CAN forwarding telemetry on the UART0 uplink" OFF)
 
+# Forwarded to the app sub-build as LIBRMCS_APP_TIME_SYNC; see app/CMakeLists.txt.
+option(LIBRMCS_TIME_SYNC "Run the shared USB-SOF time base" OFF)
+
+# Forwarded to the app sub-build as LIBRMCS_APP_PULSE_TEST; see app/CMakeLists.txt.
+option(LIBRMCS_PULSE_TEST "Measure cross-board skew with GPTMR pulses (takes over UART0)" OFF)
+
+# Forwarded to the app sub-build as LIBRMCS_APP_SOF_DIAG; see app/CMakeLists.txt.
+option(LIBRMCS_SOF_DIAG "Emit USB SOF / FRINDEX validation telemetry on the UART0 uplink" OFF)
+
 # Forwarded to the app sub-build as LIBRMCS_APP_DIAG_OVER_USB.
 option(LIBRMCS_DIAG_OVER_USB "Relay core1 diagnostics to the host over USB" OFF)
 
@@ -120,6 +129,9 @@ add_rmcs_board_subbuild(
     app
     -DLIBRMCS_APP_RELEASE_CORE1=${LIBRMCS_RELEASE_CORE1}
     -DLIBRMCS_APP_CAN_DIAG=${LIBRMCS_CAN_DIAG}
+    -DLIBRMCS_APP_TIME_SYNC=${LIBRMCS_TIME_SYNC}
+    -DLIBRMCS_APP_PULSE_TEST=${LIBRMCS_PULSE_TEST}
+    -DLIBRMCS_APP_SOF_DIAG=${LIBRMCS_SOF_DIAG}
     -DLIBRMCS_APP_DIAG_OVER_USB=${LIBRMCS_DIAG_OVER_USB}
     -DLIBRMCS_APP_ILM_HOT_PATH=${LIBRMCS_ILM_HOT_PATH}
 )

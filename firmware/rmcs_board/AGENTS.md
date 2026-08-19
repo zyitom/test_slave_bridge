@@ -3,7 +3,7 @@
 > **文档类型**：现行规范（板级）
 > **适用范围**：`firmware/rmcs_board/`，HPMicro HPM6E8Y / HPM5321（Andes RISC-V）
 > **状态**：现行有效
-> **相关文档**：[仓库根 AGENTS.md](../../AGENTS.md) · [BUILD_ENVIRONMENT.md](BUILD_ENVIRONMENT.md)（完整环境搭建） · [USB_OPTIMIZATION_LOG.md](USB_OPTIMIZATION_LOG.md)（USB 调优实录：做过什么、否掉了什么） · [ecat/README.md](ecat/README.md)（EtherCAT 桥）
+> **相关文档**：[仓库根 AGENTS.md](../../AGENTS.md) · [BUILD_ENVIRONMENT.md](BUILD_ENVIRONMENT.md)（完整环境搭建） · [USB_OPTIMIZATION_LOG.md](USB_OPTIMIZATION_LOG.md)（USB 调优实录：做过什么、否掉了什么） · [SOF_TIMEBASE.md](SOF_TIMEBASE.md)（跨板 USB SOF 时间轴验证） · [ecat/README.md](ecat/README.md)（EtherCAT 桥）
 
 > 本目录专属指南，叠加在仓库根 `AGENTS.md` 之上。完整编译环境（依赖清单、工具链下载、烧录）见本目录 `BUILD_ENVIRONMENT.md`，此处只列 agent 关键点。
 
@@ -100,7 +100,7 @@ sudo chrt -f 80 ./host/build/examples/bridge_can_loopback_latency usb      3000 
 | 布线 | 1 根 | **N 根都要回主机** | **1 根菊花链下去** |
 | 距离 | ~5 m | ~5 m | 每跳 100 m |
 | **故障隔离** | — | **每块板独立，坏一块不影响其他** | **链路断则下游全掉** |
-| 跨板同步 | 无 | 无 | DC，亚微秒 |
+| 跨板同步 | 无 | **有：USB SOF 共享时间轴**（见 [SOF_TIMEBASE.md](SOF_TIMEBASE.md)） | DC，亚微秒 |
 | 主机开销 | 1 个事件线程 | N 个事件线程 + 共享控制器中断 | **烧掉一整个核忙轮询** |
 | 运维复杂度 | 低（插上就用） | 低 | 高（IgH 内核模块、SII/revision、仲裁） |
 
@@ -113,7 +113,12 @@ sudo chrt -f 80 ./host/build/examples/bridge_can_loopback_latency usb      3000 
 - **EtherCAT 只在这三种情况下才划算**，且都与延迟无关：
   1. **布线**：一根线菊花链穿过机体，vs N 根线都要回主机（滑环、转台尤其明显）；
   2. **距离**：超过 USB 的约 5 m；
-  3. **跨板同步**：多块板要在同一时刻动作（DC 亚微秒），USB 没有对应机制。
+  3. **跨板同步**：多块板要在同一时刻动作。**"USB 没有对应机制"这句话 2026-08-19
+     被推翻**——同一个 USB 主机控制器下的 SOF 就是一条硬件分发的共同时基，两块 5321
+     实测圈数零分歧、微帧计数完全一致，见 [SOF_TIMEBASE.md](SOF_TIMEBASE.md)。DC 仍然
+     更强的地方是 **SYNC0 是真的硬件信号**（可直接触发中断/锁存）而 SOF 只给刻度、
+     动作仍由软件执行，且 DC 周期可配而微帧固定 125 us。为同步单独上 EtherCAT，现在
+     需要比以前更强的理由。
 
 **不要为了延迟选 EtherCAT——实测它在任何板数下都不比 USB 快。**
 
@@ -834,15 +839,22 @@ SETUP 会让 usbd 拿到撕裂的 8 字节。只影响枚举/控制传输，不�
 | CAN 转发是否在走：ISR 进入计数、MCAN `IR`/`RXF0S`/`PSR`/`ECR`、PLIC pending/enable/trigger | `-DLIBRMCS_CAN_DIAG=ON` | `host/examples/can_stall_probe.cpp`（边压测边解码，转发停摆时打印前后快照） |
 | core1（EtherCAT 核）在说什么：channel 版本、SII/EEPROM 决策、SSC 起来没有、`ecat_time_ms` 心跳 | `-DLIBRMCS_DIAG_OVER_USB=ON` | `host/examples/core1_log.cpp` |
 | 主循环周期（板端 CPU 余量的直接读数） | `-DLIBRMCS_CAN_DIAG=ON` | `host/examples/hpm5321_loop_probe.cpp` |
+| USB SOF 时间轴是否可信：相邻 FRINDEX 差值直方图、ISR 间隔、端口状态、跨板一致性 | `-DLIBRMCS_SOF_DIAG=ON` | `host/examples/sof_probe.cpp`（见 [SOF_TIMEBASE.md](SOF_TIMEBASE.md)） |
+| 跨板共享时间轴本身：各板状态、拟合出的晶振偏差、绝对微帧是否一致、到 Unix 时间的映射 | `-DLIBRMCS_TIME_SYNC=ON` | `host/examples/time_sync_test.cpp`（主机侧还要 `AdvancedOptions::set_enable_time_sync(true)`） |
 
 > `can_stall_probe` **在 HPM5321 上跑不了**：它绑死 HPM6E8Y 的 PID `0xA904`，并按
 > 单板自环驱动 CAN0->CAN1 与 CAN2->CAN3，假设四路总线。5321 只有两路，双板 rig 又是
 > 交叉对接而非自环。`hpm5321_loop_probe` 补的就是这个缺口——只解码遥测里的主循环
 > 计数，负载自带（两块板双向对发），因为压测工具会独占两块板，遥测读端再也开不进去。
 
-两个开关都默认 OFF：前者会在 CAN 热路径上加计数器，后者会占用 `DataId::kUart0`
-（本板的 UART1 数据口）。2026-08-01 的 CAN 闩死定位和 core1 时基确认全部靠这两条
-通道完成，没有用到任何调试器。
+三个开关都默认 OFF：`CAN_DIAG` 会在 CAN 热路径上加计数器，`DIAG_OVER_USB` 与
+`SOF_DIAG` 会占用 `DataId::kUart0`（本板的 UART1 数据口）。**`SOF_DIAG` 与 `CAN_DIAG`
+共用这一条上行通道，不要同时打开**；`SOF_DIAG` 还会额外开 8 kHz 的 SOF 中断。
+`TIME_SYNC` 走的是 session 字段而不是 `kUart0`，所以它跟另外两个不冲突；它的 8 kHz
+中断实测在 CAN 往返延迟上**测不出代价**（SOF_TIMEBASE.md 4.5）。
+
+2026-08-01 的 CAN 闩死定位、core1 时基确认，以及 2026-08-19 的跨板 SOF 时间轴验证，
+全部靠这几条通道完成，没有用到任何调试器。
 
 ## 构建
 ```bash

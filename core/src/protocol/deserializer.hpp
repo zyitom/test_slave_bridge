@@ -54,6 +54,24 @@ public:
 
     virtual void session_control_deserialized_callback(const data::SessionControlView& data) = 0;
 
+    // Deliberately NOT pure: the shared time base is optional, every existing
+    // board and host application predates it, and a receiver that ignores these
+    // is still correct -- it simply never acquires a timeline. Making them pure
+    // would force an empty override into every implementor for no benefit.
+    virtual void time_anchor_deserialized_callback(const data::TimeAnchorView& data) { (void)data; }
+
+    virtual void time_status_deserialized_callback(const data::TimeStatusView& data) { (void)data; }
+
+    virtual void sync_sample_deserialized_callback(const data::SyncSampleView& data) { (void)data; }
+
+    virtual void pulse_schedule_deserialized_callback(const data::PulseScheduleView& data) {
+        (void)data;
+    }
+
+    virtual void pulse_report_deserialized_callback(const data::PulseReportView& data) {
+        (void)data;
+    }
+
     virtual void error_callback() = 0;
 };
 

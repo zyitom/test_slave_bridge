@@ -11,6 +11,10 @@
 #include "firmware/rmcs_board/app/src/can/can.hpp"
 #include "firmware/rmcs_board/app/src/diag/can_diag.hpp"
 #include "firmware/rmcs_board/app/src/led/led.hpp"
+#include "firmware/rmcs_board/app/src/sync/pulse.hpp"
+#include "firmware/rmcs_board/app/src/sync/sof.hpp"
+#include "firmware/rmcs_board/app/src/sync/sof_probe.hpp"
+#include "firmware/rmcs_board/app/src/sync/timebase.hpp"
 #include "firmware/rmcs_board/app/src/timer/timer.hpp"
 #include "firmware/rmcs_board/app/src/uart/uart.hpp"
 #include "firmware/rmcs_board/app/src/usb/vendor.hpp"
@@ -100,6 +104,12 @@ App::App() {
         xcore::pd_link_init();
         usb::vendor.init();
 
+        // After usb::vendor.init(), never before: tud_init() -> dcd_init()
+        // assigns USBINTR wholesale, so an earlier arm of the SOF enable would
+        // be overwritten. A no-op unless the time base or the SOF probe is
+        // compiled in.
+        sync::sof_init();
+
         // Bounded by can_count(), not by the array size: on the hpm5321 image the
         // table is sized for the dual-CAN PCB and the single-CAN one leaves the
         // last slot unconstructed. Initializing it there would clock MCAN3 and
@@ -109,6 +119,16 @@ App::App() {
 
         for (auto& board_uart : uart::uart_array)
             board_uart.init();
+
+        // After the CAN drivers, which are what bring PTPC0 up: this routes USB
+        // Start-of-Frame into PTPC's hardware capture. A no-op unless the time
+        // base is compiled in.
+        sync::timebase::init_capture();
+
+        // After the UART driver on purpose: this overrides UART0's pin mux to
+        // put GPTMR0's compare output and capture input on those pads. UART0 is
+        // unavailable in a build with the pulse test enabled.
+        sync::pulse::init();
     }
 }
 
@@ -165,6 +185,22 @@ bool host_session_established() {
             last_tick = tick;
             led::led->set_host_connected(host_session_established());
             led::led->update(tick);
+
+            // Shared time base: refit the microframe-to-local-timer line, and
+            // re-arm the SOF enable so the hook survives a controller that was
+            // reinitialized behind us. Both no-ops unless compiled in.
+            sync::timebase::poll(tick);
+            sync::sof_rearm();
+
+            // Ship any hardware Start-of-Frame captures the CAN receive path
+            // queued. Paced off the 1 kHz tick because the probe runs at a few
+            // hundred frames per second at most and the ring holds 16.
+            usb::vendor->poll_sync_samples();
+            usb::vendor->poll_pulse_captures();
+
+            // USB SOF / FRINDEX validation telemetry (LIBRMCS_APP_SOF_DIAG
+            // builds only), on the same 1 kHz tick as the CAN telemetry below.
+            sync::sof_probe::poll(tick);
 
             // CAN forwarding telemetry (LIBRMCS_APP_CAN_DIAG builds only).
             // Paced off the same 1 kHz tick and emitted before the transport

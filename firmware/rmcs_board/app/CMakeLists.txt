@@ -55,6 +55,31 @@ option(LIBRMCS_APP_RELEASE_CORE1 "Load and release the EtherCAT core1 image" OFF
 # serial console attached. OFF keeps the CAN hot path free of the counters.
 option(LIBRMCS_APP_CAN_DIAG "Emit CAN forwarding telemetry on the UART0 uplink" OFF)
 
+# Shared cross-board time base (src/sync/timebase.*, src/sync/sof.*): the USB
+# microframe counter, its fit against the local machine timer, and the session
+# field's kTimeAnchor / kTimeStatus exchange. See SOF_TIMEBASE.md.
+#
+# OFF by default because enabling it arms the device controller's SOF interrupt,
+# which is 8000 additional interrupts per second on a board whose whole design
+# is organised around USB and CAN interrupt latency. Turn it on for the boards
+# that actually need a shared clock, and re-measure latency when you do.
+option(LIBRMCS_APP_TIME_SYNC "Run the shared USB-SOF time base" OFF)
+
+# Cross-board skew measurement by hardware pulse exchange (src/sync/pulse.*).
+# Uses GPTMR0 channel 1's compare output and capture input, which on this board
+# share pads with UART0 -- so UART0 DOES NOT WORK in a build with this on. That
+# is the whole reason it is a separate option and defaults OFF.
+option(LIBRMCS_APP_PULSE_TEST "Measure cross-board skew with GPTMR pulses" OFF)
+
+# USB SOF probe (src/sync/sof_probe.*): enables the device controller's
+# SOF-received interrupt and records the delta between consecutive FRINDEX
+# readings, plus the ISR-to-ISR interval measured on the local machine timer.
+# Step 1 of the cross-board time base -- it answers whether FRINDEX advances by
+# exactly one per SOF, or whether the status flag leads the increment, before any
+# of the timeline algorithm exists. OFF costs a production image nothing: the ISR
+# hook compiles to nothing and the 8 kHz interrupt is never enabled.
+option(LIBRMCS_APP_SOF_DIAG "Emit USB SOF / FRINDEX validation telemetry on the UART0 uplink" OFF)
+
 # Relay core1's diagnostic ring to the host as UART0 uplink frames instead of to
 # the board console. The console is a UART on the FT2232 debug header, which is
 # not populated on the boards this runs on, so without this core1's boot log --
@@ -115,6 +140,15 @@ endif()
 
 if(LIBRMCS_APP_CAN_DIAG)
     sdk_compile_definitions(-DLIBRMCS_APP_CAN_DIAG=1)
+endif()
+if(LIBRMCS_APP_TIME_SYNC)
+    sdk_compile_definitions(-DLIBRMCS_APP_TIME_SYNC=1)
+endif()
+if(LIBRMCS_APP_PULSE_TEST)
+    sdk_compile_definitions(-DLIBRMCS_APP_PULSE_TEST=1)
+endif()
+if(LIBRMCS_APP_SOF_DIAG)
+    sdk_compile_definitions(-DLIBRMCS_APP_SOF_DIAG=1)
 endif()
 if(LIBRMCS_APP_DIAG_OVER_USB)
     sdk_compile_definitions(-DLIBRMCS_APP_DIAG_OVER_USB=1)

@@ -1,5 +1,7 @@
 #include "librmcs/protocol/handler.hpp"
 
+#include "librmcs/time/timeline.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -38,12 +40,15 @@ public:
     static constexpr size_t kSessionAckRetryCount = 5;
     static constexpr auto kSessionRefreshInterval = std::chrono::milliseconds{250};
 
-    explicit Impl(std::unique_ptr<transport::Transport> transport, data::DataCallback& callback)
+    Impl(
+        std::unique_ptr<transport::Transport> transport, data::DataCallback& callback,
+        bool enable_time_sync)
         : callback_(callback)
         , deserializer_(*this)
         , can_deserializer_(*this)
         , expected_session_nonce_(generate_session_nonce())
         , expected_session_start_ack_(make_session_start_ack(expected_session_nonce_))
+        , time_sync_enabled_(enable_time_sync)
         , transport_(std::move(transport)) {
         // USB bulk completions and EtherCAT callbacks are both arbitrary
         // slices of one reliable byte stream, not protocol-field boundaries.
@@ -224,6 +229,42 @@ public:
             session_cv_.notify_all();
     }
 
+    void time_status_deserialized_callback(const data::TimeStatusView& data) override {
+        if (data.nonce != expected_session_nonce_)
+            return;
+
+        // Midpoint of the round trip, not the arrival instant: the board sampled
+        // its counter somewhere between our send and this arrival, and splitting
+        // the difference cancels the bulk of the USB transit bias. What is left
+        // is the down/up asymmetry, which is the floor on how well this host can
+        // place a microframe on its own clock -- and it is irrelevant to
+        // cross-board agreement, which never goes through this clock at all.
+        const auto now = time::Timeline::Clock::now();
+        const auto sent = time_anchor_sent_at_.load(std::memory_order_acquire);
+        const auto sampled_at = sent.time_since_epoch().count() == 0
+                                  ? now
+                                  : sent + (now - sent) / 2;
+
+        // Only an anchored board is on the shared axis; before that it reports
+        // its own boot-relative origin, which would poison the fit.
+        if (data.state == data::TimeState::kValid)
+            time::timeline().observe(data.microframe, sampled_at);
+
+        callback_.time_status_callback(data);
+    }
+
+    void sync_sample_deserialized_callback(const data::SyncSampleView& data) override {
+        if (data.nonce != expected_session_nonce_)
+            return;
+        callback_.sync_sample_callback(data);
+    }
+
+    void pulse_report_deserialized_callback(const data::PulseReportView& data) override {
+        if (data.nonce != expected_session_nonce_)
+            return;
+        callback_.pulse_report_callback(data);
+    }
+
     void error_callback() override {
         logging::get_logger().error("Deserializer encountered an error while parsing input");
     }
@@ -357,6 +398,41 @@ private:
                 + ": Transmit buffer unavailable (acquire failed)");
     }
 
+public:
+    // Asks this board to fire a hardware pulse at an absolute microframe. The
+    // caller must send the SAME value to every board -- that is what makes the
+    // two-way difference cancel the path delay.
+    void send_pulse_schedule(uint64_t microframe) {
+        StreamBuffer buffer{*transport_};
+        core::protocol::Serializer serializer{buffer};
+        (void)serializer.write_pulse_schedule(
+            {.nonce = expected_session_nonce_, .microframe = microframe});
+    }
+
+private:
+    void send_time_anchor() {
+        // One process-wide axis, queried per round: see librmcs/time/timeline.hpp
+        // for why a per-board origin would leave the boards mutually offset by
+        // whole seconds while each looked perfectly healthy on its own.
+        const auto now = time::Timeline::Clock::now();
+        const uint64_t microframe = time::timeline().anchor_for(now);
+        time_anchor_sent_at_.store(now, std::memory_order_release);
+
+        core::protocol::Serializer::SerializeResult result;
+        {
+            StreamBuffer buffer{*transport_};
+            core::protocol::Serializer serializer{buffer};
+            result = serializer.write_time_anchor(
+                {.nonce = expected_session_nonce_, .microframe = microframe});
+        }
+        core::utility::assert_debug(
+            result != core::protocol::Serializer::SerializeResult::kInvalidArgument);
+        // Deliberately not fatal, unlike the keepalive: a dropped anchor costs
+        // one period of timeline convergence, never the session.
+        if (result == core::protocol::Serializer::SerializeResult::kBadAlloc) [[unlikely]]
+            logging::get_logger().error("Failed to transmit Time Anchor: transmit buffer full");
+    }
+
     void keepalive_loop() {
         while (!stop_keepalive_.load(std::memory_order_relaxed)) {
             {
@@ -374,6 +450,11 @@ private:
                     refresh_session();
                 else
                     establish_session();
+
+                // After the keepalive, so an anchor is only ever sent on a
+                // session the board has just confirmed is alive.
+                if (time_sync_enabled_ && session_established())
+                    send_time_anchor();
             } catch (const std::exception& exception) {
                 logging::get_logger().error(
                     "Failed to refresh session: {}. Terminating...", exception.what());
@@ -398,6 +479,8 @@ private:
     uint64_t session_start_ack_count_ = 0;
     uint64_t session_keepalive_ack_count_ = 0;
     uint32_t expected_session_nonce_ = 0;
+    bool time_sync_enabled_ = false;
+    std::atomic<time::Timeline::Clock::time_point> time_anchor_sent_at_{};
     std::array<std::byte, kSessionStartAckSize> expected_session_start_ack_{};
     std::array<std::byte, kSessionStartAckSize> session_start_ack_window_{};
     size_t session_start_ack_window_size_ = 0;
@@ -575,7 +658,8 @@ Handler::Handler(
     uint16_t usb_vid, int32_t usb_pid, std::string_view serial_filter,
     const board::AdvancedOptions& options, data::DataCallback& callback)
     : impl_(new Impl(
-          transport::usb::create_transport(usb_vid, usb_pid, serial_filter, options), callback)) {}
+          transport::usb::create_transport(usb_vid, usb_pid, serial_filter, options), callback,
+          options.enable_time_sync)) {}
 
 #if defined(LIBRMCS_ENABLE_SOEM) || defined(LIBRMCS_ENABLE_IGH)
 namespace {
@@ -613,7 +697,9 @@ std::unique_ptr<transport::Transport> create_ethercat_transport(
 Handler::Handler(
     std::string_view ethercat_interface_name, const board::AdvancedOptions& options,
     data::DataCallback& callback)
-    : impl_(new Impl(create_ethercat_transport(ethercat_interface_name, options), callback)) {}
+    : impl_(new Impl(
+          create_ethercat_transport(ethercat_interface_name, options), callback,
+          options.enable_time_sync)) {}
 #else
 Handler::Handler(
     std::string_view ethercat_interface_name, const board::AdvancedOptions& options,

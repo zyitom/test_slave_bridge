@@ -336,6 +336,104 @@ coroutine::LifoTask<bool> Deserializer::process_session_field(FieldId) {
     data_view.nonce = header.get<SessionHeader::Nonce>();
     consume_peeked();
 
+    // The four original session types are header-only; the two time-base types
+    // carry a payload whose length is implied by the type. A receiver that does
+    // not recognise a type therefore cannot skip it -- which is why the sender
+    // only emits these to a peer known to support them.
+    switch (data_view.type) {
+    case data::SessionType::kTimeAnchor: {
+        const auto* payload_bytes = co_await peek_bytes(sizeof(TimeAnchorPayload));
+        if (!payload_bytes) [[unlikely]]
+            co_return false;
+        auto payload = TimeAnchorPayload::CRef{payload_bytes};
+        const data::TimeAnchorView anchor{
+            .nonce = data_view.nonce,
+            .microframe = payload.get<TimeAnchorPayload::Microframe>(),
+        };
+        consume_peeked();
+        callback_.time_anchor_deserialized_callback(anchor);
+        co_return true;
+    }
+    case data::SessionType::kTimeStatus: {
+        const auto* payload_bytes = co_await peek_bytes(sizeof(TimeStatusPayload));
+        if (!payload_bytes) [[unlikely]]
+            co_return false;
+        auto payload = TimeStatusPayload::CRef{payload_bytes};
+        const data::TimeStatusView status{
+            .nonce = data_view.nonce,
+            .microframe = payload.get<TimeStatusPayload::Microframe>(),
+            .timestamp_quarter_us = payload.get<TimeStatusPayload::TimestampQuarterUs>(),
+            .ticks_per_microframe_q16 = payload.get<TimeStatusPayload::TicksPerMicroframeQ16>(),
+            .state = payload.get<TimeStatusPayload::State>(),
+            .anomaly_count = payload.get<TimeStatusPayload::AnomalyCount>(),
+            .residual_mean_q16 = payload.get<TimeStatusPayload::ResidualMeanQ16>(),
+            .residual_abs_max_q16 = payload.get<TimeStatusPayload::ResidualAbsMaxQ16>(),
+            .residual_count = payload.get<TimeStatusPayload::ResidualCount>(),
+            .ptpc_units_per_microframe =
+                payload.get<TimeStatusPayload::PtpcUnitsPerMicroframe>(),
+            .ptpc_reference_units = payload.get<TimeStatusPayload::PtpcReferenceUnits>(),
+            .ptpc_reference_microframe =
+                payload.get<TimeStatusPayload::PtpcReferenceMicroframe>(),
+            .ptpc_residual_mean = payload.get<TimeStatusPayload::PtpcResidualMean>(),
+            .ptpc_residual_abs_max = payload.get<TimeStatusPayload::PtpcResidualAbsMax>(),
+            .ptpc_step_min = payload.get<TimeStatusPayload::PtpcStepMin>(),
+            .ptpc_step_max = payload.get<TimeStatusPayload::PtpcStepMax>(),
+            .ptpc_raw_ns = payload.get<TimeStatusPayload::PtpcRawNs>(),
+            .ptpc_raw_microframe = payload.get<TimeStatusPayload::PtpcRawMicroframe>(),
+        };
+        consume_peeked();
+        callback_.time_status_deserialized_callback(status);
+        co_return true;
+    }
+    case data::SessionType::kSyncSample: {
+        const auto* payload_bytes = co_await peek_bytes(sizeof(SyncSamplePayload));
+        if (!payload_bytes) [[unlikely]]
+            co_return false;
+        auto payload = SyncSamplePayload::CRef{payload_bytes};
+        const data::SyncSampleView sample{
+            .nonce = data_view.nonce,
+            .tag = payload.get<SyncSamplePayload::Tag>(),
+            .microframe_q16 = payload.get<SyncSamplePayload::MicroframeQ16>(),
+            .bus = payload.get<SyncSamplePayload::Bus>(),
+            .ptpc_ns = payload.get<SyncSamplePayload::PtpcNs>(),
+        };
+        consume_peeked();
+        callback_.sync_sample_deserialized_callback(sample);
+        co_return true;
+    }
+    case data::SessionType::kPulseSchedule: {
+        const auto* payload_bytes = co_await peek_bytes(sizeof(PulseSchedulePayload));
+        if (!payload_bytes) [[unlikely]]
+            co_return false;
+        auto payload = PulseSchedulePayload::CRef{payload_bytes};
+        const data::PulseScheduleView schedule{
+            .nonce = data_view.nonce,
+            .microframe = payload.get<PulseSchedulePayload::Microframe>(),
+        };
+        consume_peeked();
+        callback_.pulse_schedule_deserialized_callback(schedule);
+        co_return true;
+    }
+    case data::SessionType::kPulseReport: {
+        const auto* payload_bytes = co_await peek_bytes(sizeof(PulseReportPayload));
+        if (!payload_bytes) [[unlikely]]
+            co_return false;
+        auto payload = PulseReportPayload::CRef{payload_bytes};
+        const data::PulseReportView report{
+            .nonce = data_view.nonce,
+            .scheduled_microframe = payload.get<PulseReportPayload::ScheduledMicroframe>(),
+            .captured_microframe_q16 =
+                payload.get<PulseReportPayload::CapturedMicroframeQ16>(),
+            .ticks_per_microframe_q16 =
+                payload.get<PulseReportPayload::TicksPerMicroframeQ16>(),
+        };
+        consume_peeked();
+        callback_.pulse_report_deserialized_callback(report);
+        co_return true;
+    }
+    default: break;
+    }
+
     callback_.session_control_deserialized_callback(data_view);
 
     co_return true;

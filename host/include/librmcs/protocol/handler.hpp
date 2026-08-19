@@ -100,6 +100,17 @@ public:
      */
     PacketBuilder start_cyclic_transmit() noexcept;
 
+    /**
+     * @brief Asks the board to fire a hardware synchronisation pulse at an
+     * absolute microframe of the shared USB-SOF timeline.
+     *
+     * Send the IDENTICAL microframe to every board in one round: each board's
+     * capture offset from it carries the path delay plus the skew with opposite
+     * sign, so differencing the boards' reports cancels the path delay. Requires
+     * firmware built with -DLIBRMCS_PULSE_TEST=ON.
+     */
+    void send_pulse_schedule(uint64_t microframe) noexcept;
+
 private:
     class Impl;
     Impl* impl_ = nullptr;

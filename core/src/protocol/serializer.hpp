@@ -379,6 +379,134 @@ public:
         return SerializeResult::kSuccess;
     }
 
+    // Session field carrying a kTimeAnchor payload. Kept separate from
+    // write_session_control() rather than folded into it, because the two have
+    // different sizes and the fixed-size path is on the keepalive hot path of
+    // every board, including the ones that know nothing about time sync.
+    SerializeResult write_time_anchor(const data::TimeAnchorView& view) noexcept {
+        const std::size_t required = required_session_size() + sizeof(TimeAnchorPayload);
+
+        auto dst = buffer_.allocate(required);
+        LIBRMCS_VERIFY_LIKELY(!dst.empty(), SerializeResult::kBadAlloc);
+        utility::assert_debug(dst.size() == required);
+        std::byte* cursor = dst.data();
+
+        write_field_header(cursor, FieldId::kSession);
+
+        auto header = SessionHeader::Ref(cursor);
+        cursor += sizeof(SessionHeader);
+        header.set<SessionHeader::Type>(data::SessionType::kTimeAnchor);
+        header.set<SessionHeader::Nonce>(view.nonce);
+
+        auto payload = TimeAnchorPayload::Ref(cursor);
+        cursor += sizeof(TimeAnchorPayload);
+        payload.set<TimeAnchorPayload::Microframe>(view.microframe);
+
+        utility::assert_debug(cursor == dst.data() + dst.size());
+        return SerializeResult::kSuccess;
+    }
+
+    SerializeResult write_time_status(const data::TimeStatusView& view) noexcept {
+        const std::size_t required = required_session_size() + sizeof(TimeStatusPayload);
+
+        auto dst = buffer_.allocate(required);
+        LIBRMCS_VERIFY_LIKELY(!dst.empty(), SerializeResult::kBadAlloc);
+        utility::assert_debug(dst.size() == required);
+        std::byte* cursor = dst.data();
+
+        write_field_header(cursor, FieldId::kSession);
+
+        auto header = SessionHeader::Ref(cursor);
+        cursor += sizeof(SessionHeader);
+        header.set<SessionHeader::Type>(data::SessionType::kTimeStatus);
+        header.set<SessionHeader::Nonce>(view.nonce);
+
+        auto payload = TimeStatusPayload::Ref(cursor);
+        cursor += sizeof(TimeStatusPayload);
+        payload.set<TimeStatusPayload::Microframe>(view.microframe);
+        payload.set<TimeStatusPayload::TimestampQuarterUs>(view.timestamp_quarter_us);
+        payload.set<TimeStatusPayload::TicksPerMicroframeQ16>(view.ticks_per_microframe_q16);
+        payload.set<TimeStatusPayload::State>(view.state);
+        payload.set<TimeStatusPayload::AnomalyCount>(view.anomaly_count);
+        payload.set<TimeStatusPayload::ResidualMeanQ16>(view.residual_mean_q16);
+        payload.set<TimeStatusPayload::ResidualAbsMaxQ16>(view.residual_abs_max_q16);
+        payload.set<TimeStatusPayload::ResidualCount>(view.residual_count);
+        payload.set<TimeStatusPayload::PtpcUnitsPerMicroframe>(view.ptpc_units_per_microframe);
+        payload.set<TimeStatusPayload::PtpcReferenceUnits>(view.ptpc_reference_units);
+        payload.set<TimeStatusPayload::PtpcReferenceMicroframe>(view.ptpc_reference_microframe);
+        payload.set<TimeStatusPayload::PtpcResidualMean>(view.ptpc_residual_mean);
+        payload.set<TimeStatusPayload::PtpcResidualAbsMax>(view.ptpc_residual_abs_max);
+        payload.set<TimeStatusPayload::PtpcStepMin>(view.ptpc_step_min);
+        payload.set<TimeStatusPayload::PtpcStepMax>(view.ptpc_step_max);
+        payload.set<TimeStatusPayload::PtpcRawNs>(view.ptpc_raw_ns);
+        payload.set<TimeStatusPayload::PtpcRawMicroframe>(view.ptpc_raw_microframe);
+
+        utility::assert_debug(cursor == dst.data() + dst.size());
+        return SerializeResult::kSuccess;
+    }
+
+    SerializeResult write_sync_sample(const data::SyncSampleView& view) noexcept {
+        const std::size_t required = required_session_size() + sizeof(SyncSamplePayload);
+
+        auto dst = buffer_.allocate(required);
+        LIBRMCS_VERIFY_LIKELY(!dst.empty(), SerializeResult::kBadAlloc);
+        utility::assert_debug(dst.size() == required);
+        std::byte* cursor = dst.data();
+
+        write_field_header(cursor, FieldId::kSession);
+
+        auto header = SessionHeader::Ref(cursor);
+        cursor += sizeof(SessionHeader);
+        header.set<SessionHeader::Type>(data::SessionType::kSyncSample);
+        header.set<SessionHeader::Nonce>(view.nonce);
+
+        auto payload = SyncSamplePayload::Ref(cursor);
+        cursor += sizeof(SyncSamplePayload);
+        payload.set<SyncSamplePayload::Tag>(view.tag);
+        payload.set<SyncSamplePayload::MicroframeQ16>(view.microframe_q16);
+        payload.set<SyncSamplePayload::Bus>(view.bus);
+        payload.set<SyncSamplePayload::PtpcNs>(view.ptpc_ns);
+
+        utility::assert_debug(cursor == dst.data() + dst.size());
+        return SerializeResult::kSuccess;
+    }
+
+    SerializeResult write_pulse_schedule(const data::PulseScheduleView& view) noexcept {
+        const std::size_t required = required_session_size() + sizeof(PulseSchedulePayload);
+        auto dst = buffer_.allocate(required);
+        LIBRMCS_VERIFY_LIKELY(!dst.empty(), SerializeResult::kBadAlloc);
+        std::byte* cursor = dst.data();
+        write_field_header(cursor, FieldId::kSession);
+        auto header = SessionHeader::Ref(cursor);
+        cursor += sizeof(SessionHeader);
+        header.set<SessionHeader::Type>(data::SessionType::kPulseSchedule);
+        header.set<SessionHeader::Nonce>(view.nonce);
+        auto payload = PulseSchedulePayload::Ref(cursor);
+        cursor += sizeof(PulseSchedulePayload);
+        payload.set<PulseSchedulePayload::Microframe>(view.microframe);
+        utility::assert_debug(cursor == dst.data() + dst.size());
+        return SerializeResult::kSuccess;
+    }
+
+    SerializeResult write_pulse_report(const data::PulseReportView& view) noexcept {
+        const std::size_t required = required_session_size() + sizeof(PulseReportPayload);
+        auto dst = buffer_.allocate(required);
+        LIBRMCS_VERIFY_LIKELY(!dst.empty(), SerializeResult::kBadAlloc);
+        std::byte* cursor = dst.data();
+        write_field_header(cursor, FieldId::kSession);
+        auto header = SessionHeader::Ref(cursor);
+        cursor += sizeof(SessionHeader);
+        header.set<SessionHeader::Type>(data::SessionType::kPulseReport);
+        header.set<SessionHeader::Nonce>(view.nonce);
+        auto payload = PulseReportPayload::Ref(cursor);
+        cursor += sizeof(PulseReportPayload);
+        payload.set<PulseReportPayload::ScheduledMicroframe>(view.scheduled_microframe);
+        payload.set<PulseReportPayload::CapturedMicroframeQ16>(view.captured_microframe_q16);
+        payload.set<PulseReportPayload::TicksPerMicroframeQ16>(view.ticks_per_microframe_q16);
+        utility::assert_debug(cursor == dst.data() + dst.size());
+        return SerializeResult::kSuccess;
+    }
+
 private:
     static constexpr bool use_extended_field_header(FieldId field_id) {
         utility::assert_debug(field_id != FieldId::kExtend);

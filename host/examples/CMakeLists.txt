@@ -74,6 +74,24 @@ target_link_libraries(can_stall_probe PRIVATE librmcs-sdk)
 add_executable(hpm5321_loop_probe hpm5321_loop_probe.cpp)
 target_link_libraries(hpm5321_loop_probe PRIVATE librmcs-sdk)
 
+# USB SOF / FRINDEX validation: reads every attached HPM5321 at once and decodes
+# the telemetry a -DLIBRMCS_SOF_DIAG=ON firmware emits. Step 1 of the cross-board
+# time base -- it has to pass before any of the timeline code is written.
+add_executable(sof_probe sof_probe.cpp)
+target_link_libraries(sof_probe PRIVATE librmcs-sdk)
+
+# Shared time base across every attached board: proves the boards resolve the
+# same ABSOLUTE microframe (the wrap that a single board cannot check on its
+# own), and exercises the Unix mapping. Needs -DLIBRMCS_TIME_SYNC=ON firmware.
+add_executable(time_sync_test time_sync_test.cpp)
+target_link_libraries(time_sync_test PRIVATE librmcs-sdk)
+
+# Cross-board skew MEASURED through hardware CAN Start-of-Frame captures, with
+# a same-board control that establishes the method's own noise floor. Needs all
+# CAN ports on one bus and -DLIBRMCS_TIME_SYNC=ON firmware.
+add_executable(sync_skew_test sync_skew_test.cpp)
+target_link_libraries(sync_skew_test PRIVATE librmcs-sdk)
+
 # Prints core1's diagnostic ring, relayed as UART0 uplink frames by a firmware
 # built with LIBRMCS_DIAG_OVER_USB=ON. The board's console UART sits on an
 # unpopulated debug header, so this is the only way to read that log here.
@@ -145,3 +163,6 @@ target_link_libraries(rs485_cross_test PRIVATE librmcs-sdk)
 # A/B throughput against main-loop period.
 add_executable(mc02_packet_rate mc02_packet_rate.cpp)
 target_link_libraries(mc02_packet_rate PRIVATE librmcs-sdk)
+
+add_executable(topo_probe topo_probe.cpp)
+target_link_libraries(topo_probe PRIVATE librmcs-sdk)

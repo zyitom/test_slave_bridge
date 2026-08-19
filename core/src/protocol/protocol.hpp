@@ -108,6 +108,66 @@ struct SessionHeader
     : utility::Bitfield<5>
     , layouts::SessionHeaderLayout {};
 
+// Payloads that follow a SessionHeader whose Type says so. Both are plain
+// byte-aligned blocks rather than packed bitfields: nothing here is bandwidth
+// critical (one exchange per keepalive period) and a readable layout is worth
+// more than four saved bytes.
+struct TimeAnchorPayload : utility::Bitfield<8> {
+    using Microframe = utility::BitfieldMember<0, 64, uint64_t>;
+};
+
+struct TimeStatusPayload : utility::Bitfield<78> {
+    using Microframe = utility::BitfieldMember<0, 64, uint64_t>;
+    using TimestampQuarterUs = utility::BitfieldMember<64, 32, uint32_t>;
+    using TicksPerMicroframeQ16 = utility::BitfieldMember<96, 32, uint32_t>;
+    using State = utility::BitfieldMember<128, 8, data::TimeState>;
+    using AnomalyCount = utility::BitfieldMember<136, 24, uint32_t>;
+    // Out-of-sample prediction error of the board's own fit, in Q16 timer ticks.
+    // This is the quantity that becomes cross-board skew; see the accumulator in
+    // sync/timebase.cpp for why the mean and the extremum say different things.
+    using ResidualMeanQ16 = utility::BitfieldMember<160, 32, int32_t>;
+    using ResidualAbsMaxQ16 = utility::BitfieldMember<192, 32, uint32_t>;
+    using ResidualCount = utility::BitfieldMember<224, 16, uint16_t>;
+    // Fitted PTPC units per microframe. Nominally 120000; published because the
+    // conversion from a CAN hardware capture to the shared axis rides on it, and
+    // a wrong slope there shows up as drift that looks exactly like skew.
+    using PtpcUnitsPerMicroframe = utility::BitfieldMember<240, 32, uint32_t>;
+    // The fitted line's anchor point, reported raw so the host can check the
+    // pair against the slope itself. A reference whose units and microframe do
+    // not advance in step with the published slope is the signature of a fit
+    // that is computed correctly and stored inconsistently -- which no
+    // cross-board comparison can distinguish from real skew.
+    using PtpcReferenceUnits = utility::BitfieldMember<272, 64, uint64_t>;
+    using PtpcReferenceMicroframe = utility::BitfieldMember<336, 64, uint64_t>;
+    using PtpcResidualMean = utility::BitfieldMember<400, 32, int32_t>;
+    using PtpcResidualAbsMax = utility::BitfieldMember<432, 32, uint32_t>;
+    using PtpcStepMin = utility::BitfieldMember<464, 32, uint32_t>;
+    using PtpcStepMax = utility::BitfieldMember<496, 32, uint32_t>;
+    // The most recent RAW sample pair, straight out of the interrupt with no fit
+    // applied. This is what lets the host build its own conversion instead of
+    // trusting the board's -- the only way to tell a bad fit from bad samples.
+    using PtpcRawNs = utility::BitfieldMember<528, 32, uint32_t>;
+    using PtpcRawMicroframe = utility::BitfieldMember<560, 64, uint64_t>;
+};
+
+struct SyncSamplePayload : utility::Bitfield<18> {
+    using Tag = utility::BitfieldMember<0, 32, uint32_t>;
+    using MicroframeQ16 = utility::BitfieldMember<32, 64, uint64_t>;
+    using Bus = utility::BitfieldMember<96, 8, uint8_t>;
+    // The capture as the hardware reported it, before the board converted it.
+    using PtpcNs = utility::BitfieldMember<104, 32, uint32_t>;
+};
+
+struct PulseSchedulePayload : utility::Bitfield<8> {
+    using Microframe = utility::BitfieldMember<0, 64, uint64_t>;
+};
+
+struct PulseReportPayload : utility::Bitfield<20> {
+    using ScheduledMicroframe = utility::BitfieldMember<0, 64, uint64_t>;
+    using CapturedMicroframeQ16 = utility::BitfieldMember<64, 64, uint64_t>;
+    using TicksPerMicroframeQ16 = utility::BitfieldMember<128, 32, uint32_t>;
+};
+
 struct GpioHeader : utility::Bitfield<2> {
     enum class PayloadEnum : uint8_t {
         kDigitalLow = 0b0000,

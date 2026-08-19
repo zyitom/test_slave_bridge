@@ -15,6 +15,7 @@
 #include "core/src/protocol/serializer.hpp"
 #include "firmware/rmcs_board/app/src/diag/can_diag.hpp"
 #include "firmware/rmcs_board/app/src/link/uplink.hpp"
+#include "firmware/rmcs_board/app/src/sync/sof.hpp"
 #include "firmware/rmcs_board/app/src/utility/boot_mailbox.hpp"
 #include "firmware/rmcs_board/app/src/xcore/pd_link.hpp"
 
@@ -121,7 +122,13 @@ extern "C" {
 // keep both third-party submodules pristine. dcd_int_handler is TinyUSB's device
 // ISR entry.
 SDK_DECLARE_EXT_ISR_M(IRQn_USB0, rmcs_usb0_isr)
-void rmcs_usb0_isr(void) { dcd_int_handler(0); }
+void rmcs_usb0_isr(void) {
+    // Ahead of the device stack, because the whole point of the SOF probe is to
+    // read FRINDEX at the earliest instant software can. A no-op that the
+    // compiler removes entirely unless LIBRMCS_APP_SOF_DIAG is set.
+    sync::sof_isr_entry();
+    dcd_int_handler(0);
+}
 
 void tud_vendor_rx_cb(uint8_t itf, const uint8_t* buffer, uint16_t size) {
     const std::size_t packet_size = (tud_speed_get() == TUSB_SPEED_HIGH) ? 512 : 64;

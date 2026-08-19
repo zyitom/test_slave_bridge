@@ -12,6 +12,8 @@
 #include "core/src/utility/immovable.hpp"
 #include "firmware/rmcs_board/app/src/can/can.hpp"
 #include "firmware/rmcs_board/app/src/link/interrupt_safe_buffer.hpp"
+#include "firmware/rmcs_board/app/src/sync/pulse.hpp"
+#include "firmware/rmcs_board/app/src/sync/timebase.hpp"
 #include "firmware/rmcs_board/app/src/timer/timer.hpp"
 #include "firmware/rmcs_board/app/src/uart/uart.hpp"
 
@@ -44,6 +46,47 @@ public:
     bool uplink_enabled() const { return uplink_enabled_; }
 
     void handle_downlink(std::span<const std::byte> buffer) { deserializer_.feed(buffer); }
+
+    // Drains the time base's pending hardware captures onto the uplink. Called
+    // from the main loop; a no-op unless the time base is compiled in and a
+    // probe frame has actually been captured.
+    // Drains captured hardware pulses onto the uplink. The conversion needs the
+    // history ring and a division, so it runs here rather than in the capture
+    // interrupt.
+    void poll_pulse_captures() {
+        if constexpr (!sync::pulse::kEnabled)
+            return;
+        if (!session_established_)
+            return;
+        uint64_t captured_q16 = 0;
+        while (sync::pulse::take_capture(captured_q16)) {
+            (void)serializer_.write_pulse_report({
+                .nonce = current_session_nonce_,
+                .scheduled_microframe = pending_pulse_microframe_,
+                .captured_microframe_q16 = captured_q16,
+                .ticks_per_microframe_q16 = sync::pulse::measured_ticks_per_microframe_q16(),
+            });
+        }
+    }
+
+    void poll_sync_samples() {
+        if constexpr (!sync::timebase::kEnabled)
+            return;
+        if (!session_established_)
+            return;
+        sync::timebase::CanCapture capture{};
+        while (sync::timebase::take_can_capture(capture)) {
+            // Best effort like every other telemetry path here: a full batch
+            // pool drops the sample rather than stalling the loop.
+            (void)serializer_.write_sync_sample({
+                .nonce = current_session_nonce_,
+                .tag = capture.tag,
+                .microframe_q16 = capture.microframe_q16,
+                .bus = capture.bus,
+                .ptpc_ns = capture.ptpc_ns,
+            });
+        }
+    }
 
     void finish_downlink_transfer() { deserializer_.finish_transfer(); }
 
@@ -247,6 +290,52 @@ private:
         }
     }
 
+    // Shared time base. The anchor rides the session field precisely because it
+    // must live and die with the session: a board that lost its host has no
+    // business keeping a timeline that the host may later assume is still
+    // aligned. Nonce-checked like the keepalive, and answered in the same
+    // exchange so the host gets the board's state without a second round trip.
+    void time_anchor_deserialized_callback(const data::TimeAnchorView& data) override {
+        if (!session_established_ || data.nonce != current_session_nonce_)
+            return;
+
+        sync::timebase::apply_anchor(data.microframe);
+
+        const auto snapshot = sync::timebase::report();
+        uint64_t ptpc_reference_units = 0;
+        uint64_t ptpc_reference_microframe = 0;
+        sync::timebase::ptpc_reference(ptpc_reference_units, ptpc_reference_microframe);
+        (void)serializer_.write_time_status({
+            .nonce = data.nonce,
+            .microframe = snapshot.microframe,
+            .timestamp_quarter_us = static_cast<uint32_t>(snapshot.timestamp_quarter_us),
+            .ticks_per_microframe_q16 = snapshot.ticks_per_microframe_q16,
+            .state = snapshot.state,
+            .anomaly_count = snapshot.anomaly_count,
+            .residual_mean_q16 = snapshot.residual_mean_q16,
+            .residual_abs_max_q16 = snapshot.residual_abs_max_q16,
+            .residual_count = static_cast<uint16_t>(snapshot.residual_count),
+            .ptpc_units_per_microframe = sync::timebase::ptpc_units_per_microframe(),
+            .ptpc_reference_units = ptpc_reference_units,
+            .ptpc_reference_microframe = ptpc_reference_microframe,
+            .ptpc_residual_mean = snapshot.ptpc_residual_mean,
+            .ptpc_residual_abs_max = snapshot.ptpc_residual_abs_max,
+            .ptpc_step_min = snapshot.ptpc_step_min,
+            .ptpc_step_max = snapshot.ptpc_step_max,
+            .ptpc_raw_ns = snapshot.ptpc_raw_ns,
+            .ptpc_raw_microframe = snapshot.ptpc_raw_microframe,
+        });
+    }
+
+    // Hardware pulse exchange. The host sends the identical target microframe to
+    // every board; each board fires there and captures the others' pulses.
+    void pulse_schedule_deserialized_callback(const data::PulseScheduleView& data) override {
+        if (!session_established_ || data.nonce != current_session_nonce_)
+            return;
+        pending_pulse_microframe_ = data.microframe;
+        pending_pulse_armed_ = sync::pulse::schedule(data.microframe);
+    }
+
     void error_callback() override {
         // Every transport below this layer delivers bytes losslessly (USB
         // bulk, EtherCAT stop-and-wait ARQ), so a deserialization error
@@ -264,6 +353,8 @@ private:
     bool session_established_ = false;
     uint32_t current_session_nonce_ = 0;
     uint64_t last_session_refresh_ = 0;
+    uint64_t pending_pulse_microframe_ = 0;
+    bool pending_pulse_armed_ = false;
 };
 
 } // namespace librmcs::firmware::link

@@ -1,0 +1,63 @@
+// Throwaway topology probe: with all four CAN ports on one bus, which
+// controllers actually see a frame transmitted by A.CAN0?
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <dirent.h>
+#include <string>
+#include <thread>
+#include <vector>
+#include <algorithm>
+#include <librmcs/board/rmcs_board_hpm5321_dual_can.hpp>
+
+namespace {
+struct Counter : librmcs::board::RmcsBoardHpm5321DualCan::Callback {
+    const char* name;
+    std::atomic<int> c0{0}, c1{0};
+    std::atomic<uint32_t> ts0{0}, ts1{0};
+    explicit Counter(const char* n) : name(n) {}
+    void can0_receive_callback(const librmcs::data::CanDataView& d) override {
+        if (d.can_id != 0x321) return;
+        c0.fetch_add(1);
+        if (d.timestamp_us) ts0.store(*d.timestamp_us);
+    }
+    void can1_receive_callback(const librmcs::data::CanDataView& d) override {
+        if (d.can_id != 0x321) return;
+        c1.fetch_add(1);
+        if (d.timestamp_us) ts1.store(*d.timestamp_us);
+    }
+};
+std::vector<std::string> boards() {
+    std::vector<std::string> f;
+    DIR* dir = opendir("/sys/bus/usb/devices");
+    while (const dirent* e = readdir(dir)) {
+        std::string b = std::string{"/sys/bus/usb/devices/"} + e->d_name;
+        auto rd = [&](const char* l) { std::string p = b + "/" + l; FILE* fp = fopen(p.c_str(), "re");
+            if (!fp) return std::string{}; char buf[128]{}; if (!fgets(buf, sizeof buf, fp)) { fclose(fp); return std::string{}; }
+            fclose(fp); std::string v{buf}; while (!v.empty() && (v.back()=='\n'||v.back()=='\r')) v.pop_back(); return v; };
+        if (rd("idVendor") == "a11c" && rd("idProduct") == "a902") { auto s = rd("serial"); if (!s.empty()) f.push_back(s); }
+    }
+    closedir(dir); std::sort(f.begin(), f.end()); return f;
+}
+}
+
+int main() {
+    auto s = boards();
+    if (s.size() < 2) { printf("need 2 boards\n"); return 1; }
+    Counter ca{"A"}, cb{"B"};
+    librmcs::board::RmcsBoardHpm5321DualCan a{ca, s[0]}, b{cb, s[1]};
+    std::this_thread::sleep_for(std::chrono::milliseconds{500});
+    const std::array<std::byte, 8> payload{};
+    for (int i = 0; i < 20; i++) {
+        { auto tx = a.start_transmit(); tx.can0_transmit({.can_id = 0x321, .can_data = payload, .is_fdcan = true}); }
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+    printf("sent 20 frames from A.CAN0 (id 0x321)\n");
+    printf("  A.CAN0 rx=%d  A.CAN1 rx=%d   <- transmitting board self-reception\n",
+           ca.c0.load(), ca.c1.load());
+    printf("  B.CAN0 rx=%d  B.CAN1 rx=%d\n", cb.c0.load(), cb.c1.load());
+    printf("  last hw timestamps us: A.CAN1=%u  B.CAN0=%u  B.CAN1=%u\n",
+           ca.ts1.load(), cb.ts0.load(), cb.ts1.load());
+    return 0;
+}
