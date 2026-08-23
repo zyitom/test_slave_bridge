@@ -156,6 +156,18 @@ struct PulseScheduleView {
 // so skew = (a_offset - b_offset) / 2 and the path delay drops out. That is why
 // the raw offsets are reported rather than a skew computed on the board -- no
 // board can see both halves.
+// Flags of PulseReportView. A board answers every schedule with a report, so
+// silence means the link is broken rather than the pulse being missed.
+enum PulseReportFlags : uint8_t {
+    // The board accepted the target and wrote the comparator. Clear means the
+    // target was unusable (no timeline yet, or too near/far), so no pulse was
+    // emitted and nothing should be expected on the other board either.
+    kPulseArmed = 1U << 0U,
+    // This report carries a capture; without it the report is the immediate
+    // acknowledgement of a schedule and captured_microframe_q16 is meaningless.
+    kPulseCaptured = 1U << 1U,
+};
+
 struct PulseReportView {
     uint32_t nonce;
     uint64_t scheduled_microframe;
@@ -165,6 +177,8 @@ struct PulseReportView {
     // confirms the crystal-derived clock tree; anything else invalidates the
     // exact-multiplication scheduling.
     uint32_t ticks_per_microframe_q16;
+    // PulseReportFlags.
+    uint8_t flags;
 };
 
 // Board -> host, unsolicited: one hardware Start-of-Frame capture of a

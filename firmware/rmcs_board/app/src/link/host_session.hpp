@@ -65,6 +65,8 @@ public:
                 .scheduled_microframe = pending_pulse_microframe_,
                 .captured_microframe_q16 = captured_q16,
                 .ticks_per_microframe_q16 = sync::pulse::measured_ticks_per_microframe_q16(),
+                .flags = static_cast<uint8_t>(
+                    (pending_pulse_armed_ ? data::kPulseArmed : 0U) | data::kPulseCaptured),
             });
         }
     }
@@ -334,6 +336,18 @@ private:
             return;
         pending_pulse_microframe_ = data.microframe;
         pending_pulse_armed_ = sync::pulse::schedule(data.microframe);
+
+        // Answer every schedule, armed or not. A board that cannot place the
+        // target is silent otherwise, and on the host that is indistinguishable
+        // from a board that fired and heard nothing back -- the two failures
+        // that need opposite fixes.
+        (void)serializer_.write_pulse_report({
+            .nonce = current_session_nonce_,
+            .scheduled_microframe = data.microframe,
+            .captured_microframe_q16 = 0,
+            .ticks_per_microframe_q16 = sync::pulse::measured_ticks_per_microframe_q16(),
+            .flags = static_cast<uint8_t>(pending_pulse_armed_ ? data::kPulseArmed : 0U),
+        });
     }
 
     void error_callback() override {

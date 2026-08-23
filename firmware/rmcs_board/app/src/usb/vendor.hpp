@@ -5,6 +5,10 @@
 #include <cstdint>
 #include <span>
 
+#if defined(LIBRMCS_APP_USB_FULL_SPEED) && LIBRMCS_APP_USB_FULL_SPEED
+# include <hpm_soc.h>
+#endif
+
 #include <class/vendor/vendor_device.h>
 #include <common/tusb_types.h>
 #include <device/usbd.h>
@@ -37,6 +41,16 @@ public:
             .speed = board::usb_use_high_speed() ? TUSB_SPEED_HIGH : TUSB_SPEED_FULL,
         };
         core::utility::assert_always(tusb_rhport_init(0, &init_config));
+
+#if defined(LIBRMCS_APP_USB_FULL_SPEED) && LIBRMCS_APP_USB_FULL_SPEED
+        // The speed field above is advisory only: the ChipIdea device driver
+        // reports whatever the port negotiated and never forces it (grep
+        // dcd_ci_hs.c -- it only READS PORTSC1_PORT_SPEED). Forcing full speed
+        // is a controller bit: PFSC disables the high-speed chirp so the port
+        // can only ever come up at 12 Mbit. Set after tusb_rhport_init, because
+        // dcd_init resets the controller and would clear it. [RM: PORTSC1.PFSC]
+        HPM_USB0->PORTSC1 |= USB_PORTSC1_PFSC_MASK;
+#endif
 
         // tusb_rhport_init -> dcd_init already enabled the USB IRQ; pin its
         // priority explicitly so the CAN(3) > USB(2) > UART(1) preemption

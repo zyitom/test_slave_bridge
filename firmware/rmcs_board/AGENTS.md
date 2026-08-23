@@ -3,7 +3,7 @@
 > **文档类型**：现行规范（板级）
 > **适用范围**：`firmware/rmcs_board/`，HPMicro HPM6E8Y / HPM5321（Andes RISC-V）
 > **状态**：现行有效
-> **相关文档**：[仓库根 AGENTS.md](../../AGENTS.md) · [BUILD_ENVIRONMENT.md](BUILD_ENVIRONMENT.md)（完整环境搭建） · [USB_OPTIMIZATION_LOG.md](USB_OPTIMIZATION_LOG.md)（USB 调优实录：做过什么、否掉了什么） · [SOF_TIMEBASE.md](SOF_TIMEBASE.md)（跨板 USB SOF 时间轴验证） · [ecat/README.md](ecat/README.md)（EtherCAT 桥）
+> **相关文档**：[仓库根 AGENTS.md](../../AGENTS.md) · [BUILD_ENVIRONMENT.md](BUILD_ENVIRONMENT.md)（完整环境搭建） · [USB_OPTIMIZATION_LOG.md](USB_OPTIMIZATION_LOG.md)（USB 调优实录：做过什么、否掉了什么） · [SOF_TIMEBASE.md](SOF_TIMEBASE.md)（跨板 USB SOF 时间轴验证） · [CONTROL_TIMING.md](CONTROL_TIMING.md)（控制环需要哪些时间信息） · [ecat/README.md](ecat/README.md)（EtherCAT 桥）
 
 > 本目录专属指南，叠加在仓库根 `AGENTS.md` 之上。完整编译环境（依赖清单、工具链下载、烧录）见本目录 `BUILD_ENVIRONMENT.md`，此处只列 agent 关键点。
 
@@ -841,11 +841,17 @@ SETUP 会让 usbd 拿到撕裂的 8 字节。只影响枚举/控制传输，不�
 | 主循环周期（板端 CPU 余量的直接读数） | `-DLIBRMCS_CAN_DIAG=ON` | `host/examples/hpm5321_loop_probe.cpp` |
 | USB SOF 时间轴是否可信：相邻 FRINDEX 差值直方图、ISR 间隔、端口状态、跨板一致性 | `-DLIBRMCS_SOF_DIAG=ON` | `host/examples/sof_probe.cpp`（见 [SOF_TIMEBASE.md](SOF_TIMEBASE.md)） |
 | 跨板共享时间轴本身：各板状态、拟合出的晶振偏差、绝对微帧是否一致、到 Unix 时间的映射 | `-DLIBRMCS_TIME_SYNC=ON` | `host/examples/time_sync_test.cpp`（主机侧还要 `AdvancedOptions::set_enable_time_sync(true)`） |
+| 跨板 skew 直接实测：两块板在同一微帧各发一个硬件脉冲，互相硬件捕获 | `-DLIBRMCS_PULSE_TEST=ON`（**要和 `TIME_SYNC` 一起开**） | `host/examples/pulse_skew_test.cpp`（见 [SOF_TIMEBASE.md](SOF_TIMEBASE.md) 5.5 / 7.1） |
 
 > `can_stall_probe` **在 HPM5321 上跑不了**：它绑死 HPM6E8Y 的 PID `0xA904`，并按
 > 单板自环驱动 CAN0->CAN1 与 CAN2->CAN3，假设四路总线。5321 只有两路，双板 rig 又是
 > 交叉对接而非自环。`hpm5321_loop_probe` 补的就是这个缺口——只解码遥测里的主循环
 > 计数，负载自带（两块板双向对发），因为压测工具会独占两块板，遥测读端再也开不进去。
+
+`PULSE_TEST` 会**借走 UART0 的两个引脚**（PB08/PB09 改成 GPTMR0 的比较/捕获），
+所以这个 build 下 UART0 不工作；它也是唯一一个自己开外设的诊断开关，硬件初始化被刻意
+推迟到收到主机第一条 schedule 之后——**理由是 boot 期卡死会连 DFU 一起带走，实测代价是
+两块板**，见 [SOF_TIMEBASE.md](SOF_TIMEBASE.md) 5.5「教训」一段。
 
 三个开关都默认 OFF：`CAN_DIAG` 会在 CAN 热路径上加计数器，`DIAG_OVER_USB` 与
 `SOF_DIAG` 会占用 `DataId::kUart0`（本板的 UART1 数据口）。**`SOF_DIAG` 与 `CAN_DIAG`

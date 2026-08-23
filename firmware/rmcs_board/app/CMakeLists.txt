@@ -71,6 +71,11 @@ option(LIBRMCS_APP_TIME_SYNC "Run the shared USB-SOF time base" OFF)
 # is the whole reason it is a separate option and defaults OFF.
 option(LIBRMCS_APP_PULSE_TEST "Measure cross-board skew with GPTMR pulses" OFF)
 
+# Enumerate at full speed instead of high speed. Test vehicle for "can two
+# boards share the SOF time base when one of them is FS?"; not a product
+# setting.
+option(LIBRMCS_APP_USB_FULL_SPEED "Enumerate USB at full speed (test only)" OFF)
+
 # USB SOF probe (src/sync/sof_probe.*): enables the device controller's
 # SOF-received interrupt and records the delta between consecutive FRINDEX
 # readings, plus the ISR-to-ISR interval measured on the local machine timer.
@@ -149,6 +154,9 @@ if(LIBRMCS_APP_PULSE_TEST)
 endif()
 if(LIBRMCS_APP_SOF_DIAG)
     sdk_compile_definitions(-DLIBRMCS_APP_SOF_DIAG=1)
+endif()
+if(LIBRMCS_APP_USB_FULL_SPEED)
+    sdk_compile_definitions(-DLIBRMCS_APP_USB_FULL_SPEED=1)
 endif()
 if(LIBRMCS_APP_DIAG_OVER_USB)
     sdk_compile_definitions(-DLIBRMCS_APP_DIAG_OVER_USB=1)

@@ -16,6 +16,8 @@ namespace librmcs::firmware::sync::timebase {
 namespace {
 
 constexpr std::uint32_t kFrindexMask = 0x3FFFU;
+// PORTSC1.PSPD encoding, ChipIdea/EHCI: 0 full, 1 low, 2 high.
+constexpr std::uint32_t kPortSpeedHigh = 2U;
 constexpr std::uint64_t kFrindexModulus = 0x4000U;
 constexpr std::uint32_t kFitPeriodMs = 20U;
 
@@ -238,6 +240,19 @@ std::int64_t floor_div(std::int64_t numerator, std::int64_t denominator) {
 
 } // namespace
 
+std::uint32_t microframes_per_sof() {
+    const std::uint32_t speed =
+        (HPM_USB0->PORTSC1 & USB_PORTSC1_PSPD_MASK) >> USB_PORTSC1_PSPD_SHIFT;
+    return speed == kPortSpeedHigh ? 1U : 8U;
+}
+
+std::uint32_t sof_packet_delay_ns() {
+    const std::uint32_t speed =
+        (HPM_USB0->PORTSC1 & USB_PORTSC1_PSPD_MASK) >> USB_PORTSC1_PSPD_SHIFT;
+    // 64 bit times at 480 Mbit, 35 bit times at 12 Mbit.
+    return speed == kPortSpeedHigh ? 133U : 2917U;
+}
+
 bool microframe_q16_at_ptpc(std::uint32_t ptpc_ns, std::uint64_t& out_microframe_q16);
 
 void note_sof(std::uint32_t frindex, std::uint32_t now_quarter_us) {
@@ -266,9 +281,19 @@ void note_sof(std::uint32_t frindex, std::uint32_t now_quarter_us) {
     previous_frindex = frindex;
     counter += delta;
 
-    if (delta != 1U) [[unlikely]] {
+    // How much FRINDEX is expected to move per SOF interrupt. FRINDEX always
+    // counts MICROFRAMES, but a full-speed port only receives one SOF per 1 ms
+    // frame, so it steps by 8 -- exactly, every time, with the low three bits
+    // pinned at zero. Treating that as an anomaly is what kept a full-speed
+    // board permanently kInvalid.
+    // [Measured 2026-08-20, mixed pair on one xHCI: HS delta 1 at 100.00000%
+    //  (159187 transitions), FS delta 8 at 100.00000% (19898), ISR interval
+    //  125.0099 us vs 1000.0784 us -- exactly 8x, same clock.]
+    const std::uint32_t step = microframes_per_sof();
+
+    if (delta != step) [[unlikely]] {
         anomaly_count++;
-        if (delta >= 2U && delta <= 7U) {
+        if (delta > step && delta < step * 8U) {
             // A few missed interrupts. The counter is still right -- it advanced
             // by the real delta -- so the timeline survives; only the fit window
             // is spoiled, because the samples either side of the gap would tilt
@@ -277,8 +302,8 @@ void note_sof(std::uint32_t frindex, std::uint32_t now_quarter_us) {
             ring_oldest_microframe = counter;
         } else {
             // Delta 0 (the bus is not running: this is what the enumeration
-            // window looks like) or 8 and above (more than a millisecond
-            // unaccounted for). Either way the counter is no longer trustworthy.
+            // window looks like) or a whole frame and more unaccounted for.
+            // Either way the counter is no longer trustworthy.
             invalidate();
         }
         return;

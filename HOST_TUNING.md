@@ -26,7 +26,14 @@
 > **但在动主机之前先确认固件是 `release` 构建。** 固件从 `debug`(-Og) 换成 `release`(-O3)
 > 值 **20us 板级 p50**，比本文全部主机旋钮加起来还大，而且不需要任何运行期配置。见 8.4。
 
-**除内核 cmdline 外全部不持久化，每次重启都要重跑。**
+> **每张实测表都属于某一台机器，读之前先确认是哪台。** 第 0-10 节全部出自
+> **Core Ultra 7 155H（Meteor Lake）**，第 11 节出自 **TL101 = i7-1165G7（Tiger Lake）**。
+> 两台机器的 `isolcpus` 启用状态也不同，这足以让 governor 的结论反号——见 11.3。
+> **新增实测表请在标题里写清机器。**
+
+**除内核 cmdline 外全部不持久化，每次重启都要重跑**——但如果本机装了开机调优服务
+（TL101 有 `rmcs-ecat-tuning.service`），则 governor / C-state / sysctl / IRQ 亲和已由它覆盖，
+**重启后真正缺的只有 PM QoS、USB autosuspend、xHCI 中断线程优先级三样**。见 11.8。
 
 ```bash
 sudo ./host-tuning.sh          # 应用所有一次性设置并报告本机发现
@@ -57,6 +64,12 @@ sudo ./host-tuning.sh --pmqos  # 另开终端，测量期间持住（只为最�
   - **9.2：USB HS 包率上限单板约 56000 包/s，且是每设备的——加板子能叠加**
   - **9.3：CAN 吞吐上限是线速**（FD 19870 帧/s、classic 8560 帧/s），主机和固件都动不了；含协议只支持 8 字节负载的结构性限制
 - 第 10 节：为什么两种传输对主机调优的敏感度不同
+- 第 11 节：**TL101（Tiger Lake）复现——换一台机器，四条结论跟着换** `[实测 2026-08-21]`
+  - **11.1：最大的单项不是旋钮，是一块板悄悄枚举成 12 Mbit/s 全速，值 48us 且版本号看不出来**
+  - **11.2：PM QoS 值 20us 的 p50，且 per-core C-state 已禁也拦不住它**——两者不可互相替代
+  - **11.3：governor 在 TL101 上值 0**——不是它没用，是 `isolcpus` + SCHED_FIFO 已经把频率顶住了
+  - **11.5：第 0 节那条 `[推断，未实测]` 已实测**——HS bulk 确实不按微帧发放，对齐 SOF 栅格买不到东西
+  - **11.8：什么能活过重启**——开机服务已覆盖大半，重启后真正缺的只有三样
 
 ---
 
@@ -94,7 +107,11 @@ sudo ./host-tuning.sh --pmqos  # 另开终端，测量期间持住（只为最�
 > 产生 125us 台阶的是**主机控制器对 NAK 中的 bulk 端点的重试限流**（EHCI 时代是 QH 里的
 > `NakCnt`/`RL`，xHCI 藏进了控制器内部调度）。这不是文字游戏：它意味着 125us 是
 > **这块控制器的策略**，换一块控制器未必一样——所以第 5 节把"换控制器重测"排在很前面。
-> `[推断，未实测]`
+> **`[实测 2026-08-21，见 11.5]`**：用 `host/examples/microframe_phase_test.cpp` 把 flush
+> 时刻对齐到共享 SOF 轴上的指定相位，扫 0-125us 共 25 桶、每桶约 400 样本，
+> p50 swing 只有 **16.2us 且无锯齿**——**本推断成立**，本条可按实测引用。
+> 实践含义：**把控制环对齐到 SOF 栅格买不到东西**；反过来，提前 flush 的收益是
+> **连续**的，不按微帧量化。
 
 ---
 
@@ -462,6 +479,11 @@ A/B/A，两块 5321 DualCan、`release` 固件、事件线程绑 `7,6`、各 200
 下表是 2026-08-04 逐条读 sysfs/procfs 得到的 `[实测]`。**它一定会过期**——所以
 `host-tuning.sh` 改成了运行时发现这些值并打印，写在这里只是给人一个参照。
 
+> **这张表描述的是 Meteor Lake 那台机器，第 0-10 节的全部实测数据也出自它。**
+> 另一台常用机 **TL101（i7-1165G7，Tiger Lake，4 核 8 线程）** 的对应事实与本表差异很大
+> （`isolcpus=7` 单核未含 SMT 兄弟、`acpi_idle` 而非 `intel_idle`、`00:0d.0` 无可用插座），
+> 见第 11 节。**"本机"是哪台机器，必须先确认再读任何数字。**
+
 | 项 | 当前值 | 2026-08-01 版文档写的 | 备注 |
 |---|---|---|---|
 | 内核 | `6.8.1-1056-realtime` | `6.8.1-1015-realtime` | — |
@@ -486,12 +508,18 @@ A/B/A，两块 5321 DualCan、`release` 固件、事件线程绑 `7,6`、各 200
 1. **把板子插到另一个 xHCI 控制器上。** 本机 `00:0d.0`（雷电 4 USB）一个设备都没有，
    板子一直在 `00:14.0`。按第 0 节，125us 台阶是控制器的 NAK 重试策略，两块不同的硅
    没理由策略相同。**成本是拔一次插头，而它可能推翻第 0 节和第 10 节的前提。**
+   > **在 TL101 上不可行 `[实测 2026-08-21]`**：`00:0d.0` 在芯片组里存在，但它的五个
+   > 根口 `connect_type` 全是 `unknown`——固件没有描述，OEM 没把它引到插座；
+   > 对照 `00:14.0` 的口是 `hotplug` / `hardwired` / `not used`。见 11.6。
+   > 判据：`cat /sys/bus/usb/devices/usb*/*-0:1.0/usb*-port*/connect_type`
 2. **`iommu.passthrough=1`。** 现在是 `DMA-FQ`：每个 URB 都要 `dma_map_single`/`unmap`，
    而 unmap 是**攒起来批量刷 IOTLB** 的——吞吐友好，但那是个不受控的周期性抖动源。
    代价是丢掉 DMA 保护，对专用控制机可以接受。
-3. **libusb 零拷贝缓冲**（`libusb_dev_mem_alloc()`，走 `USBDEVFS_ALLOC_MEMORY` mmap）。
-   绕开 per-URB 的 `dma_map` 和用户/内核拷贝。和上一条是同一个成本的两种消法；
-   现在 `host/src/transport/usb/usb.cpp` 用的是普通缓冲。
+3. ~~**libusb 零拷贝缓冲**（`libusb_dev_mem_alloc()`，走 `USBDEVFS_ALLOC_MEMORY` mmap）。~~
+   **已完成，本条出队 `[核查 2026-08-21]`**：`host/src/transport/usb/usb.cpp:54` 会探测
+   `dev_mem` 可用性，`:509` 起在可用时用它分配传输缓冲；运行期日志打印
+   `libusb dev_mem (zero-copy) available`。**尚未做过开/关的延迟对照**，
+   所以"它值多少"仍是未知数，只是实现不再缺失。
 4. **xHCI 中断合并（IMOD）。** Linux 给 xHCI 设的默认节流是 **40us**
    （`xhci->imod_interval`，写进 Interrupter 的 IMOD 寄存器）。1kHz 下中断间隔 1ms，
    不该有影响；但**高帧率压测和多板共用一个 Interrupter 时会咬**。`xhci_hcd` 没有对应的
@@ -1015,3 +1043,198 @@ p90 126.3——绝大多数落在一个微帧上，偶尔赶上早一班就是 9
 **两者的失效模式不同，选型时看 p50 会选错**：USB 是"要么快要么很慢"（p99-p50 = 33us），
 EtherCAT 是"稳定地慢一点"（p99-p50 = 7us）。完整三档分布见
 [firmware/rmcs_board/ecat/DESIGN.md](firmware/rmcs_board/ecat/DESIGN.md) 3.5 节。
+
+---
+
+## 11. TL101（Tiger Lake）复现：换一台机器，四条结论跟着换 [实测 2026-08-21]
+
+> **先读这段，否则下面每个数字都会被误读。** 本文第 0-10 节的实测表全部来自
+> **Core Ultra 7 155H（Meteor Lake，22 线程）**（见 4 节那张表）。本节全部来自
+> **TL101 = i7-1165G7（Tiger Lake，4 核 8 线程，2020 年 28W 笔记本）**。
+> 更要紧的是第二处差异：**TL101 的内核 cmdline 启用了
+> `isolcpus=7 nohz_full=7 rcu_nocbs=7`**，而 1.3 节记录的那台机器"最终没有启用"。
+> 这两处差异合起来解释了本节与第 1 节的全部结论差异——**不是谁推翻谁，是两台机器**。
+>
+> **教训先给：第 4 节说"本机事实会漂移，别抄这张表"，但除了 4 节那一行 CPU 型号，
+> 全文没有任何一张实测表标注了它出自哪台机器。** 本次排查一半的时间花在这上面。
+> 新增实测表请一律在标题里写清机器。
+
+### 11.1 最大的单项不是任何旋钮，是一块板悄悄枚举成了全速 [实测]
+
+| `usb_ep0_rtt` p50 | min | p50 | p99 | max |
+|---|---|---|---|---|
+| 一块板枚举成 **12 Mbit/s 全速** | 117.2 | **144.4** | 179.8 | 231.4 |
+| 重烧固件后恢复 **480 Mbit/s 高速** | 53.4 | **96.3** | 111.4 | 122.2 |
+
+**48us 的 p50，比本节全部主机旋钮加起来还大。** 而它极其隐蔽：版本字符串一模一样、
+`lsusb` 正常列出、`dfu-util` 正常识别，**唯一的信号是 `speed` 文件**。
+
+```bash
+# 每块板都必须是 480；出现 12 就停下来查，不要继续测任何延迟
+for d in /sys/bus/usb/devices/*/; do
+    [ "$(cat $d/idVendor 2>/dev/null)" = a11c ] && echo "$(basename $d): $(cat $d/speed)M"
+done
+```
+
+`host-tuning.sh` 的 `== USB board ==` 一节其实会打印 `at 12M`，但它和 `at 480M` 一样是
+绿色 `[ok]`，扫一眼看不出来。**建议把非 480M 改成 `[warn]`。**
+
+本次的成因是烧进去的镜像比工作树旧（协议 wire format 已改），重烧两块板后恢复。
+
+### 11.2 PM QoS 值 20us 的 p50，且"per-core C-state 已禁"拦不住它 [实测]
+
+`usb_ep0_rtt` p50，2x2 对照，每格 2900 样本：
+
+| | 无 pmqos | 持 pmqos |
+|---|---|---|
+| `governor=powersave` | 96.1 | **76.3** |
+| `governor=performance` | 96.3 | **76.4** |
+
+**反直觉之处，也是本节最值得记的一条**：TL101 上 `rmcs-ecat-tuning.service`
+（开机 oneshot）**已经**通过 sysfs 把深度 C-state 禁掉了——cpu7 只留 `POLL`，
+cpu0-6 留 `POLL` + `C1_ACPI`：
+
+```
+cpu7:  POLL disable=0 | C1_ACPI disable=1 | C2_ACPI disable=1 | C3_ACPI disable=1
+cpu0:  POLL disable=0 | C1_ACPI disable=0 | C2_ACPI disable=1 | C3_ACPI disable=1
+```
+
+**在这个前提下，持住 `/dev/cpu_dma_latency` 仍然额外买到 20us。** 所以
+**per-core `cpuidle/state*/disable` 与 `/dev/cpu_dma_latency` 拦的不是同一件事，
+不能互相替代**——前者约束核自己进哪一级，后者是一个全系统的延迟契约，
+还会压住 per-core 开关管不到的封装级（package C-state）与 uncore 行为。
+`[效应为实测；机理为推断]`
+
+> **`host-tuning.sh:491` 的检测是误导的**：那句 "deep C-states enabled" 只用 `lsof`
+> 查有没有进程持着 fd，**完全不读 cpuidle 的真实状态**。在 TL101 上它会在
+> C-state 明明已经被开机服务禁掉时照样报 "enabled"。建议改成同时读 `disable` 文件。
+
+TL101 的 C-state 退出代价（`acpi_idle` 驱动，不是 `intel_idle`）：
+
+```
+POLL 0us | C1_ACPI 1us | C2_ACPI 253us | C3_ACPI 1048us
+```
+
+### 11.3 governor 在 TL101 的主机路径上值 0 [实测]
+
+见 11.2 的 2x2：96.1 vs 96.3、76.3 vs 76.4，**两对都在噪声内**。
+
+原因不是 governor 没用，而是**它没有机会起作用**：`usb_ep0_rtt` 以 SCHED_FIFO 绑在
+`isolcpus=7` 的隔离核上，负载本身就把频率顶在 4100 MHz，四格里 `cpu7` 全程 4100 MHz。
+
+**所以第 1 节的结论不需要修改，只需要换一种读法**：真正的要求是
+**"必须有东西把频率顶住"**，而 `governor=performance` 与
+`isolcpus + SCHED_FIFO 绑核` **都能顶住，有其一即可**。1.3 节那台机器没有启用
+`isolcpus`，所以在那里 governor 是唯一的顶频手段，值 16-18us；TL101 启用了，
+于是 governor 变成无关变量。
+
+> **一个会把人带偏的坑**：本次第一轮测到 `cpu7 400/400 MHz`、p50 145，很容易读成
+> "governor 没生效"。真实原因是**那一轮没加 sudo，拿不到 SCHED_FIFO**，线程被普通
+> 调度器换下去、核就降到最低频。**没有 SCHED_FIFO 时测到的频率不能用来判断 governor。**
+
+### 11.4 三条测过、确认为零的 [实测]
+
+| 假设 | 对照 | 结果 |
+|---|---|---|
+| 蓝牙（AX210）与两块板共用 `00:14.0` 会抢 | `rfkill block bluetooth` | p50 76.4 -> 76.3，**0** |
+| 事件线程绑哪两个核有讲究 | `latency ... 7 6 5` vs `1 2 3` | p50 118.4 -> 117.3，**0** |
+| 固件 `LIBRMCS_TIME_SYNC=ON` 的 8kHz SOF 中断拖慢转发 | 两版固件各烧一次 | p50 118.8 -> 118.4，**0** |
+
+第三条值得单独说：`TIME_SYNC=ON` 确实让上行分量从 p50 20.7us 涨到 31.4us，
+**但端到端 p50 不动**——上行不在这条路径的关键路上。**开时间基座不必担心延迟代价。**
+
+### 11.5 第 0 节那条 `[推断，未实测]` 现在有实测了
+
+第 0 节推断"HS bulk 在协议上并不按微帧发放，125us 台阶来自控制器对 NAK 的重试限流"。
+本次用新工具 `host/examples/microframe_phase_test.cpp` 做了直接测量：把 flush 时刻
+对齐到共享 SOF 时间轴上的指定相位，扫 0-125us 共 25 桶、每桶约 400 样本
+（需要 `-DLIBRMCS_TIME_SYNC=ON` 的固件）：
+
+```
+p50 随相位：115.5 -> 131.7us      swing 16.2us
+一个微帧：                        125.00us
+```
+
+**没有锯齿。** 若 flush 被微帧边界闸住，应看到 0->125us 的单调斜坡；实际只有微帧
+13% 的非单调抖动。**第 0 节的推断成立，可升级为 `[实测 2026-08-21]`。**
+
+两者不冲突：NAK 重试台阶是"设备没准备好"时的重试节奏，**不随 flush 相位变化**；
+本测量测的是相位依赖性。
+
+> **实践含义**：把控制环对齐到 SOF 栅格**买不到东西**，这条不必再排进计划。
+> 反过来，**提前 flush 的收益是连续的**——同期用
+> `host/examples/flush_split_test.cpp` 与 `rmcs_command_split_test.cpp` 测得：
+> 提前 Δt flush，早的那帧就早 Δt 到达（1:1，无量化），且晚的那帧因为不必再排在
+> 早帧后面等 CAN 总线，**也会快约一帧的线上时间**。
+
+### 11.6 TL101 上第 5 节还剩什么
+
+| 第 5 节的项 | TL101 状态 |
+|---|---|
+| 1. 换一个 xHCI 控制器 | **不可行**。`00:0d.0`（雷电 4 USB）在芯片组里存在，但五个根口 `connect_type` 全是 `unknown`——固件没描述，OEM 未引出插座。对照 `00:14.0` 的口是 `hotplug` / `hardwired` / `not used` |
+| 2. `iommu.passthrough=1` | 仍未测。当前 `DMA-FQ` |
+| 3. libusb 零拷贝缓冲 | **已完成，本条过期**。见 `host/src/transport/usb/usb.cpp:54` 探测、`:509` 使用；运行期日志会打印 `libusb dev_mem (zero-copy) available` |
+| 4. xHCI IMOD 中断合并 | 仍未测 |
+
+**新增一条（TL101 特有）**：cmdline 只隔离了 `cpu7`，但
+`cpu7` 的 SMT 兄弟是 `cpu3`（`thread_siblings_list = 3,7`），**没有一起隔离**，
+调度器随时可以往 `cpu3` 上放活并与事件线程争同一个物理核。按 1.3 节的做法应改成
+`isolcpus=3,7 nohz_full=3,7 rcu_nocbs=3,7`。`[未实测，需重启]`
+
+### 11.7 TL101 与 Meteor Lake 的最终差距
+
+全部旋钮到位后：
+
+| | Meteor Lake（第 0/1 节） | TL101 | 差 |
+|---|---|---|---|
+| `usb_ep0_rtt` min / p50 | 49 / 68 | 53.9 / **76.4** | +12% |
+| 板级 CAN 单向 min / p50 | 77 / 99 | 87.5 / **117.3** | +18% |
+
+**剩下的差距归机器代差，不是配置问题**——旋钮已经穷尽（11.2-11.4 把能测的都测了，
+11.6 剩下的三条按第 5 节自己的预估都是个位数到十几微秒）。
+**在 TL101 上不要再拿 68/99 当目标值。**
+
+### 11.8 什么能活过重启，什么不能 [实测]
+
+| 项 | 机制 | 重启后 |
+|---|---|---|
+| `isolcpus` / `nohz_full` / `rcu_nocbs` | `/etc/default/grub` 的 `GRUB_CMDLINE_LINUX_DEFAULT` | **✅ 保留** |
+| `irqbalance` 关闭 | 本机**根本没安装** | **✅ 保留** |
+| `governor=performance` | `rmcs-ecat-tuning.service`（enabled，开机 oneshot） | **✅ 保留** |
+| 深度 C-state 禁用（sysfs `disable`） | 同上 | **✅ 保留** |
+| `kernel.sched_rt_runtime_us=-1` 等 sysctl | 同上 | **✅ 保留** |
+| IRQ 亲和 `7f` | 同上 | **✅ 保留** |
+| **持住 `/dev/cpu_dma_latency`（值 20us）** | 仅 `host-tuning.sh --pmqos`，**必须有进程一直开着 fd** | **❌ 丢失** |
+| xHCI 中断线程 rtprio 50 -> 90 | 仅 `host-tuning.sh` | **❌ 丢失** |
+| USB `power/control = on` | `host-tuning.sh` 会写，但按第 3 节**内核对本设备的默认值本就是 `on`** | ⚠️ 多半不需要重做 |
+| 网卡 EEE 关闭 | `rmcs-ecat-tune` 覆盖 `enp2s0`/`enp3s0` | ✅ 视网卡名 |
+
+上表的开机服务项已在 TL101 上逐条读回验证 `[实测 2026-08-21]`：
+`sched_rt_runtime_us=-1`、`timer_migration=0`、`nmi_watchdog=0`、`governor=performance`、
+`cpu7` 的 `C1_ACPI disable=1`、`default_smp_affinity=7f`，全部在效。
+
+> **中断线程那条有个细节**：本机有**两个** xHCI 中断线程，
+> `irq/126-xhci_hcd`（`00:0d.0`，空闲）和 `irq/135-xhci_hcd`（`00:14.0`，两块板都在这里）。
+> `host-tuning.sh` 只把**板子所在的那个**从 rtprio 50 提到 90，另一个保持 50。
+> 重启后两个都回到 50。
+
+**所以"每次重启都要重跑 `host-tuning.sh`"这句话在 TL101 上要修正**：开机服务
+`rmcs-ecat-tuning.service` 已经把 governor、C-state、sysctl、IRQ 亲和都做了；
+**重启后真正缺的只有三样：PM QoS、USB autosuspend、xHCI 中断线程优先级。**
+
+其中 **PM QoS 是唯一一个"必须有活进程"的**——`oneshot` 服务做不到，因为进程退出
+fd 就关了，约束立即释放。三种补法：
+
+1. **让控制程序自己持有**（推荐）。RT 应用的标准做法，进程起来就生效、退出就释放：
+
+   ```cpp
+   int fd = open("/dev/cpu_dma_latency", O_WRONLY | O_CLOEXEC);
+   if (fd >= 0) { int32_t us = 0; (void)!write(fd, &us, sizeof(us)); }  // 故意不 close
+   ```
+
+2. **常驻 systemd 服务**：`Type=simple` + `ExecStart=/usr/local/sbin/rmcs-pmqos-hold`，
+   不能用 `Type=oneshot`。代价是全天候不进深度睡眠，笔记本上是实打实的功耗和风扇。
+3. **内核 cmdline `intel_idle.max_cstate=1` / `processor.max_cstate=1`**：持久，
+   但同样全天候生效，且比 PM QoS 更粗——**未实测它能否覆盖 11.2 那 20us**。
+   `[未实测]`
+

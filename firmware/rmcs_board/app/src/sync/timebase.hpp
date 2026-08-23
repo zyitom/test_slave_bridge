@@ -91,6 +91,22 @@ struct Snapshot {
 // Must run AFTER the CAN driver, which is what brings PTPC0 up.
 void init_capture();
 
+// Microframes per SOF interrupt at the CURRENT port speed: 1 at high speed,
+// 8 at full speed (FRINDEX counts microframes either way, but a full-speed port
+// only receives one SOF per 1 ms frame). Published because every consumer of
+// the microframe stream needs the step, not just this module.
+std::uint32_t microframes_per_sof();
+
+// Transmission time of the SOF packet itself at the CURRENT port speed, in
+// nanoseconds. The device raises the SOF-received flag when the packet has been
+// RECEIVED, so every timestamp taken in that interrupt is late by this much --
+// 0.13 us at 480 Mbit, 2.92 us at 12 Mbit. Identical across boards of the same
+// speed, so it cancels in an all-high-speed rig and appears as a constant
+// ~2.8 us offset the moment one board is full speed.
+// [Measured 2026-08-20 on an HS+FS pair: -2854 / -2764 / -2810 ns against a
+//  computed 2.78 us -- agreement within 1%.]
+std::uint32_t sof_packet_delay_ns();
+
 // ISR path, called from sync::sof_isr_entry() with the values read there.
 void note_sof(std::uint32_t frindex, std::uint32_t now_quarter_us);
 
@@ -163,6 +179,10 @@ void ptpc_reference(std::uint64_t& units, std::uint64_t& microframe);
 
 inline constexpr bool kEnabled = false;
 
+// Must mirror the enabled Snapshot field for field: callers outside this header
+// read these members unconditionally, so a stub that lags the real struct breaks
+// the TIME_SYNC=OFF build only -- the configuration least likely to be compiled
+// while the time base is being worked on.
 struct Snapshot {
     data::TimeState state;
     std::uint64_t microframe;
@@ -172,10 +192,18 @@ struct Snapshot {
     std::int32_t residual_mean_q16;
     std::uint32_t residual_abs_max_q16;
     std::uint32_t residual_count;
+    std::int32_t ptpc_residual_mean;
+    std::uint32_t ptpc_residual_abs_max;
+    std::uint32_t ptpc_step_min;
+    std::uint32_t ptpc_step_max;
+    std::uint32_t ptpc_raw_ns;
+    std::uint64_t ptpc_raw_microframe;
 };
 
 inline void note_sof(std::uint32_t, std::uint32_t) {}
 inline void poll(std::uint32_t) {}
+inline std::uint32_t microframes_per_sof() { return 1; }
+inline std::uint32_t sof_packet_delay_ns() { return 0; }
 inline void apply_anchor(std::uint64_t) {}
 inline Snapshot snapshot() { return {data::TimeState::kInvalid, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; }
 inline Snapshot report() { return snapshot(); }

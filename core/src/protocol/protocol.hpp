@@ -162,10 +162,14 @@ struct PulseSchedulePayload : utility::Bitfield<8> {
     using Microframe = utility::BitfieldMember<0, 64, uint64_t>;
 };
 
-struct PulseReportPayload : utility::Bitfield<20> {
+struct PulseReportPayload : utility::Bitfield<21> {
     using ScheduledMicroframe = utility::BitfieldMember<0, 64, uint64_t>;
     using CapturedMicroframeQ16 = utility::BitfieldMember<64, 64, uint64_t>;
     using TicksPerMicroframeQ16 = utility::BitfieldMember<128, 32, uint32_t>;
+    // data::PulseReportFlags. A report is emitted for every schedule, so the
+    // host can tell "the board refused to arm" from "the board armed and heard
+    // nothing" -- two failures that look identical when only captures report.
+    using Flags = utility::BitfieldMember<160, 8, uint8_t>;
 };
 
 struct GpioHeader : utility::Bitfield<2> {

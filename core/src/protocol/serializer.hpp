@@ -503,6 +503,7 @@ public:
         payload.set<PulseReportPayload::ScheduledMicroframe>(view.scheduled_microframe);
         payload.set<PulseReportPayload::CapturedMicroframeQ16>(view.captured_microframe_q16);
         payload.set<PulseReportPayload::TicksPerMicroframeQ16>(view.ticks_per_microframe_q16);
+        payload.set<PulseReportPayload::Flags>(view.flags);
         utility::assert_debug(cursor == dst.data() + dst.size());
         return SerializeResult::kSuccess;
     }

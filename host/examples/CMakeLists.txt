@@ -92,6 +92,13 @@ target_link_libraries(time_sync_test PRIVATE librmcs-sdk)
 add_executable(sync_skew_test sync_skew_test.cpp)
 target_link_libraries(sync_skew_test PRIVATE librmcs-sdk)
 
+# The same measurement without PTPC in the path: both boards fire a GPTMR
+# compare at one agreed microframe over the existing UART0 cross-wiring and
+# capture each other's edge in hardware, so the two-way difference cancels the
+# cable delay. Needs -DLIBRMCS_PULSE_TEST=ON firmware, which takes UART0 over.
+add_executable(pulse_skew_test pulse_skew_test.cpp)
+target_link_libraries(pulse_skew_test PRIVATE librmcs-sdk)
+
 # Prints core1's diagnostic ring, relayed as UART0 uplink frames by a firmware
 # built with LIBRMCS_DIAG_OVER_USB=ON. The board's console UART sits on an
 # unpopulated debug header, so this is the only way to read that log here.
@@ -166,3 +173,18 @@ target_link_libraries(mc02_packet_rate PRIVATE librmcs-sdk)
 
 add_executable(topo_probe topo_probe.cpp)
 target_link_libraries(topo_probe PRIVATE librmcs-sdk)
+
+# Does the phase of a downlink flush inside the 125 us USB microframe change
+# end-to-end latency? Needs both boards on the shared SOF time base.
+add_executable(microframe_phase_test microframe_phase_test.cpp)
+target_link_libraries(microframe_phase_test PRIVATE librmcs-sdk)
+
+# Prices splitting one downlink batch into two packets: what the early command
+# gains, and what the late one pays. Needs the shared SOF time base.
+add_executable(flush_split_test flush_split_test.cpp)
+target_link_libraries(flush_split_test PRIVATE librmcs-sdk)
+
+# The gimbal/chassis flush split on RMCS's real five-frame, two-bus, classic-CAN
+# command layout. Needs the shared SOF time base.
+add_executable(rmcs_command_split_test rmcs_command_split_test.cpp)
+target_link_libraries(rmcs_command_split_test PRIVATE librmcs-sdk)

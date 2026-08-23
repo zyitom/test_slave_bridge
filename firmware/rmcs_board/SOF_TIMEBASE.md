@@ -2,8 +2,8 @@
 
 > **文档类型**：过程记录（实测验证）
 > **适用范围**：`firmware/rmcs_board/`，HPM5321 / HPM6E8Y 的 USB 数据固件；多块板挂同一个 USB 主机控制器的场景
-> **状态**：现行有效（第 1 步验证、第 2 步共享时间轴均已上板；"在第 k 微帧执行"的动作层未实现）
-> **相关文档**：[AGENTS.md](AGENTS.md)（板级现行规范） · [../../HOST_TUNING.md](../../HOST_TUNING.md)（主机侧调优） · 固件 `app/src/sync/sof_probe.hpp` · 主机工具 `host/examples/sof_probe.cpp`
+> **状态**：现行有效（第 1 步验证、第 2 步共享时间轴、第六条直接实测均已上板；"在第 k 微帧执行"的动作层未实现）
+> **相关文档**：[AGENTS.md](AGENTS.md)（板级现行规范） · [CONTROL_TIMING.md](CONTROL_TIMING.md)（这条轴在控制环里到底用不用得上） · [../../HOST_TUNING.md](../../HOST_TUNING.md)（主机侧调优） · 固件 `app/src/sync/sof_probe.hpp` · 主机工具 `host/examples/sof_probe.cpp`
 
 ## 摘要
 
@@ -18,8 +18,9 @@
 
 **同步精度：跨板 1 sigma 0.042 us、3 sigma 约 0.13 us**（时间轴本身，不含动作层）。
 **这是推导值**——由四个各自实测的分项合成（见 5.2），**不是端到端实测**。直接实测试过六条路，
-前五条全部失败并已定位根因、第六条实现完未验证，全部记在第 5.4/5.5 节，
-**结论是错的一直是"尺子"不是时间轴**。
+前五条全部失败并已定位根因；**第六条（GPTMR 脉冲交换）在 2026-08-20 跑通**，实测
+**跨板 skew 1 sigma 约 20 ns、通路延迟 129 ns**，比推导值更好且与单板残差互相印证，
+全部记在第 5.4/5.5 节，**结论是错的一直是"尺子"不是时间轴**。
 
 **第 2 步结论：两块板落在同一条绝对时间轴上，圈数零分歧。** 大计数器 + 滑动窗口拟合
 + 圈数状态机已实现并上板，锚点搭在**既有的 session 包**上。30 s 内 119 次上报全部
@@ -417,7 +418,7 @@ SOF"的判断一直在翻，每翻一次就是 **125 µs 的静默跳变**。
 **这些失败全部发生在"PTPC 时刻 → 微帧轴"这条只为测量而存在的路上。把它整个删掉，时间轴照常
 工作。**
 
-### 5.5 第六条路：GPTMR 硬件脉冲交换（已实现，未验证）
+### 5.5 第六条路：GPTMR 硬件脉冲交换（已上板，跑通）
 
 放弃 PTPC，理由不是偏好而是时钟树（见 4.6 节）：
 
@@ -426,8 +427,15 @@ clock_gptmr0 = MAKE_CLOCK_NAME(..., CLK_SRC_GROUP_COMMON, ...)   // 可挂 clk_s
 clock_ptpc   = MAKE_CLOCK_NAME(..., CLK_SRC_GROUP_AHB,    14)    // 只能吃 PLL0
 ```
 
-**GPTMR 可以直接挂 24 MHz 晶振**，与机器定时器同源、整数比 6:1，**3000 tick/微帧是精确值不是
-估计**。不经 PLL0，就没有小数分频和展频。
+**GPTMR 可以直接挂 24 MHz 晶振**，不经 PLL0，就没有小数分频和展频——这才是选它的理由。
+
+> **原文这里还写过"3000 tick/微帧是精确值不是估计"，这句是错的，2026-08-20 更正。**
+> 微帧轴是**主机**的 USB 时钟，GPTMR 数的是**本板**晶振，两个独立振荡器。第 2.2 节自己
+> 实测过这两者差约 **+80 ppm**，所以真值是约 **3000.245 tick/微帧**。按 3000 算，50 ms
+> 的提前量就会引入 **98 tick ≈ 4.1 us** 的系统误差；两块板 ppm 不同（81.9 / 80.0），
+> 双向差分也只抵掉共模的那部分，残差随提前量线性增长。**因此比例必须拟合，不能假设**，
+> 现在 `pulse.cpp` 用与 timebase 相同形状的窗口（128 样本 x 64 微帧 = 1.024 s）拟合它。
+> `[实测 2.2 节 + 推断]`
 
 **不用加线**：UART0 那两根线本来就交叉互联，而两个引脚就是 GPTMR0 通道 1 的比较/捕获脚：
 
@@ -435,6 +443,11 @@ clock_ptpc   = MAKE_CLOCK_NAME(..., CLK_SRC_GROUP_AHB,    14)    // 只能吃 PL
 |---|---|---|
 | PB08 | UART0 TXD | `GPTMR0_COMP_1` 比较输出 |
 | PB09 | UART0 RXD | `GPTMR0_CAPT_1` 捕获输入 |
+
+**接线在 2026-08-20 已经独立验证过**：刷脉冲固件之前先跑
+`./host/build/examples/dual_board_test link`，`A.UART0 -> B.UART0` 与 `B.UART0 -> A.UART0`
+双向 PASS（`rx_bytes=16`）。**先证明那根线是通的，再把它改成定时链路**——否则测不出脉冲时
+分不清是时基错还是线断。`[实测]`
 
 双向硬件比较→捕获，两端都没有 CPU。双向对打让恒定的通路延迟抵消：
 
@@ -445,15 +458,143 @@ skew = ((b_rx - a_tx) - (a_rx - b_tx)) / 2
 分辨率 1 tick = 41.7 ns，看着比 42 ns 目标粗，但**粗得无害**：量化零均值、被真实抖动 dither，
 跑上千次均值收敛到亚 ns，σ 只按平方相加涨到 44 ns，可以反卷积掉。
 
-**状态：固件与协议已实现并编译通过（`-DLIBRMCS_PULSE_TEST=ON`），主机侧转发桩和测试工具未写完，
-一次上板验证都没做。**
+#### 2026-08-20 这一轮补了什么
 
-**上板第一件事必须是看这一个数**：`measured_ticks_per_microframe_q16()` 必须读出
-**196608000**（3000<<16）。因为比较输出和捕获**在同一个 GPTMR 通道上**（两个引脚都被固定在
-通道 1），而我**没有确认捕获模式会不会复位那个自由运行的计数器**。如果会，插值就是错的，这个
-比例数就是唯一的判据。
+主机侧的缺口已经全部补齐，固件侧则修掉了三个**必然让测量失败**的缺陷：
+
+| 位置 | 问题 | 修法 |
+|---|---|---|
+| `pulse.cpp` `bring_up_hardware()` | **漏了 `clock_add_to_group(clock_gptmr0, 0)`**，GPTMR0 被时钟门控，第一次写寄存器就把核卡死 | 补上；SDK 自己的 `init_gptmr0_clock()` 就是这一行 |
+| `pulse.cpp` `schedule()` | 只写 CMP0。比较输出是"CMP0 拉高、CMP1 拉低"，CMP1 停在 `0xFFFFFFFF`，所以**第一发之后引脚一直是高**，再匹配也没有边沿 | 每轮同时写 CMP0 与 CMP1（脉宽 10 us） |
+| `pulse.cpp` 时刻换算 | 用"最新一条 SOF 记录 + 3000 整数外推"定目标，等于把**那一条**中断的 ±0.5 us 抖动原样打进脉冲，比被测量大一个数量级 | 改成 1.024 s 窗口拟合（斜率用两半均值差，相位用全窗均值），捕获侧用同一条直线求逆，不再做相邻两点插值 |
+| `host/src/protocol/handler.cpp` | `Handler::send_pulse_schedule` 只有声明没有定义 | 补定义 + `RmcsBoardHpm5321DualCan::send_pulse_schedule` 转发 |
+| 协议 | 报文只在**捕获时**才发，主机分不清"板子没武装"和"武装了但没听见" | `PulseReportPayload` 加一字节 `Flags`（`kPulseArmed` / `kPulseCaptured`），**每收到一次 schedule 就回一条**（见 `core/include/librmcs/data/datas.hpp`） |
+| 主机工具 | 没有 | `host/examples/pulse_skew_test.cpp`，按 7.1 的顺序分三段输出 |
+
+#### 上板结果：跨板 skew 1 sigma 约 20 ns，通路延迟 129 ns [实测 2026-08-20]
+
+**这是这条时间轴第一次端到端实测**，而且比第 5.2 节推导出的 42 ns 更好。两块 HPM5321，
+`pulse_skew_test 400 400`（提前量 50 ms），稳态连测：
+
+| 轮次 | 通路延迟 均值 / sigma | skew 均值 | skew sigma |
+|---|---|---|---|
+| 1（重刷后第一轮，含重新锚定暂态） | 128.7 / 15.5 ns | +17.3 ns | 50.8 ns |
+| 2 | 130.0 / 13.3 ns | +6.5 ns | **19.4 ns** |
+| 3 | 129.0 / 13.6 ns | +9.8 ns | **22.7 ns** |
+
+**怎么读这三个数：**
+
+- **通路延迟 129 ns 是常数，不是 skew。** 它是单向的电缆 + pad + 施密特触发器，五次运行
+  给出 128.7 / 130.0 / 129.0 / 129.7 / 128.8 / 130.8，离散度 1 ns。它以**相同符号**进入
+  两块板的报告，所以在双向差里整个消掉——出现在"和的一半"里，不在"差的一半"里。
+- **跨板 skew 稳态 1 sigma 约 20 ns，3 sigma 约 60 ns。** 量化底是 8.5 ns
+  （单次捕获 41.7/sqrt(12) = 12 ns，双向取半再除 sqrt(2)），所以这 20 ns 里大部分是真实的，
+  不是尺子。
+- **均值那几纳秒是真实的固定不对称，不是斜率误差**——判据是提前量扫描：12.5 / 100 / 250 ms
+  下 skew 均值 +3.1 / +6.9 / +4.4 ns，**不随提前量放大**；若是拟合斜率误差，250 ms 上应当
+  放大 20 倍。同一组数据还顺带标出了斜率不确定度：延迟的 sigma 从 12.8 涨到 23.5 ns，
+  对应约 **0.1 ppm**。
+
+**与既有推导互相印证（两把独立的尺子）**：把 skew sigma 20 ns 按"两块板的相位误差独立、
+在差里各占一半"折回单板，是约 14 ns；同一天 `time_sync_test` 报的单板拟合外推残差离散度是
+**17 ns**（0.0173 us）。一个是硬件脉冲对打、一个是纯软件的样本外残差，**两者从未共用任何
+代码路径，却给出同一量级**。第 5.2 节那个 42 ns 是保守侧的推导值，现在有了实测的上界。
+
+**仍然要说清的边界**：这测的是"两块板各自按共享轴发一个**硬件比较输出**时，实际动作差多少"。
+它已经包含了各板的拟合相位误差（动作层真正要付的那部分），但**不包含**任何软件动作路径
+——若动作是在中断里写寄存器，还要另加那条路径的抖动，见 5.6。
+
+#### 教训：实验性模块不要在 boot 路径上碰硬件 [实测 2026-08-20，代价是两块板]
+
+**结论先行：这块板的 app 一旦在 USB 枚举前卡死，就只能靠拉 PA07 到 GND 或 JTAG 救回来，
+所以任何没上过板的初始化代码都不该跑在 `App::init()` 里。**
+
+`pulse::init()` 当时在 `App::init()` 中无条件执行，而它漏了资源组那一行。三件事叠在一起
+就是砖：
+
+1. HPM 的外设时钟门控关着时，写寄存器**不报错也不返回**，AHB 事务永远不完成，核就停在那；
+2. 卡死发生在主循环之前，USB 从来没枚举，**DFU-RT 接口也就不存在**；
+3. `BOARD_BOOTLOADER_MODE=auto` 的 bootloader 看到一份**校验合法**的 app 就直接跳进去，
+   不给 DFU 窗口；而这块板没有按键（PA07 复用 JTAG_TMS，只有复位后 4x250us 的采样窗口）。
+
+修法有两层，缺一不可：**补上 `clock_add_to_group`**（治本），以及**把整个硬件 bring-up
+推迟到第一次收到 host 的 schedule 请求**（治标但更重要）。后者的意思是：这条路上再出任何
+问题，前提都是"USB 已经枚举、session 已经建立"，于是烧录通道始终活着，故障从"变砖"降级成
+"诊断功能不工作"。`pulse::init()` 现在是空函数，注释写明了为什么空。
+
+> **推论，适用于所有诊断开关**：`-DLIBRMCS_*` 系列里凡是会碰时钟树、引脚复用或中断的，
+> 都应当在**枚举之后**再动手。`SOF_DIAG` / `CAN_DIAG` / `TIME_SYNC` 恰好都只挂在已经初始化
+> 好的外设上，所以没踩到；`PULSE_TEST` 是第一个自己开外设的，就踩了。
+
+**上板第一件事仍然是看那一个数，但判据变了**：`measured_ticks_per_microframe_q16()`
+应当读出约 **196624000（3000.245）**，而**不是**原文写的 196608000（3000<<16）——理由见本节
+开头的更正。判据是：
+
+- 两块板都应落在 **+80 ppm 附近**，且与 2.2 节机器定时器测到的 +81.9 / +80.0 ppm 一致；
+- 恰好读出 3000.0000 反而说明**拟合根本没跑**（那正是旧代码的常数）；
+- 两块板之间差几 ppm 是正常的（晶振个体差异），差几十 ppm 就要查。
 
 > **UART0 在这个 build 下不工作**（引脚被借走），所以它是独立的编译开关、默认 OFF。
+
+### 5.7 混合速率：一块 HS 一块 FS 能不能共用这条轴 [实测 2026-08-20]
+
+**结论：能，但要改一处策略、补一个 2.8 us 的固定偏置；补完之后跨板 sigma 约 25~30 ns，
+只比全 HS 的 20 ns 差一点。**
+
+复现：`-DLIBRMCS_USB_FULL_SPEED=ON` 把一块板强制成全速枚举（该开关默认 OFF，是测试载具）。
+注意 `tusb_rhport_init` 的 `.speed` 字段**是无效的**——ChipIdea 的 device 驱动只读
+`PORTSC1_PORT_SPEED` 汇报，从不强制；真正强制全速的是控制器位 **`PORTSC1.PFSC`**（禁掉
+高速 chirp），而且必须在 `tusb_rhport_init` 之后设，因为 `dcd_init` 会复位控制器。
+
+#### 5.7.1 FS 下 FRINDEX 的行为：步长 8，不是 1
+
+| | HS 板（port 1） | FS 板（port 2） |
+|---|---|---|
+| delta 分布 | **1** @ 100.00000%（159187 次） | **8** @ 100.00000%（19898 次） |
+| ISR 间隔均值 | 125.0099 us | **1000.0784 us**（正好 8 倍） |
+| FRINDEX 低 3 位 | 0~7 走满 | 恒为 0 |
+| 跨板残差 | — | min -12 / p50 -8 / max -3，**不漂移** |
+
+**FRINDEX 永远按微帧计数**，只是全速端口每 1 ms 才收到一个 SOF，所以一次跳 8。残差不漂移
+说明两块板数的仍是同一个时钟。
+
+**但现行策略把它判死**：`delta >= 8 -> 计数器不可信 -> invalidate()`。实测后果是 FS 板
+`state invalid`、119 次上报 0 次有效、运行期异常 7258、拟合完全没有。修法是按端口速度分档
+（`timebase::microframes_per_sof()`，读 `PORTSC1.PSPD`）。改完后两块板都 valid、异常 0、
+各自拟合出 +78.9 / +78.6 ppm。
+
+#### 5.7.2 FS 板整条轴晚 2.8 us，原因是 SOF 包自己的传输时间
+
+改完策略后用第 5.5 节的脉冲交换**直接测**（不是推导），三轮：
+
+| | skew 均值 | skew sigma | 通路延迟 |
+|---|---|---|---|
+| 补偿前 | **-2854 / -2764 / -2810 ns** | 116 / 24.6 / 54.2 ns | 130.4 / 130.8 / 128.8 ns |
+| **补偿后** | **+38.6 / +33.7 / +35.0 ns** | 50.1 / **23.9 / 29.9** ns | 130.5 / 130.3 / 128.9 ns |
+
+那 2.8 us 不是玄学，是可以算出来的：
+
+| | SOF 包 | 位时间 | 传输耗时 |
+|---|---|---|---|
+| FS 12 Mbit | SYNC 8 + PID 8 + 帧号 11 + CRC5 5 + EOP 3 = 35 bit | 83.3 ns | **2.92 us** |
+| HS 480 Mbit | SYNC 32 + PID 8 + 11 + 5 + EOP 8 = 64 bit | 2.08 ns | **0.13 us** |
+| 差 | | | **2.78 us** |
+
+实测 2.81 us，**吻合到 1%**。机制：**设备是在收完 SOF 包之后才置 SRI 的**，所以在那个中断里
+取的任何时间戳都晚了一个包的传输时间。全 HS 的机架上这一项两块板相同、自动抵消，所以以前从未
+露头；一旦有一块是 FS，它就变成 2.8 us 的固定偏置。
+
+修法是让每块板减掉**自己那一份**（`timebase::sof_packet_delay_ns()`），于是所有板都对齐到
+"包开始"那一刻，与速度无关。补偿后残留 +35 ns、稳定，sigma 25~30 ns。
+
+> **通路延迟在补偿前后、以及 HS/HS 与 HS/FS 之间都是 129~131 ns**，这是尺子没被改坏的旁证：
+> 被改动的只有"轴的相位"，物理链路没有变。
+
+#### 5.7.3 代价与建议
+
+能同步不等于该这么用。FS 侧还要付：bulk 端点 64 字节（HS 是 512）、包率低一个数量级、
+`sigma` 从 20 ns 退到 25~30 ns、拟合残差从 17 ns 退到 24 ns（SOF 采样率只有 1/8）。
+**除非某块板硬件上只能跑全速，否则没有理由混速**；但如果确实混了，这条轴仍然可用。
 
 ### 5.6 还没测到的：动作层
 
@@ -462,7 +603,7 @@ skew = ((b_rx - a_tx) - (a_rx - b_tx)) / 2
 
 | 手段 | 分辨率 | 需要什么 |
 |---|---|---|
-| **GPTMR 脉冲交换**（5.5 节） | 41.7 ns | **已有接线**，代码待验证 |
+| **GPTMR 脉冲交换**（5.5 节） | 单次 41.7 ns，均值到 ns | **已有接线**，已上板跑通（5.5 节结果） |
 | 示波器打两个引脚 | 几十 ns，地面真值 | 一台示波器；单通道也够（见下） |
 | 主机侧比对上报 | 一个微帧（125 µs） | 已有，但分辨率不够 |
 
@@ -503,19 +644,46 @@ B 的输出 ──[ 2k ]──┘
 
 ## 7. 还没做的事
 
-### 7.1 直接实测跨板 σ（唯一卡住的事）
+### 7.1 直接实测跨板 σ（已完成 2026-08-20）
 
-第六条路（5.5 节 GPTMR 脉冲交换）差两件：`Handler::send_pulse_schedule` 的公共 API 转发桩
-（插入点 `host/src/protocol/handler.cpp:734`），以及驱动交换、算双向差的主机工具。
+第六条路（5.5 节 GPTMR 脉冲交换）**已经跑通并给出数**：跨板 skew 1 sigma 约 20 ns、
+通路延迟 129 ns，见 5.5 节的结果表。两侧代码齐备（`Handler::send_pulse_schedule` 的定义、
+板级转发、协议的 `Flags` 回执、主机工具 `host/examples/pulse_skew_test.cpp`）。
 
-**上板顺序不要跳**：
+上板当天修掉的三个缺陷都值得记住，因为**每一个都会让测量静默失败而不是报错**：
+时钟门控漏加（变砖）、比较器极性反了（捕到的是脉冲后沿，均值恰好等于脉宽）、
+微帧编号向后跳时采样器永久卡死（400 轮全部拒绝武装，看起来像断线）。
 
-1. **先只看 `measured_ticks_per_microframe_q16()` 是不是 196608000**。同通道能否同时收发未验证，
-   这是唯一判据。不是就换方案，别在上面堆代码。
-2. 比例对了，再看**同板自检**是否个位数 ns。
-3. 自检干净了，才看跨板数字。
+复现顺序（工具自己就是按这个顺序打印的，不要跳）：
 
-**任何时候自检不干净，跨板数字一眼都别看**——第 5.4 节五次失败全是违反这条的代价。
+```bash
+export GNURISCV_TOOLCHAIN_PATH=~/3rd_party/rv32imac_zicsr_zifencei_multilib_b_ext-linux
+export PATH="$GNURISCV_TOOLCHAIN_PATH/bin:$PATH"
+
+# 0. 先证明那根 UART0 线是通的，再把它借走当定时链路
+./host/build/examples/dual_board_test link          # 只看两行 UART0，必须双向 PASS
+
+cmake --preset release -S firmware/rmcs_board -B firmware/rmcs_board/build_5321_pulse \
+      -DBOARD=hpm5321 -DLIBRMCS_TIME_SYNC=ON -DLIBRMCS_PULSE_TEST=ON
+cmake --build firmware/rmcs_board/build_5321_pulse --target rmcs_board_app
+IMG=firmware/rmcs_board/build_5321_pulse/app/output/rmcs_board_app_hpm5321.dfu
+dfu-util -p 3-1 -a 0 -D $IMG && dfu-util -p 3-2 -a 0 -D $IMG
+
+cmake --build host/build --target pulse_skew_test
+./host/build/examples/pulse_skew_test 400 400       # 400 轮，提前量 400 微帧 = 50 ms
+```
+
+1. **第 1 段：两块板拟合出的 tick/微帧**。应当是约 **3000.245（+80 ppm）**，与 2.2/4.4 节
+   的晶振偏差对得上；**读出恰好 3000.0000 说明拟合没跑**。不对就停，别往下看。
+2. **第 2 段：单向偏移的离散度**——这就是这把尺子的噪声底。1 tick = 41.7 ns，量化底约
+   12 ns（41.7/sqrt(12)）；明显大于它就是真抖动，先查抖动再谈 skew。
+3. **第 3 段：双向和 / 双向差**。和的一半是通路延迟（电缆 + pad + 施密特，常数，不是
+   skew）；差的一半才是跨板 skew。
+
+**任何时候第 2 段不干净，第 3 段一眼都别看**——第 5.4 节五次失败全是违反这条的代价。
+
+> 工具会先跑 24 轮**丢弃**的热身：板子在收到第一条 schedule 时才把 GPTMR 拉起来
+> （5.5 节的"教训"一段说明了为什么），拟合还要一秒钟才收敛。
 
 ### 7.2 动作层
 
@@ -550,13 +718,28 @@ B 的输出 ──[ 2k ]──┘
 | `sof.{hpp,cpp}` | 共享的 SOF 钩子，一个入口喂两个消费者 | 随下面任一开启 |
 | `sof_probe.{hpp,cpp}` | 第 1 步验证探针：差值直方图、端口状态、跨板一致性 | `-DLIBRMCS_SOF_DIAG=ON` |
 | `timebase.{hpp,cpp}` | 共享时间轴：计数器、拟合、圈数状态机、TRGM 捕获 | `-DLIBRMCS_TIME_SYNC=ON` |
-| `pulse.{hpp,cpp}` | GPTMR 硬件脉冲交换（未验证） | `-DLIBRMCS_PULSE_TEST=ON` |
+| `pulse.{hpp,cpp}` | GPTMR 硬件脉冲交换（代码齐备，未上板） | `-DLIBRMCS_PULSE_TEST=ON` |
 
 主机（约 1930 行）：`librmcs/time/timeline.{hpp,cpp}`（进程唯一的微帧轴 + Unix 映射）、
 `host/examples/sof_probe.cpp`、`time_sync_test.cpp`、`sync_skew_test.cpp`、`topo_probe.cpp`（临时）。
 
 协议：`SessionType` 新增 `kTimeAnchor`/`kTimeStatus`/`kSyncSample`/`kPulseSchedule`/`kPulseReport`，
 主机侧开关 `AdvancedOptions::set_enable_time_sync(true)`。
+
+2026-08-20 追加：
+
+| 位置 | 变更 |
+|---|---|
+| `core/src/protocol/protocol.hpp` | `PulseReportPayload` 20 -> 21 字节，新增 `Flags` |
+| `core/include/librmcs/data/datas.hpp` | `PulseReportFlags`（`kPulseArmed` / `kPulseCaptured`）、`PulseReportView::flags` |
+| `host/src/protocol/handler.cpp` | 补 `Handler::send_pulse_schedule` 定义 |
+| `host/include/librmcs/board/rmcs_board_hpm5321_dual_can.hpp` | 板级 `send_pulse_schedule` 转发 |
+| `host/examples/pulse_skew_test.cpp` | 分三段输出的脉冲交换测试工具 |
+| `firmware/.../link/host_session.hpp` | 每条 schedule 回一条 report（武装与否都回） |
+| `firmware/.../app.cpp` | 主循环 1 kHz 调 `sync::pulse::poll()` |
+
+> **协议改了一个字节，所以固件与主机必须同版本**。旧固件配新主机会在这条 session 字段上
+> 丢帧——这正是 4.1 节说的"带载荷的 SessionType 不能被跳过"。
 
 > **`topo_probe.cpp` 是一次性探测工具**（确认四口一总线的接收关系），已完成使命，可以删。
 

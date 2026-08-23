@@ -736,4 +736,9 @@ Handler::PacketBuilder Handler::start_cyclic_transmit() noexcept {
     return impl_->start_transmit(true);
 }
 
+void Handler::send_pulse_schedule(uint64_t microframe) noexcept {
+    core::utility::assert_debug(impl_);
+    impl_->send_pulse_schedule(microframe);
+}
+
 } // namespace librmcs::host::protocol

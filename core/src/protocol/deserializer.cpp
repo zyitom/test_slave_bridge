@@ -426,6 +426,7 @@ coroutine::LifoTask<bool> Deserializer::process_session_field(FieldId) {
                 payload.get<PulseReportPayload::CapturedMicroframeQ16>(),
             .ticks_per_microframe_q16 =
                 payload.get<PulseReportPayload::TicksPerMicroframeQ16>(),
+            .flags = payload.get<PulseReportPayload::Flags>(),
         };
         consume_peeked();
         callback_.pulse_report_deserialized_callback(report);

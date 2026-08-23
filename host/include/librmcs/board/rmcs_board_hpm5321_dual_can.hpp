@@ -136,6 +136,13 @@ public:
     };
     PacketBuilder start_transmit() noexcept { return PacketBuilder{handler_}; }
 
+    // Cross-board timing measurement only; see Handler::send_pulse_schedule.
+    // Not part of a control path: the board answers on the session stream, and
+    // only firmware built with -DLIBRMCS_PULSE_TEST=ON does anything with it.
+    void send_pulse_schedule(uint64_t microframe) noexcept {
+        handler_.send_pulse_schedule(microframe);
+    }
+
 private:
     static inline Callback default_callback_{};
     host::protocol::Handler handler_;

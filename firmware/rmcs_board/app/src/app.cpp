@@ -190,6 +190,7 @@ bool host_session_established() {
             // re-arm the SOF enable so the hook survives a controller that was
             // reinitialized behind us. Both no-ops unless compiled in.
             sync::timebase::poll(tick);
+            sync::pulse::poll(tick);
             sync::sof_rearm();
 
             // Ship any hardware Start-of-Frame captures the CAN receive path

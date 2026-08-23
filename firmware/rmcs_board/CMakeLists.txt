@@ -52,6 +52,12 @@ option(LIBRMCS_PULSE_TEST "Measure cross-board skew with GPTMR pulses (takes ove
 # Forwarded to the app sub-build as LIBRMCS_APP_SOF_DIAG; see app/CMakeLists.txt.
 option(LIBRMCS_SOF_DIAG "Emit USB SOF / FRINDEX validation telemetry on the UART0 uplink" OFF)
 
+# Forwarded to the app sub-build as LIBRMCS_APP_USB_FULL_SPEED. Enumerates the
+# device at FULL speed instead of HIGH -- a test vehicle, not a product setting:
+# it costs bulk throughput (64-byte packets) and coarsens the SOF time base from
+# 125 us microframes to 1 ms frames. See SOF_TIMEBASE.md.
+option(LIBRMCS_USB_FULL_SPEED "Enumerate USB at full speed (test only)" OFF)
+
 # Forwarded to the app sub-build as LIBRMCS_APP_DIAG_OVER_USB.
 option(LIBRMCS_DIAG_OVER_USB "Relay core1 diagnostics to the host over USB" OFF)
 
@@ -132,6 +138,7 @@ add_rmcs_board_subbuild(
     -DLIBRMCS_APP_TIME_SYNC=${LIBRMCS_TIME_SYNC}
     -DLIBRMCS_APP_PULSE_TEST=${LIBRMCS_PULSE_TEST}
     -DLIBRMCS_APP_SOF_DIAG=${LIBRMCS_SOF_DIAG}
+    -DLIBRMCS_APP_USB_FULL_SPEED=${LIBRMCS_USB_FULL_SPEED}
     -DLIBRMCS_APP_DIAG_OVER_USB=${LIBRMCS_DIAG_OVER_USB}
     -DLIBRMCS_APP_ILM_HOT_PATH=${LIBRMCS_ILM_HOT_PATH}
 )

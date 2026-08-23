@@ -123,7 +123,16 @@ void init_can_indicator_pins() {
     }
 }
 
-bool usb_use_high_speed() { return true; }
+bool usb_use_high_speed() {
+#if defined(LIBRMCS_APP_USB_FULL_SPEED) && LIBRMCS_APP_USB_FULL_SPEED
+    // Test builds only (-DLIBRMCS_USB_FULL_SPEED=ON). The PHY is high-speed
+    // capable; this forces the slower enumeration so a mixed HS/FS pair can be
+    // put on one host controller and the shared SOF time base measured.
+    return false;
+#else
+    return true;
+#endif
+}
 
 SDK_DECLARE_EXT_ISR_M(IRQn_MCAN0, can0_isr)
 void can0_isr() { can_irq_handler(0); }

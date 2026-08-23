@@ -13,8 +13,15 @@
 //
 // GPTMR is in CLK_SRC_GROUP_COMMON, so it can be clocked straight from the
 // 24 MHz crystal, the same source the machine timer divides by 6. No PLL, no
-// fractional divider, no spread spectrum, and an exact 3000 ticks per 125 us
-// microframe. That is the whole reason to prefer it.
+// fractional divider, no spread spectrum: the rate is as steady as the crystal.
+//
+// WHAT IT IS NOT: an exact 3000 ticks per microframe. The microframe axis is the
+// USB HOST's clock (SOF), the GPTMR counter is THIS BOARD's crystal, and the two
+// are independent oscillators -- measured about +80 ppm apart, i.e. ~3000.25
+// ticks per microframe. Assuming 3000 puts 4 us of error into a 50 ms lead, so
+// the ratio is FITTED here, exactly as timebase.cpp fits the machine timer.
+// (An earlier revision of this file assumed the exact 3000 on the grounds that
+// "both come from the crystal". Only one of them does.)
 //
 // WIRING: none to add. UART0 already crosses between the two boards
 // (A.TXD<->B.RXD both ways), and those pins carry GPTMR0 channel 1's compare
@@ -34,7 +41,9 @@
 //
 // Cable propagation and the pad/synchroniser delay appear with the same sign in
 // both directions and cancel in the difference -- the standard two-way
-// exchange. What survives is the quantity being measured.
+// exchange. What survives is the difference between the two boards' own ideas of
+// when microframe k happens, which is exactly what an action scheduled on the
+// shared axis would inherit.
 //
 // Resolution is one GPTMR tick, 41.7 ns. That is coarse against the ~42 ns the
 // timeline is expected to achieve, but it is coarse in a harmless way: the
@@ -50,14 +59,18 @@ namespace librmcs::firmware::sync::pulse {
 
 inline constexpr bool kEnabled = true;
 
-// 24 MHz / 8 kHz microframes. Exact, because both come from the crystal.
-inline constexpr std::uint32_t kTicksPerMicroframe = 3000;
+// Nominal ticks per microframe: 24 MHz GPTMR, 125 us microframe. The starting
+// point of the fit and the sanity bound around it, never the value used.
+inline constexpr std::uint32_t kNominalTicksPerMicroframe = 3000;
 
-// Full-rate ring relating microframes to GPTMR ticks, 4 ms deep. Full-rate on
-// purpose: a decimated history makes the interpolation span the decimation
-// period, which is how an earlier revision handed back the precision the
-// hardware capture had just won.
-inline constexpr std::uint32_t kHistoryDepth = 32;
+// Same shape as the machine-timer fit in timebase.cpp, for the same reason: the
+// BASELINE (128 x 64 microframes = 1.024 s) sets the slope accuracy and the
+// sample COUNT averages the SOF interrupt's entry jitter down. Scheduling off a
+// single SOF sample instead -- what the first revision did -- puts that one
+// sample's +-0.5 us straight into the pulse, ten times the effect being
+// measured.
+inline constexpr std::uint32_t kSampleDecimation = 64;
+inline constexpr std::uint32_t kSampleCount = 128;
 
 // Pin mux, GPTMR clock, channel setup. Must run after the UART driver, whose
 // pin mux this deliberately overrides.
@@ -66,9 +79,13 @@ void init();
 // SOF interrupt: record where the GPTMR counter stood at this microframe.
 void note_sof(std::uint64_t microframe);
 
-// Arm a hardware pulse for the given absolute microframe. False when the
-// timeline cannot place it, or the target is too near (the compare must be
-// written before the counter reaches it) or too far to trust.
+// Main loop, 1 kHz tick: recomputes the microframe-to-tick line. Does real work
+// only every refit period.
+void poll(std::uint32_t tick_ms);
+
+// Arm a hardware pulse for the given absolute microframe. False when the fit is
+// not ready, or the target is too near (the compare must be written before the
+// counter reaches it) or too far to trust.
 bool schedule(std::uint64_t microframe);
 
 // Main loop: hands back one captured pulse, converted to the shared axis in
@@ -78,10 +95,10 @@ bool take_capture(std::uint64_t& microframe_q16);
 // Capture interrupt entry point (bound to IRQn_GPTMR0 in the .cpp).
 void isr_handler();
 
-// Self-check, published so the assumption "exactly 3000 ticks per microframe"
-// is verified on hardware rather than trusted: measured ticks between the two
-// oldest and newest history entries, divided by the microframes between them,
-// in Q16. Exactly 3000<<16 means the clock tree is what the datasheet says.
+// The fitted ticks per microframe, Q16. Published so the clock relationship is
+// verified on hardware rather than trusted. Expect ~196624000 (3000.25), NOT
+// 3000<<16: the excess is the board crystal running fast against the host's USB
+// clock, and it must agree with the +80 ppm the machine-timer fit reports.
 std::uint32_t measured_ticks_per_microframe_q16();
 
 #else
@@ -90,6 +107,7 @@ inline constexpr bool kEnabled = false;
 
 inline void init() {}
 inline void note_sof(std::uint64_t) {}
+inline void poll(std::uint32_t) {}
 inline bool schedule(std::uint64_t) { return false; }
 inline bool take_capture(std::uint64_t&) { return false; }
 inline std::uint32_t measured_ticks_per_microframe_q16() { return 0; }
