@@ -44,8 +44,31 @@ LibRMCS v3 正在开发！目前处于测试阶段，无良好的文档/教程�
 
 | 测什么 | 工具 | min | p50 | p99 | p99.9 |
 |---|---|---|---|---|---|
-| 板级 CAN 单向（A.CAN0 -> B.CAN0，过 USB + 固件 + CAN 线） | `dual_board_test latency` | 77 us | **99 us** | 122 us | 129 us |
+| 板级 **CAN-FD** 单向（A.CAN0 -> B.CAN0，过 USB + 固件 + CAN 线） | `dual_board_test latency` | 77 us | **99 us** | 122 us | 129 us |
 | 纯主机路径 RTT（提交 -> xHCI -> 设备 EP0 -> 中断 -> 唤醒） | `usb_ep0_rtt` | 49 us | **68 us** | 77 us | 83 us |
+
+> **第一行是 CAN-FD，不是 classic CAN。** `dual_board_test` 的 `use_fdcan()` 默认返回
+> true，只有 `RMCS_CAN_CLASSIC=1` 才发经典帧——这一点此前没有写在任何地方，而 99 us
+> 其实**低于下面吞吐表里 classic CAN 自己的帧时 116.8 us**，物理上不可能是 classic 的
+> 单向延迟。换 classic 会慢 60-75 us，见下表。`[实测 2026-08-24]`
+
+**换一套异构 rig 的对照**（mc02 <-> HPM5321 DualCan，CAN0<->CAN0 / CAN1<->CAN1，
+`mixed_board_test latency`，每格 4000 帧、0 超时 0 损坏）：
+
+> **测量条件与上表不同，不要直接比。** 两者都跑过 `host-tuning.sh`，但上表把事件线程
+> 绑到了 P 核，下表**没有绑**（`mixed_board_test` 不支持），而不绑核是 HOST_TUNING 1.3
+> 记的尾部最差一档——所以下表只有 min / p50 / avg 反映板子，p99 以上是主机调度。
+> `[实测 2026-08-24]`
+
+| 方向 | classic p50 | CAN-FD p50 |
+|---|---|---|
+| 5321 -> mc02 | 201.2 us | 131.2 us |
+| mc02 -> 5321 | **179.5 us** | **123.7 us** |
+
+两条结论：**classic 比 FD 慢 55-75 us**（就是两者线上帧时之差），以及**异构 rig 比
+两块 5321 慢约 25 us**（mc02 是 USB Full-Speed，一次 bulk 事务的线上时间比 High-Speed
+长几十 us）。拿本表任何数字去推 classic CAN 或推异构链路之前，先看清楚测的是哪一种、
+以及主机调没调优。
 
 **吞吐**：
 

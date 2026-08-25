@@ -10,8 +10,8 @@
 ## 摘要
 
 mc02 是 Cortex-M7 @ 550 MHz 的高性能板，特点是 **CAN-FD 常驻 FD+BRS** 与 **热路径代码
-放 `.itcm`**；USB 受封装限制只能跑 Full-Speed，所以吞吐瓶颈在 USB 而非 CAN。改这块板
-之前必须知道两件事：外设配置回 CubeMX 改，以及**每次 CubeMX 重新 Generate 之后要手工
+放 `.itcm`**；USB 受封装限制只能跑 Full-Speed，**瓶颈在 USB 还是在 CAN 取决于开几条
+总线**（分界线见下方「关键特性」）。改这块板之前必须知道两件事：外设配置回 CubeMX 改，以及**每次 CubeMX 重新 Generate 之后要手工
 复原一批改动**（清单在 [README.md](README.md)）。
 
 ## 芯片与工具链
@@ -62,8 +62,45 @@ arm-none-eabi-nm firmware/mc02/build/app/mc02_app.elf | grep -c bmi088   # IMU: 
 - `bsp/`：`cmsis-device-h7`、`stm32h7xx-hal-driver` 等第三方，视为只读。
 
 ## 关键特性（改代码前须知）
-- USB：OTG_HS 跑 **Full-Speed**（LQFP100 无 HS PHY 引出）；吞吐杠杆在 CAN 侧（CAN-FD），不是 USB。
+- USB：OTG_HS 跑 **Full-Speed**（LQFP100 无 HS PHY 引出）。**"瓶颈是 USB 还是 CAN"没有
+  统一答案，按跑满的总线条数分界**：上行每帧 15 B（`1 + 3 - 1 + 8 + 4`，见
+  [HOST_TUNING.md](../../HOST_TUNING.md) 9.3），CAN-FD 每条总线上限 19870 帧/s，而本板
+  USB 聚合上限约 800 KB/s。于是 **1-2 条总线跑满时卡在 CAN 线速**（298 / 596 KB/s），
+  **3 条一起跑满时才卡在 USB**（894 KB/s > 800）。分界点约 2.7 条总线，即聚合 53000 帧/s。
+  `[推断，基于 800 KB/s 与 19870 帧/s 两项实测]`
 - CAN：FDCAN1/2/3 常驻 FD+BRS，逐帧按 host `is_fdcan` 切换，不做 INIT 重配。
+- **下行 CAN 帧直写硬件 FIFO，只有 FIFO 满了才进队列** [2026-08-24 修复]。
+  `handle_downlink` 由 `tud_vendor_rx_cb` 在 `tud_task()` 里调用，与 `try_transmit()`
+  同线程，所以直写是安全的（队列非空时必须让路，否则会插队）。
+  **改之前是无条件入队**，于是每一帧都要等到主循环末尾的 `canN->try_transmit()` 才
+  进硬件，中间隔着 DFU poll、GPIO 采样、一次 BMI088 SPI 读和 LED poll；同时那个
+  16 深的环（继承自 c_board，那块板 bxCAN 只有 3 个发送邮箱，16 是净赚）架在 32 条
+  FDCAN FIFO **前面**，把单包突发上限从 32 砍到了 16。队列深度现在是 64
+  （`kTransmitQueueSize`，每路 1 KB DTCM），与 rmcs_board 一致。
+  **实测效果**（交替烧录 A/B，三轮各 4000 帧，已跑 `host-tuning.sh`；
+  5321 -> mc02 方向作对照组，三轮 p50 131.2/131.1/131.1 -> 131.6/131.0/131.4，确认未动）：
+
+  | mc02 -> 5321 | 改前（三轮） | 改后（三轮） |
+  |---|---|---|
+  | CAN-FD min | 94.6 / 95.0 / 94.7 us | **90.9 / 92.9 / 91.8 us** |
+  | CAN-FD p50 | 124.8 / 124.7 / 124.7 us | **123.6 / 123.7 / 123.7 us** |
+  | CAN-FD avg | 125.4 / 125.9 / 125.3 us | **121.7 / 122.8 / 122.5 us** |
+  | classic p50 | 180.5 / 180.5 / 180.5 us | **179.7 / 179.8 / 179.5 us** |
+  | classic p90 | 209.9 / 207.6 / 209.4 us | **206.7 / 206.7 / 206.2 us** |
+  | 单包突发 17/24/32/40/64 帧 | 丢 5.9/33/50/60/75% | **全部 0%** |
+
+  **改后 avg 落到 p50 之下**（122.3 vs 123.7；改前是正常右偏的 125.4 vs 124.7）：分布
+  变成双峰，一部分帧真的走了直通路径（min 掉到 91 us），把均值拉到中位数以下。这也是
+  为什么均值改善 3.2 us 而中位数只有 1.1 us。
+
+  **p99 / max 没有可重现的改善**，且调优后 max 在**所有臂包括对照组**仍是 630-950 us。
+  那是主机侧的：`mixed_board_test` 经 `multi_board.hpp` 构造 session，**没有传
+  `thread_setup`，事件线程没绑核**，而这是 [HOST_TUNING.md](../../HOST_TUNING.md) 1.3
+  记的尾部最差一档。**要评估板级抖动，得先给测量工具加上绑核能力**，否则测的是主机调度。
+  `[实测 2026-08-24，mc02 <-> 5321，已调优主机、事件线程未绑核]`
+- **未做**：rmcs_board 那套下行流控（`transmit_queue_depth()` 决定是否再 arm OUT 包）
+  没有移植。所以队列真被打满时，mc02 仍然是静默丢弃 + 点 LED，主机无感——
+  `diag::note_tx_fail()` 在默认构建下是空实现（`LIBRMCS_APP_CAN_DIAG` 默认 OFF）。
 - 热路径 `Can::handle_uplink/handle_downlink/try_transmit` 等放 `.itcm`，启动时从 FLASH 拷入。
 - UART：四个口各一条**永不停的整环 circular DMA**，写指针由主循环读 `NDTR` 推导，不由中断维护。端口对象（含 DMA 环）放 `.d2_sram`，启动时从 FLASH 拷入，MPU region 1 在 `app.cpp` 里设为非缓存。**不要给 UART 的 DMA 开 FIFO/burst**——`NDTR` 只统计到 DMA FIFO，写指针会算错。
 - UART 错误策略：`CR3.OVRDIS=1`、**`CR3.DDRE=0`**、`CR3.EIE=0`。`DDRE` 是"出错时禁用 DMA"，**置 1 会让一个坏字符永久杀死端口**——细节见 [UART_RING_LOG.md](UART_RING_LOG.md) 第 1 章。

@@ -58,11 +58,17 @@
   | `/opt/SEGGER/JLink_V968` | **已装** | SEGGER J-Link Software **V9.68**（`jlink 9.68.0`），`/opt/SEGGER/JLink` 是指向它的符号链接；用于 STM32 / HPM 的宿主机调试，不支持当前 CH32H417 链路 |
   | `/opt/SEGGER/Ozone_V350a` | **已装** | SEGGER Ozone **V3.501**，仓库 `ozone/` 工程的 GUI 调试器；不用于 `ch32_board` |
 
-  由此，本机可用的组合是：**host SDK + `rmcs_board` 全部固件 + SEGGER J-Link/Ozone +
-  DFU 烧录**。`ch32_board` 与任何 OpenOCD 流程本机都跑不了（缺 MounRiver 工具链）。
+  由此，本机可用的组合是：**host SDK + `rmcs_board` 全部固件 + `mc02` / `c_board`
+  （ARM）+ SEGGER J-Link/Ozone + DFU 烧录**。`ch32_board` 与任何 OpenOCD 流程本机
+  都跑不了（缺 MounRiver 工具链）。
+
   即使现场没有接 JTAG，
   `rmcs_board` 仍有两条走 USB 的带内诊断通道，见
   `firmware/rmcs_board/AGENTS.md`「板上没有调试器时怎么看现场」。
+
+  > **2026-08-24 更正**：此前本节称本机编不了 STM32 板，那是错的——ARM GCC 装在
+  > `~/3rd_party/arm-gnu-toolchain-15.3.rel1-x86_64-arm-none-eabi/`（不在 PATH 里，
+  > 要手工加）。`mc02` 已在本机 `release` 构建并经 DFU 烧录验证。`[实测 2026-08-24]`
 
 - **不要凭本节旧措辞断言"本机没有工具链"——先 `ls` 确认。** 路径不存在时也不要删改
   文档里的路径，按下一条重新指向即可。

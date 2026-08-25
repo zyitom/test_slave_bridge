@@ -23,34 +23,93 @@
 namespace librmcs::firmware::can {
 
 LIBRMCS_ITCM
-void Can::handle_downlink(const data::CanDataView& data) {
-    auto construct = [&data](std::byte* storage) noexcept {
-        auto& mailbox = *new (storage) TransmitMailboxData{};
+uint32_t Can::hardware_free_slots() const noexcept {
+    return hal_can_handle_->Instance->TXFQS & FDCAN_TXFQS_TFFL;
+}
 
-        if (data.is_extended_can_id) {
-            mailbox.identifier = (data.can_id << 0) | FDCAN_EXTENDED_ID;
-        } else {
-            mailbox.identifier = (data.can_id << 18) | FDCAN_STANDARD_ID;
-        }
-        mailbox.identifier |= data.is_remote_transmission ? FDCAN_REMOTE_FRAME : FDCAN_DATA_FRAME;
+// Write one element into the Tx FIFO/queue at the controller's current put index
+// and request its transmission. The caller must have checked hardware_free_slots()
+// first: with the FIFO full, TFQPI still reads back a slot that is waiting to go
+// out, so writing here would overwrite an unsent frame.
+LIBRMCS_ITCM
+void Can::push_to_hardware(const TransmitMailboxData& mailbox_data) noexcept {
+    auto* hcan = hal_can_handle_;
+    const auto put_index =
+        (hcan->Instance->TXFQS & FDCAN_TXFQS_TFQPI) >> FDCAN_TXFQS_TFQPI_Pos;
 
-        core::utility::assert_debug(data.can_data.size() <= 8);
-        const auto dlc = static_cast<uint32_t>(data.can_data.size());
-
-        // The controller stays permanently in FD+BRS mode, a strict superset of
-        // classic CAN: the per-frame FDF/BRS bits in the Tx element (T1) select the
-        // format, so a classic frame (is_fdcan == false) goes out with FDF/BRS clear
-        // and an FD frame switches to the 5 Mbit/s data phase -- no INIT-mode
-        // reconfiguration, just two extra bits on the hot path.
-        mailbox.control = dlc << 16;
-        if (data.is_fdcan)
-            mailbox.control |= FDCAN_FD_CAN | FDCAN_BRS_ON;
-
-        if (!data.can_data.empty())
-            std::memcpy(mailbox.data, data.can_data.data(), data.can_data.size());
+    struct TxMailbox {
+        uint32_t TIR;
+        uint32_t TDTR;
+        uint32_t TDLR;
+        uint32_t TDHR;
     };
+    auto* target_mailbox = reinterpret_cast<TxMailbox*>(
+        hcan->msgRam.TxBufferSA + (put_index * hcan->Init.TxElmtSize * 4U));
 
-    if (!transmit_buffer_.emplace_back_n(construct, 1)) {
+    target_mailbox->TIR = mailbox_data.identifier;
+    target_mailbox->TDTR = mailbox_data.control;
+    target_mailbox->TDLR = mailbox_data.data[0];
+    target_mailbox->TDHR = mailbox_data.data[1];
+
+    hcan->Instance->TXBAR = (1UL << put_index);
+    hcan->LatestTxFifoQRequest = (1UL << put_index);
+}
+
+LIBRMCS_ITCM
+void Can::handle_downlink(const data::CanDataView& data) {
+    TransmitMailboxData mailbox{};
+
+    if (data.is_extended_can_id) {
+        mailbox.identifier = (data.can_id << 0) | FDCAN_EXTENDED_ID;
+    } else {
+        mailbox.identifier = (data.can_id << 18) | FDCAN_STANDARD_ID;
+    }
+    mailbox.identifier |= data.is_remote_transmission ? FDCAN_REMOTE_FRAME : FDCAN_DATA_FRAME;
+
+    core::utility::assert_debug(data.can_data.size() <= 8);
+    const auto dlc = static_cast<uint32_t>(data.can_data.size());
+
+    // The controller stays permanently in FD+BRS mode, a strict superset of
+    // classic CAN: the per-frame FDF/BRS bits in the Tx element (T1) select the
+    // format, so a classic frame (is_fdcan == false) goes out with FDF/BRS clear
+    // and an FD frame switches to the 5 Mbit/s data phase -- no INIT-mode
+    // reconfiguration, just two extra bits on the hot path.
+    mailbox.control = dlc << 16;
+    if (data.is_fdcan)
+        mailbox.control |= FDCAN_FD_CAN | FDCAN_BRS_ON;
+
+    if (!data.can_data.empty())
+        std::memcpy(mailbox.data, data.can_data.data(), data.can_data.size());
+
+    // Straight to the controller while it has room, and queue only behind a full
+    // Tx FIFO. This is reached from tud_vendor_rx_cb inside tud_task(), so going
+    // through the queue unconditionally -- what this did before -- made every
+    // frame wait for the try_transmit() call at the far end of the main loop,
+    // behind the DFU poll, the GPIO sampling, one BMI088 SPI read and the LED
+    // poll (a WS2812 refresh is ~330 us when the colour changes). That whole
+    // stretch was added to one-way latency and, worse, its length varies from
+    // pass to pass, which is where the long tail came from.
+    //
+    // It also cost burst capacity: the queue is drained into the FIFO only by
+    // try_transmit(), so every frame of one USB packet landed in the queue and
+    // nothing reached the 32-element FIFO until the packet was fully parsed.
+    // The effective limit was the queue depth alone -- measured at exactly
+    // min(N, 16) frames delivered per downlink packet.
+    //
+    // The queue must not be bypassed once it is non-empty, or a frame written
+    // here would overtake one already waiting. Checking peek_front() from the
+    // producer is safe despite RingBuffer's consumer-only note: producer
+    // (handle_downlink, reached from tud_task) and consumer (try_transmit) both
+    // run on the main loop, on the same thread.
+    if (transmit_buffer_.peek_front() == nullptr && hardware_free_slots() != 0) {
+        push_to_hardware(mailbox);
+        return;
+    }
+
+    const auto copy = [&mailbox](std::byte* storage) noexcept {
+        *new (storage) TransmitMailboxData{mailbox};
+    };
+    if (!transmit_buffer_.emplace_back_n(copy, 1)) {
         led::led->downlink_buffer_full();
         diag::note_tx_fail(diag_index());
     }
@@ -166,36 +225,15 @@ void Can::handle_uplink(data::DataId field_id, core::protocol::Serializer& seria
 
 LIBRMCS_ITCM
 bool Can::try_transmit() {
-    auto* hcan = hal_can_handle_;
+    core::utility::assert_always(hal_can_handle_->State == HAL_FDCAN_STATE_BUSY);
 
-    core::utility::assert_always(hcan->State == HAL_FDCAN_STATE_BUSY);
-
-    const uint32_t txfqs = hcan->Instance->TXFQS;
-    const auto free_mailbox_count = txfqs & FDCAN_TXFQS_TFFL;
-
+    // Only frames that found the FIFO full are here now; the common case is an
+    // empty queue and an early return of false after two loads.
     return transmit_buffer_.pop_front_n(
-        [this, hcan](const TransmitMailboxData& mailbox_data) noexcept {
-            const auto put_index =
-                (hcan->Instance->TXFQS & FDCAN_TXFQS_TFQPI) >> FDCAN_TXFQS_TFQPI_Pos;
-
-            struct TxMailbox {
-                uint32_t TIR;
-                uint32_t TDTR;
-                uint32_t TDLR;
-                uint32_t TDHR;
-            };
-            auto* target_mailbox = reinterpret_cast<TxMailbox*>(
-                hcan->msgRam.TxBufferSA + (put_index * hcan->Init.TxElmtSize * 4U));
-
-            target_mailbox->TIR = mailbox_data.identifier;
-            target_mailbox->TDTR = mailbox_data.control;
-            target_mailbox->TDLR = mailbox_data.data[0];
-            target_mailbox->TDHR = mailbox_data.data[1];
-
-            hcan->Instance->TXBAR = (1UL << put_index);
-            hcan->LatestTxFifoQRequest = (1UL << put_index);
+        [this](const TransmitMailboxData& mailbox_data) noexcept {
+            push_to_hardware(mailbox_data);
         },
-        free_mailbox_count);
+        hardware_free_slots());
 }
 
 extern "C" LIBRMCS_ITCM void HAL_FDCAN_RxFifo0Callback(

@@ -6,6 +6,8 @@
 #include <exception>
 #include <format>
 #include <functional>
+#include <algorithm>
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -49,6 +51,17 @@ public:
             libusb_exit(libusb_context_);
         }};
 
+        // Opt-in uplink size instrumentation. How full each bulk transfer runs is
+        // not derivable from the decoded stream -- the fields of one transfer are
+        // handed to the callback individually, and their sizes say nothing about
+        // how they were packed -- and usbmon needs root. So the transport counts
+        // its own completion lengths when asked, and stays untouched otherwise.
+        if (const char* enable = std::getenv("LIBRMCS_USB_RX_HISTOGRAM");
+            enable && enable[0] == '1') {
+            rx_length_histogram_ =
+                std::make_unique<std::atomic<uint32_t>[]>(core::protocol::kProtocolBufferSize + 1);
+        }
+
         // Probe dev_mem availability: if the kernel usbfs driver supports DMA-coherent
         // buffers the allocation will succeed; fall back to heap allocation silently.
         auto* probe = libusb_dev_mem_alloc(libusb_device_handle_, 1);
@@ -85,6 +98,7 @@ public:
     Usb& operator=(Usb&&) = delete;
 
     ~Usb() override {
+        dump_rx_length_histogram();
         {
             const std::scoped_lock guard{transmit_transfer_mutex_};
             stop_handling_events_.store(true, std::memory_order::relaxed);
@@ -585,6 +599,9 @@ private:
         if (transfer->actual_length > 0) {
             const auto* first = reinterpret_cast<std::byte*>(transfer->buffer);
             const auto size = static_cast<std::size_t>(transfer->actual_length);
+            if (rx_length_histogram_) [[unlikely]]
+                rx_length_histogram_[std::min(size, core::protocol::kProtocolBufferSize)]
+                    .fetch_add(1, std::memory_order::relaxed);
             (rx->priority ? priority_receive_callback_ : receive_callback_)({first, size});
         }
 
@@ -616,6 +633,43 @@ private:
             wrapper->destroy();
             delete wrapper;
         });
+    }
+
+    // Percentiles over the raw counts, plus how the sizes land against the
+    // endpoint's max packet size -- which is what decides whether a stream is
+    // costing whole USB packets or riding along in one that was already going.
+    void dump_rx_length_histogram() const noexcept {
+        if (!rx_length_histogram_)
+            return;
+        uint64_t total = 0, bytes = 0;
+        for (size_t size = 0; size <= core::protocol::kProtocolBufferSize; ++size) {
+            const uint64_t count = rx_length_histogram_[size].load(std::memory_order::relaxed);
+            total += count;
+            bytes += count * size;
+        }
+        if (total == 0)
+            return;
+        const int mps = libusb_get_max_packet_size(
+            libusb_get_device(libusb_device_handle_), kInEndpoint);
+        fprintf(stderr, "[rx-histogram] %llu transfers, %llu bytes, mean %.1f B/transfer\n",
+                static_cast<unsigned long long>(total), static_cast<unsigned long long>(bytes),
+                static_cast<double>(bytes) / static_cast<double>(total));
+        const double marks[] = {0.01, 0.50, 0.90, 0.99, 1.00};
+        uint64_t seen = 0;
+        size_t mark = 0;
+        for (size_t size = 0; size <= core::protocol::kProtocolBufferSize && mark < 5; ++size) {
+            seen += rx_length_histogram_[size].load(std::memory_order::relaxed);
+            while (mark < 5
+                   && static_cast<double>(seen) >= marks[mark] * static_cast<double>(total)) {
+                fprintf(stderr, "[rx-histogram]   p%-3.0f %4zu B", marks[mark] * 100.0, size);
+                if (mps > 0)
+                    fprintf(stderr, "  = %.2f x mps(%d), last packet %zu/%d B full",
+                            static_cast<double>(size) / mps, mps,
+                            size % static_cast<size_t>(mps), mps);
+                fprintf(stderr, "\n");
+                mark++;
+            }
+        }
     }
 
     unsigned char* alloc_transfer_buffer() {
@@ -669,6 +723,9 @@ private:
     static constexpr size_t kReceiveTransferCount = 16;
 
     logging::Logger& logger_;
+
+    // Null unless LIBRMCS_USB_RX_HISTOGRAM=1; indexed by completion length.
+    std::unique_ptr<std::atomic<uint32_t>[]> rx_length_histogram_;
 
     libusb_context* libusb_context_ = nullptr;
     libusb_device_handle* libusb_device_handle_ = nullptr;

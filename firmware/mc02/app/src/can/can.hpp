@@ -136,7 +136,22 @@ private:
         uint32_t control;    // Tx element T1: DLC + FDF/BRS flags
         uint32_t data[2];
     };
-    utility::RingBuffer<TransmitMailboxData, 16> transmit_buffer_;
+
+    // Free element count in the controller's Tx FIFO/queue, and a single write
+    // into it. Both are on the forwarding hot path (.itcm, defined in can.cpp)
+    // and are shared by handle_downlink's direct write and try_transmit's drain.
+    [[nodiscard]] uint32_t hardware_free_slots() const noexcept;
+    void push_to_hardware(const TransmitMailboxData& mailbox_data) noexcept;
+
+    // Overflow queue behind the 32-element hardware Tx FIFO -- reached only when
+    // that FIFO is full, since handle_downlink writes the controller directly
+    // otherwise. 16 was inherited from c_board, whose bxCAN has just three Tx
+    // mailboxes and where a 16-deep stage is a real gain; on this part the FIFO
+    // alone is 32, so the old unconditional staging capped a single downlink
+    // packet at 16 frames -- half of what writing straight to the FIFO gives.
+    // 64 matches rmcs_board and costs 1 KB of DTCM per bus.
+    static constexpr size_t kTransmitQueueSize = 64;
+    utility::RingBuffer<TransmitMailboxData, kTransmitQueueSize> transmit_buffer_;
 };
 
 // In zero-wait DTCM (.dtcm): the RX ISR reads hal_can_handle_/data_id_ from here,

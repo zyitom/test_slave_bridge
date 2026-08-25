@@ -188,3 +188,10 @@ target_link_libraries(flush_split_test PRIVATE librmcs-sdk)
 # command layout. Needs the shared SOF time base.
 add_executable(rmcs_command_split_test rmcs_command_split_test.cpp)
 target_link_libraries(rmcs_command_split_test PRIVATE librmcs-sdk)
+
+# One IMU UART line strapped to both an mc02 and an hpm5321. Both boards see
+# the same edges, so subtracting their host arrival times measures the
+# difference between the two forwarding paths exactly, with the IMU's own
+# transmit instant cancelling out.
+add_executable(imu_uart_latency imu_uart_latency.cpp)
+target_link_libraries(imu_uart_latency PRIVATE librmcs-sdk)
