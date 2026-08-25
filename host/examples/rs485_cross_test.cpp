@@ -20,9 +20,12 @@
 
 #include <librmcs/board/mc02.hpp>
 
-// Cross-board RS-485 test for two mc02 boards wired A-A / B-B on the USART3
-// port (connector P5, transceiver U6, DE on PB14). Needs firmware built with
-// -DLIBRMCS_APP_RS485_ENABLE=ON at both ends: without it the firmware's
+// Cross-board RS-485 test for two mc02 boards wired A-A / B-B on one of the two
+// RS-485 ports. RMCS_RS485_PORT picks which: 2 (the default) is USART3 --
+// connector P5, transceiver U6, DE on PB14 -- and 1 is USART2, transceiver U5,
+// DE on PD4, which owns kUart0. Both power up at 4800000 and are electrically
+// the same circuit, so every test below applies unchanged to either.
+// Needs firmware built with -DLIBRMCS_APP_RS485_ENABLE=ON at both ends: without it the firmware's
 // downlink switch has no kUart4 case, returns false, and the deserializer tears
 // the session down rather than ignoring the frame.
 //
@@ -68,6 +71,12 @@ constexpr auto k_message_timeout = std::chrono::milliseconds(500);
 constexpr std::size_t k_max_payload = 200;
 
 uint32_t g_baudrate = k_base_baudrate;
+// Which RS-485 port the whole test drives. 2 (USART3, connector P5) is the
+// default because that is the port the original rig was wired for and every
+// number in this file's history came from. 1 selects USART2 / transceiver U5,
+// which owns kUart0 and is otherwise identical electrically -- same RE#-tied-to-DE
+// topology, same on-board 120R, same 4800000 power-up baudrate.
+int g_port = 2;
 int g_ping_pong_rounds = 200;
 
 std::vector<std::pair<std::string, std::string>> enumerate_boards() {
@@ -166,13 +175,20 @@ public:
 
     void send(std::span<const std::byte> payload, bool idle_delimited = true) {
         const std::lock_guard guard{transmit_mutex_};
-        board_->start_transmit().rs485_2_transmit(
-            {.uart_data = payload, .idle_delimited = idle_delimited});
+        if (g_port == 1)
+            board_->start_transmit().rs485_1_transmit(
+                {.uart_data = payload, .idle_delimited = idle_delimited});
+        else
+            board_->start_transmit().rs485_2_transmit(
+                {.uart_data = payload, .idle_delimited = idle_delimited});
     }
 
     void set_baudrate(uint32_t baudrate) {
         const std::lock_guard guard{transmit_mutex_};
-        board_->start_transmit().rs485_2_config({.baudrate = baudrate});
+        if (g_port == 1)
+            board_->start_transmit().rs485_1_config({.baudrate = baudrate});
+        else
+            board_->start_transmit().rs485_2_config({.baudrate = baudrate});
     }
 
     std::size_t message_count() {
@@ -266,6 +282,16 @@ public:
 
 private:
     void rs485_2_receive_callback(const UartDataView& data) override {
+        if (g_port != 2) {
+            count_other(data, "RS485-2");
+            return;
+        }
+        accept(data);
+    }
+
+    // The port under test. Everything below reassembles idle-delimited messages
+    // out of the chunk stream; which physical port feeds it is g_port's business.
+    void accept(const UartDataView& data) {
         const std::lock_guard guard{mutex_};
         ++chunk_count_;
         all_bytes_.insert(all_bytes_.end(), data.uart_data.begin(), data.uart_data.end());
@@ -283,6 +309,10 @@ private:
     // should land here; a nonzero count means the firmware routed a downlink or
     // an uplink to the wrong channel id.
     void rs485_1_receive_callback(const UartDataView& data) override {
+        if (g_port == 1) {
+            accept(data);
+            return;
+        }
         count_other(data, "RS485-1");
     }
     void uart1_receive_callback(const UartDataView& data) override { count_other(data, "UART1"); }
@@ -722,6 +752,12 @@ void test_channel_isolation(Node& a, Node& b) {
 } // namespace
 
 int main(int argc, char** argv) {
+    if (const char* value = std::getenv("RMCS_RS485_PORT"))
+        g_port = std::atoi(value);
+    if (g_port != 1 && g_port != 2) {
+        printf("RMCS_RS485_PORT must be 1 (USART2, connector U5) or 2 (USART3, P5)\n");
+        return 1;
+    }
     if (const char* value = std::getenv("RMCS_RS485_BAUDRATE"))
         g_baudrate = static_cast<uint32_t>(std::strtoul(value, nullptr, 10));
     if (const char* value = std::getenv("RMCS_RS485_ROUNDS"))
@@ -738,7 +774,9 @@ int main(int argc, char** argv) {
     for (const auto& [serial, product] : boards)
         printf("  %s  %s\n", serial.c_str(), product.c_str());
     if (boards.size() < 2) {
-        printf("\nNeed two mc02 boards wired A-A / B-B on the USART3 RS-485 port (P5).\n");
+        printf(
+            "\nNeed two mc02 boards wired A-A / B-B on the RS-485 port under test "
+            "(RMCS_RS485_PORT=1 -> USART2/U5, 2 -> USART3/P5).\n");
         return 1;
     }
 
@@ -747,7 +785,10 @@ int main(int argc, char** argv) {
     Node b{"B", boards[1].first};
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    printf("Setting both ports to %u baud (USART3 powers up at 4800000).\n", g_baudrate);
+    printf(
+        "Driving RS-485 port %d (%s). Setting both ends to %u baud "
+        "(both USARTs power up at 4800000).\n",
+        g_port, g_port == 1 ? "USART2, transceiver U5" : "USART3, connector P5", g_baudrate);
     a.set_baudrate(g_baudrate);
     b.set_baudrate(g_baudrate);
     std::this_thread::sleep_for(std::chrono::milliseconds(150));

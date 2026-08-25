@@ -61,6 +61,15 @@ public:
 
     core::protocol::Serializer& serializer() { return serializer_; }
 
+    // Session keepalive, lifted out of try_transmit().
+    //
+    // kSessionLease is 1 s, so testing it once per main-loop pass is already
+    // about a thousand times finer than the thing it measures. It used to run at
+    // the top of try_transmit(), i.e. nine times a pass, and each run read TIM5's
+    // CNT through Timer::timepoint() -- a D2 peripheral access, in the domain USB
+    // shares, on the board's hottest loop. Single call site is app.cpp's loop.
+    void poll_session() { refresh_session_state(); }
+
     // True once the host has completed the nonce handshake and is holding the
     // keepalive lease, i.e. data is actually being forwarded. Distinct from mere
     // USB enumeration, which says nothing about whether a host is talking.
@@ -76,20 +85,26 @@ public:
 
     void finish_downlink_transfer() { deserializer_.finish_transfer(); }
 
+    // Ordered cheapest-test-first, and deliberately does NOT refresh the session
+    // -- see poll_session() below.
+    //
+    // The batch pool is plain RAM; tud_vendor_n_write_available() reads TinyUSB's
+    // endpoint state, also RAM. Neither is worth doing when nothing is staged,
+    // and app.cpp calls this once per traffic source -- nine times a pass with
+    // RS-485 on -- so anything ahead of the "is there work" test is paid nine
+    // times over. rmcs_board's Vendor::try_transmit is ordered the same way.
     bool try_transmit() {
-        refresh_session_state();
-
         if (!session_established_) {
             return false;
         }
-
-        if (!tud_vendor_n_write_available(0))
-            return false;
 
         if (!transmitting_batch_) {
             transmitting_batch_ = transmit_buffer_.pop_batch();
         }
         if (!transmitting_batch_)
+            return false;
+
+        if (!tud_vendor_n_write_available(0))
             return false;
 
         const auto data = transmitting_batch_->data();

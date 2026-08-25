@@ -41,6 +41,20 @@ constexpr uint32_t kDfuRuntimeResetDelayMs = 50U;
 // One pad per pipe, and no locking: both callbacks run from tud_task() on the
 // main loop, and each consumes its pad before returning.
 alignas(4) uint8_t g_downlink_copy[512];
+
+// Bulk endpoint size, refreshed at mount. tud_vendor_rx_cb() below needs it to
+// decide whether a packet is short (and therefore ends the transfer), and that
+// callback runs inside the USB ISR once per downlink packet -- which made
+// tud_speed_get() a jal/ret around one byte load on the hottest path there is.
+// It lives in usbd.c, so the call could not be inlined away.
+//
+// Mount is the right place and session activation is NOT: the session-open
+// packet arrives through tud_vendor_rx_cb itself, so a value refreshed on
+// activation would still be the default while that packet was being classified.
+// tud_mount_cb runs on SET_CONFIGURATION, before the endpoint exists and
+// therefore before any packet can arrive on it, and the speed is fixed by the
+// enumeration that just finished.
+std::size_t g_packet_size = 64;
 alignas(4) uint8_t g_can_downlink_copy[512];
 
 volatile bool g_dfu_runtime_reboot_requested = false;
@@ -131,8 +145,7 @@ void rmcs_usb0_isr(void) {
 }
 
 void tud_vendor_rx_cb(uint8_t itf, const uint8_t* buffer, uint16_t size) {
-    const std::size_t packet_size = (tud_speed_get() == TUSB_SPEED_HIGH) ? 512 : 64;
-    const bool finished = size < packet_size;
+    const bool finished = size < g_packet_size;
     const uint16_t copy_size = std::min<uint16_t>(size, sizeof(g_downlink_copy));
 
 #if LIBRMCS_SPLIT_CAN_ENDPOINT
@@ -176,7 +189,7 @@ void tud_vendor_rx_cb(uint8_t itf, const uint8_t* buffer, uint16_t size) {
     const uint8_t* const g_downlink_copy = buffer;
 #endif
 
-    const std::size_t max_packet_size = packet_size;
+    const std::size_t max_packet_size = g_packet_size;
     (void)max_packet_size;
 
 #if defined(LIBRMCS_APP_RELEASE_CORE1) && LIBRMCS_APP_RELEASE_CORE1
@@ -216,7 +229,7 @@ void tud_suspend_cb(bool remote_wakeup_en) {
 
 void tud_resume_cb() {}
 
-void tud_mount_cb() {}
+void tud_mount_cb() { g_packet_size = (tud_speed_get() == TUSB_SPEED_HIGH) ? 512U : 64U; }
 
 void tud_umount_cb() {
     usb::vendor->deactivate_session();

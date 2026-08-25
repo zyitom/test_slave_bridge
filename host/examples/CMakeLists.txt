@@ -195,3 +195,9 @@ target_link_libraries(rmcs_command_split_test PRIVATE librmcs-sdk)
 # transmit instant cancelling out.
 add_executable(imu_uart_latency imu_uart_latency.cpp)
 target_link_libraries(imu_uart_latency PRIVATE librmcs-sdk)
+
+# Event-loop instrument: idle wakeup rate and teardown latency, neither of which
+# the throughput tools can see (they measure the loop only while completions are
+# arriving, which is exactly when its timeout never fires).
+add_executable(usb_event_loop_bench usb_event_loop_bench.cpp)
+target_link_libraries(usb_event_loop_bench PRIVATE librmcs-sdk)

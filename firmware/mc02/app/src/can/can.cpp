@@ -228,7 +228,14 @@ bool Can::try_transmit() {
     core::utility::assert_always(hal_can_handle_->State == HAL_FDCAN_STATE_BUSY);
 
     // Only frames that found the FIFO full are here now; the common case is an
-    // empty queue and an early return of false after two loads.
+    // empty queue. Test that BEFORE hardware_free_slots(): pop_front_n takes its
+    // count by value, so passing the call as an argument reads TXFQS on every
+    // pass whether or not there is anything to send -- a peripheral read in D2,
+    // the domain USB is in, at main-loop rate times the number of buses.
+    // rmcs_board's Can::try_transmit gets this right by looping on peek_front().
+    if (transmit_buffer_.readable() == 0)
+        return false;
+
     return transmit_buffer_.pop_front_n(
         [this](const TransmitMailboxData& mailbox_data) noexcept {
             push_to_hardware(mailbox_data);

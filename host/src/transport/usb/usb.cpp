@@ -28,6 +28,7 @@
 #include "host/src/transport/usb/device_scanner.hpp"
 #include "host/src/transport/usb/helper.hpp"
 #include "host/src/utility/final_action.hpp"
+#include "host/src/utility/pi_mutex.hpp"
 #include "host/src/utility/ring_buffer.hpp"
 
 namespace librmcs::host::transport::usb {
@@ -44,6 +45,7 @@ public:
         usb_init(usb_vid, usb_pid, serial_filter, options);
         utility::FinalAction rollback_on_failure{[this]() noexcept {
             destroy_free_transmit_transfers();
+            free_dev_mem_slabs();
             if (priority_interface_claimed_)
                 libusb_release_interface(libusb_device_handle_, kPriorityInterface);
             libusb_release_interface(libusb_device_handle_, kTargetInterface);
@@ -139,6 +141,10 @@ public:
             }
             std::this_thread::sleep_for(std::chrono::milliseconds{2});
         }
+
+        // Before the handle goes away, and after the drain above has accounted
+        // for every buffer.
+        free_dev_mem_slabs();
 
         if (priority_interface_claimed_)
             libusb_release_interface(libusb_device_handle_, kPriorityInterface);
@@ -495,6 +501,18 @@ private:
         // nothing at all when traffic is flowing: an arriving completion still
         // wakes the poll immediately, exactly as before.
         static constexpr timeval kPollTimeout{.tv_sec = 0, .tv_usec = 100'000};
+
+        // REJECTED, do not reintroduce: busy polling this loop with a zero
+        // timeout deadlocks any caller that pins and raises itself before
+        // opening the transport. The event thread is spawned from this class's
+        // constructor and inherits the creating thread's affinity and policy, so
+        // with a tool like can_loopback_latency -- SCHED_FIFO 80 pinned to CPU 0
+        // -- both threads land on one core at equal priority, the spinner never
+        // yields, equal-priority FIFO threads never preempt each other, and
+        // host-tuning.sh has already set sched_rt_runtime_us=-1 so no RT throttle
+        // breaks it. Measured: zero round trips completed in 60 s. Removing the
+        // parked poll saves a scheduler wake-up worth a few microseconds and
+        // costs the whole link.
         while (active_transfers_.load(std::memory_order::relaxed)
                && !abandon_remaining_transfers_.load(std::memory_order::relaxed)) {
             timeval timeout = kPollTimeout;
@@ -561,8 +579,9 @@ private:
 
     void usb_transmit_complete_callback(TransferWrapper* wrapper) {
         // Share mutex with teardown so destructor can block callbacks before draining the queue
-        std::mutex& mutex = wrapper->is_priority_ ? priority_transfer_mutex_ : transmit_transfer_mutex_;
-        std::condition_variable& cv =
+        utility::PriorityInheritingMutex& mutex =
+            wrapper->is_priority_ ? priority_transfer_mutex_ : transmit_transfer_mutex_;
+        utility::PriorityInheritingConditionVariable& cv =
             wrapper->is_priority_ ? priority_transfer_cv_ : transmit_transfer_cv_;
         auto& pool = wrapper->is_priority_ ? free_priority_transfers_ : free_transmit_transfers_;
 
@@ -672,22 +691,79 @@ private:
         }
     }
 
+    // usbfs hands out DMA-coherent memory by mmap, so libusb_dev_mem_alloc()
+    // costs a whole page however little is asked for. One call per 1023-byte
+    // buffer therefore wasted three quarters of every mapping: measured 80
+    // mappings holding 320 KiB for 80 KiB of payload on a single-interface
+    // board, and double that once the CAN endpoint pair is claimed. Carving the
+    // buffers out of a few large mappings keeps the zero-copy property and
+    // spends a page on payload instead of on rounding.
+    //
+    // Measured on mc02, single interface: 80 mappings holding 320 KiB before,
+    // 5 holding 80 KiB after -- the payload is 80 KiB either way.
+    //
+    // This is a memory-footprint change and NOT a throughput one. The mappings
+    // are set up once at open and never touched again on the transfer path, so
+    // there is nothing here for the packet rate to notice, and it did not:
+    // 26899-27107 transfers/s before, 26937-27050 after, one run-to-run spread.
+    // Do not expect this to buy latency or rate; it buys pinned kernel memory,
+    // which is what usbfs_memory_mb caps across every process on the machine.
     unsigned char* alloc_transfer_buffer() {
         if (dev_mem_available_) {
-            auto* p =
-                libusb_dev_mem_alloc(libusb_device_handle_, core::protocol::kProtocolBufferSize);
-            if (p)
-                return p;
+            if (!dev_mem_slabs_.empty()) {
+                auto& slab = dev_mem_slabs_.back();
+                if (slab.size - slab.used >= kDevMemBufferStride) {
+                    auto* buffer = slab.base + slab.used;
+                    slab.used += kDevMemBufferStride;
+                    dev_mem_buffers_outstanding_.fetch_add(1, std::memory_order::relaxed);
+                    return buffer;
+                }
+            }
+            if (auto* base = libusb_dev_mem_alloc(libusb_device_handle_, kDevMemSlabSize)) {
+                dev_mem_slabs_.push_back(
+                    {.base = base, .size = kDevMemSlabSize, .used = kDevMemBufferStride});
+                dev_mem_buffers_outstanding_.fetch_add(1, std::memory_order::relaxed);
+                return base;
+            }
+            // Whatever slabs already exist stay in use; only further buffers
+            // come from the heap.
             dev_mem_available_ = false;
         }
         return new unsigned char[core::protocol::kProtocolBufferSize];
     }
 
     void free_transfer_buffer(unsigned char* buf, bool is_dev_mem) noexcept {
+        // Slab-backed buffers are not individually unmappable: they are returned
+        // wholesale by free_dev_mem_slabs() once nothing can reference them.
+        // Counting them back in is what tells that function it is safe to run.
         if (is_dev_mem)
-            libusb_dev_mem_free(libusb_device_handle_, buf, core::protocol::kProtocolBufferSize);
+            dev_mem_buffers_outstanding_.fetch_sub(1, std::memory_order::relaxed);
         else
             delete[] buf;
+    }
+
+    // Return the slab mappings. Safe only once every buffer carved out of them
+    // has been handed back: an outstanding URB holds a kernel DMA mapping into
+    // its buffer, and unmapping that early would leave the controller writing
+    // into memory this process no longer owns. If some transfer never reported
+    // back -- the case the bounded drain in ~Usb() exists for -- the mappings
+    // are deliberately leaked instead, which costs a process that is tearing
+    // down nothing and is strictly safer than guessing.
+    void free_dev_mem_slabs() noexcept {
+        if (dev_mem_slabs_.empty())
+            return;
+        if (const auto outstanding = dev_mem_buffers_outstanding_.load(std::memory_order::relaxed);
+            outstanding != 0) {
+            logger_.warn(
+                "{} DMA buffer(s) never returned; leaking {} dev_mem mapping(s) rather than "
+                "unmapping memory the controller may still own",
+                outstanding, dev_mem_slabs_.size());
+            dev_mem_slabs_.clear();
+            return;
+        }
+        for (const auto& slab : dev_mem_slabs_)
+            libusb_dev_mem_free(libusb_device_handle_, slab.base, slab.size);
+        dev_mem_slabs_.clear();
     }
 
     libusb_transfer* create_libusb_transfer() {
@@ -739,10 +815,32 @@ private:
     std::atomic<bool> abandon_remaining_transfers_ = false;
     static constexpr int kTeardownDrainRounds = 100; // 2 ms each
 
+    // One mapping per this many bytes of buffer, rather than one per buffer.
+    // Sized to hold a whole number of buffers so a slab wastes nothing: at the
+    // 1024-byte stride below that is 16 per slab, and the pools ask for 80
+    // buffers on a single-interface board (64 transmit + 16 receive) or 160 with
+    // the CAN pair, both exact multiples. A larger slab would round back up --
+    // 64 KiB mapped 128 KiB for the same 80 KiB of payload.
+    static constexpr size_t kDevMemSlabSize = 16 * 1024;
+    // Buffers are handed straight to the controller, so give each one its own
+    // cache line instead of letting two share the line at a slab boundary.
+    static constexpr size_t kDevMemBufferStride =
+        (core::protocol::kProtocolBufferSize + 63U) & ~size_t{63U};
+
+    struct DevMemSlab {
+        unsigned char* base;
+        size_t size;
+        size_t used;
+    };
+
     utility::RingBuffer<TransferWrapper*> free_transmit_transfers_;
     bool dev_mem_available_ = false;
-    std::mutex transmit_transfer_mutex_;
-    std::condition_variable transmit_transfer_cv_;
+    // Only ever touched from the thread that builds and tears down the pools;
+    // the completion callbacks reach the counter below, not this vector.
+    std::vector<DevMemSlab> dev_mem_slabs_;
+    std::atomic<size_t> dev_mem_buffers_outstanding_ = 0;
+    utility::PriorityInheritingMutex transmit_transfer_mutex_;
+    utility::PriorityInheritingConditionVariable transmit_transfer_cv_;
 
     std::function<void(std::span<const std::byte>)> receive_callback_;
 
@@ -753,8 +851,8 @@ private:
     bool priority_available_ = false;
     bool priority_interface_claimed_ = false;
     utility::RingBuffer<TransferWrapper*> free_priority_transfers_;
-    std::mutex priority_transfer_mutex_;
-    std::condition_variable priority_transfer_cv_;
+    utility::PriorityInheritingMutex priority_transfer_mutex_;
+    utility::PriorityInheritingConditionVariable priority_transfer_cv_;
     std::function<void(std::span<const std::byte>)> priority_receive_callback_;
 
     // Every submitted receive transfer, so teardown can cancel them. Guarded

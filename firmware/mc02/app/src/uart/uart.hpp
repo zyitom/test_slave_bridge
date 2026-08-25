@@ -335,7 +335,9 @@ public:
     // the bus is free again depends only on the peer having stopped talking, not
     // on whether the host has picked the bytes up yet.
     void try_transmit() {
+#if !(defined(LIBRMCS_APP_UART_RX_IN_ISR) && LIBRMCS_APP_UART_RX_IN_ISR)
         RxBuffer::try_dequeue();
+#endif
         TxBuffer::try_dequeue(RxBuffer::idle_count());
     }
 
@@ -353,7 +355,30 @@ public:
 
     void tx_dma_error_callback() { TxBuffer::tx_error_callback(); }
 
-    void rx_event_callback() { RxBuffer::uart_idle_event_callback(); }
+    // Draining here instead of from the main loop is what removes this port's
+    // per-pass NDTR read -- a D2 peripheral access competing with USB, which
+    // measured 2.09% of USB packet rate for the two RS-485 ports together.
+    //
+    // Only correct for a port whose traffic is idle-delimited, which this one is
+    // by construction: a bus master sends a request, stays quiet, and receives
+    // one answer, so every message ends in an IDLE and nothing is ever left
+    // waiting for a byte-count threshold. A STREAMING port must NOT do this --
+    // its only other trigger would be the DMA half/full-transfer interrupts,
+    // which land every 1024 bytes against kMinFragmentSize's 32, i.e. 11 ms
+    // rather than 347 us at 921600 baud. rmcs_board gets both properties at once
+    // because HPM's DMA chains 32 linked descriptors; STM32H7's cannot.
+    //
+    // The loop drains rather than publishing once: a message longer than
+    // kProtocolMaxPayloadSize is cut into chunks and try_dequeue() puts the idle
+    // flag on the LAST of them, so a single call would strand the tail. It ends
+    // on the same condition the main-loop caller relied on -- no idle pending and
+    // fewer than kMinFragmentSize bytes left.
+    void rx_event_callback() {
+        RxBuffer::uart_idle_event_callback();
+#if defined(LIBRMCS_APP_UART_RX_IN_ISR) && LIBRMCS_APP_UART_RX_IN_ISR
+        while (RxBuffer::try_dequeue()) { }
+#endif
+    }
 
 private:
     static void hal_rx_dma_error_callback(DMA_HandleTypeDef* hal_dma_handle);
@@ -397,15 +422,24 @@ private:
 //   - DEAT/DEDT are 16/16 in the .ioc, one bit time either side at 4.8 Mbaud
 //     with oversampling by 16, rather than CubeMX's default of 0.
 //
-// Still unverified, and only a bench can answer:
+// Both of the questions this comment used to leave open were answered on the
+// bench with two boards cross-wired A-A / B-B on this port, running
+// host/examples/rs485_cross_test with RMCS_RS485_PORT=1. `[实测 2026-08-25]`
 //
-//   - Whether re-enabling the receiver at the end of our own transmission can
-//     itself raise IDLE. It should not -- the flag needs a received character
-//     first -- but if it does, the turnaround gate would release early and
-//     collide, and the fallback is to drop the IDLE term and run on
-//     kTurnaroundDeadline alone.
-//   - Whether one bit time of DEAT is enough for this transceiver, whose part
-//     number the schematic does not give.
+//   - Re-enabling the receiver at the end of our own transmission does NOT
+//     raise a spurious IDLE. Had it, the turnaround gate would have released
+//     early and collided; instead the half-duplex turnaround test kept 8 of 8
+//     messages separate, and a silent bus delivered 0 bytes in 0 chunks over 5 s
+//     at both ends. The kTurnaroundDeadline-only fallback is not needed.
+//   - One bit time of DEAT is enough for this transceiver. A short DEAT would
+//     truncate the leading edge first at the highest rate, and the baudrate
+//     sweep passed both directions at every step through 4800000, with payloads
+//     from 1 to 200 bytes and 200 ping-pong rounds at 0 lost / 0 corrupt.
+//
+// Still unverified: the same two questions for the USART3 port below. Its
+// circuit is the same and it powers up at the same 4800000, but P5 was not wired
+// on the rig that produced the numbers above -- run the same test with
+// RMCS_RS485_PORT=2 before assuming it inherits them.
 //
 // Uses DataId::kUart0, the one channel slot mc02 leaves free -- which is also
 // what diag/can_diag.cpp and diag/loop_profile.cpp emit on, hence the guard in

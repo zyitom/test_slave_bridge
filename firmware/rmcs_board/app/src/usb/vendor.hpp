@@ -186,7 +186,7 @@ public:
             return false;
 
         const auto data = can_transmitting_batch_->data();
-        const std::size_t max_packet_size = (tud_speed_get() == TUSB_SPEED_HIGH) ? 512 : 64;
+        const std::size_t max_packet_size = max_packet_size_;
         const auto target_size = std::min(data.size() - can_transmitted_size_, max_packet_size);
 
         if (target_size) {
@@ -219,7 +219,7 @@ public:
 
         const auto data = batch->data();
 
-        const std::size_t max_packet_size = (tud_speed_get() == TUSB_SPEED_HIGH) ? 512 : 64;
+        const std::size_t max_packet_size = max_packet_size_;
         const auto target_size = std::min(data.size() - transmitted_size_, max_packet_size);
 
         if (target_size) {
@@ -245,6 +245,17 @@ public:
 
 protected:
     void session_activated_callback() override {
+        // Cache the endpoint size for the transmit paths. tud_speed_get() is a
+        // real call -- it lives in usbd.c and is not inlined across the TU
+        // boundary, so reading it per pass cost a jal/ret around a single byte
+        // load, on a function app.cpp calls once per traffic source per pass.
+        //
+        // Safe to cache here because the speed is fixed by enumeration and a
+        // session cannot exist before enumeration completed: the host has to
+        // reach the board over this very endpoint to open one. A renegotiation
+        // means a bus reset, which drops the session and runs this again.
+        max_packet_size_ = (tud_speed_get() == TUSB_SPEED_HIGH) ? 512U : 64U;
+
         transmitted_size_ = 0;
 #if LIBRMCS_SPLIT_CAN_ENDPOINT
         // The CAN pipe's pool is separate, so HostSession's own reset does not
@@ -315,6 +326,11 @@ private:
     }
 
     size_t transmitted_size_ = 0;
+    // Endpoint size in bytes, refreshed on every session activation. The full
+    // speed value is the safe default: a batch chunked at 64 bytes is correct
+    // on a high speed endpoint too, only slower, whereas the reverse would
+    // overrun the endpoint.
+    std::size_t max_packet_size_ = 64;
 
 #if LIBRMCS_SPLIT_CAN_ENDPOINT
     link::InterruptSafeBuffer can_transmit_buffer_;

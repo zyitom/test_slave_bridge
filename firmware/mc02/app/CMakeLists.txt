@@ -114,6 +114,14 @@ if(LIBRMCS_APP_RS485_ENABLE)
     target_compile_definitions(mc02_app PRIVATE LIBRMCS_APP_RS485_ENABLE=1)
 endif()
 
+# Drain the two RS-485 receive rings from their IDLE interrupt instead of from
+# the main loop, which removes their per-pass NDTR read. Safe only because those
+# ports are idle-delimited by construction; see UartRs485::rx_event_callback.
+option(LIBRMCS_APP_UART_RX_IN_ISR "Drain the RS-485 receive rings in the IDLE ISR" OFF)
+if(LIBRMCS_APP_UART_RX_IN_ISR)
+    target_compile_definitions(mc02_app PRIVATE LIBRMCS_APP_UART_RX_IN_ISR=1)
+endif()
+
 option(LIBRMCS_APP_LOOP_PROFILE "Emit main-loop section timing on the kUart0 uplink" OFF)
 if(LIBRMCS_APP_LOOP_PROFILE)
     target_compile_definitions(mc02_app PRIVATE LIBRMCS_APP_LOOP_PROFILE=1)

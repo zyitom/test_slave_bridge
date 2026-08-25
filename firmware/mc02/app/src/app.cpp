@@ -255,6 +255,9 @@ App::App() {
 
         diag::profile::mark(diag::profile::Section::kTudTask);
         tud_task();
+
+        // Once per pass, not once per try_transmit() call; see Vendor::poll_session.
+        usb::vendor->poll_session();
         usb::poll_dfu_runtime_reboot();
 
         // CAN telemetry (LIBRMCS_APP_CAN_DIAG builds only); paces itself off the
