@@ -35,12 +35,29 @@
 #                       Still NOT applied by this script -- it needs a process
 #                       holding the fd (see --pmqos) and costs power machine-wide
 #                       -- but a 1 kHz loop that cares about p99.9 should run it.
-#   Per-core C-state    MEASURED, DOES NOT WORK. Disabling C6/C10 on the
-#     disable           application core alone changed nothing (p50 77.8 vs 77.4
-#                       baseline). Disabling them on ALL cores while leaving C1E
-#                       enabled bought only a small tail improvement (p99 ~94 vs
-#                       ~100) and NO p50 change -- C1E alone is enough to let the
-#                       clock fall. Do not replace --pmqos with this.
+#   Per-core C-state    MEASURED, AND THE CORE YOU PICK IS THE WHOLE STORY.
+#     disable           On the APPLICATION core it does nothing (p50 77.8 vs 77.4
+#                       baseline). Disabling C6/C10 on ALL cores while leaving
+#                       C1E enabled bought only a small tail improvement (p99 ~94
+#                       vs ~100) and NO p50 change -- C1E alone is enough to let
+#                       the clock fall.
+#                       BUT ON THE xHCI IRQ THREAD'S CORE IT IS THE BEST KNOB WE
+#                       HAVE. Measured 2026-08-26 on TL101 (both boards on
+#                       00:14.0, irq/136 pinned to cpu4): disabling C1_ACPI on
+#                       cpu4 alone took usb_ep0_rtt p50 from 94.8-99.7 to
+#                       74.4-75.3 us, p99 111-120 -> 91.2-93.0. That BEATS
+#                       machine-wide PM QoS (77.0-78.6) while costing one idle
+#                       core instead of the whole package.
+#                       Root cause is C1E (MSR 0x1FC bit1 = 1; BIOS option
+#                       "Enhanced C-states"), NOT package C-states: Pkg%pc2 and
+#                       Pkg%pc6 stay at 0.00 throughout, because cpu7 never
+#                       idles. Setting governor=performance on cpu4 does NOT
+#                       help (p50 95.7-96.3) -- it does not stop the core from
+#                       halting. See HOST_TUNING.md 11.9.
+#                       The IRQ thread's core changes with enumeration order, so
+#                       discover it, never hardcode cpu4:
+#                         pgrep -f 'irq/.*xhci' | while read p; do
+#                           grep Cpus_allowed_list /proc/$p/status; done
 #   cpuidle governor    MEASURED, NO EFFECT. menu -> teo moved nothing outside
 #     menu -> teo       noise. Reported below, not changed.
 #   Bluetooth on the    MEASURED, NO EFFECT on the host path. btusb shares the

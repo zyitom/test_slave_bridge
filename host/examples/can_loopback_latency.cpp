@@ -24,6 +24,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
@@ -43,7 +44,15 @@ namespace {
 constexpr bool kUseCanFd = false;          // classic CAN 2.0; match your bus
 constexpr uint32_t kPingCanId = 0x555;     // unique on the loopback bus
 constexpr uint32_t kPingCount = 2000;      // samples to collect
-constexpr auto kInterPingGap = std::chrono::microseconds{1000};  // pause between pings
+// Pause between pings. Tunable because it is the knob that decides whether the
+// bulk IN endpoint has been NAKing when the echo arrives: a long gap leaves the
+// pipe idle, and the host controller's backoff for a NAKing endpoint then sits
+// in the measured round trip. Sweeping it separates that backoff from the fixed
+// costs (CAN wire, device turnaround) that do not depend on the gap.
+const auto kInterPingGap = std::chrono::microseconds{[] {
+    const char* env = std::getenv("RMCS_LATENCY_GAP_US");
+    return (env != nullptr && *env != '\0') ? std::atoi(env) : 1000;
+}()};
 constexpr auto kEchoTimeout = std::chrono::milliseconds{50};     // give-up per ping
 
 // Approximate on-wire time of one frame, subtracted to isolate board+USB.

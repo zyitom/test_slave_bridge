@@ -154,15 +154,30 @@ void tud_vendor_rx_cb(uint8_t itf, const uint8_t* buffer, uint16_t size) {
         // to happen before the deserializer runs, which is the whole point; the
         // throttle it consults is refreshed from the main loop, so it does not
         // need this packet's CAN enqueues to have happened yet.
+        //
+        // Same turnaround/starve pair as the itf == 0 path below. Without it the
+        // telemetry describes only the command pipe, which carries a few packets
+        // per second, while the CAN pipe carrying the actual load is unmeasured:
+        // hpm5321_loop_probe then reports 100% starve at every rate because the
+        // sample it averages is the idle endpoint. Compiled out unless
+        // LIBRMCS_APP_CAN_DIAG.
+        //
+        // Both pipes report into one accounting pair, so an interval that opens
+        // on one endpoint and closes on the other is mis-attributed. At the
+        // observed rates (command pipe ~3 packets/s against thousands here) that
+        // is well under 0.1% of samples.
+        diag::note_usb_out_complete();
 # if LIBRMCS_COPY_THEN_ARM
         std::memcpy(g_can_downlink_copy, buffer, copy_size);
         usb::vendor->poll_can_downlink_arm();
+        diag::note_usb_out_armed();
         usb::vendor->handle_can_downlink(
             {reinterpret_cast<const std::byte*>(g_can_downlink_copy), copy_size}, finished);
 # else
         usb::vendor->handle_can_downlink(
             {reinterpret_cast<const std::byte*>(buffer), copy_size}, finished);
         usb::vendor->poll_can_downlink_arm();
+        diag::note_usb_out_armed();
 # endif
         return;
     }
