@@ -46,15 +46,125 @@ arm-none-eabi-nm firmware/mc02/build/app/mc02_app.elf | grep -c bmi088   # IMU: 
 
 ## 编译开关
 
-全部定义在 `app/CMakeLists.txt`，默认值即下表。**后三个都占用 `DataId::kUart0`，互斥。**
+全部定义在 `app/CMakeLists.txt`，默认值即下表。**后四个都占用 `DataId::kUart0`，互斥。**
 
 | 开关 | 默认 | 作用 |
 |---|---|---|
 | `LIBRMCS_APP_IMU_ENABLE` | ON | BMI088 初始化与采样 |
-| `LIBRMCS_APP_USB_DWC2_DMA` | OFF | DWC2 控制器内部 DMA（省掉 USB 中断里的 FIFO 拷贝） |
 | `LIBRMCS_APP_RS485_ENABLE` | OFF | 把 USART2 的 RS-485 口暴露为 UART0；需 `.ioc` 的 USART2 DMA 已 Generate |
+| `LIBRMCS_APP_USB_RX_HIST` | OFF | 相邻两次 bulk OUT 完成的间隔直方图（DWT）在 kUart0 上输出 |
 | `LIBRMCS_APP_LOOP_PROFILE` | OFF | 主循环分段耗时（DWT）在 kUart0 上以 ASCII 输出 |
 | `LIBRMCS_APP_CAN_DIAG` | OFF | CAN 遥测记录在 kUart0 上输出 |
+
+### DWC2 内部 DMA：测过更慢，开关已删除 [实测 2026-08-28]
+
+**结论：小包包率降约 3%，大包吞吐一点没动，板上主循环省下的时间可以忽略。没有任何一档
+测下来是赢的，所以 `LIBRMCS_APP_USB_DWC2_DMA` 开关连同 `tusb_config.h` 里的
+`CFG_TUD_DWC2_DMA_ENABLE` / `CFG_DWC2_MEM_UNCACHED_REGIONS` 一并删掉了，slave 模式是
+唯一支持的配置**（删除前后默认镜像 bit 级相同，已 `cmp` 验证）。下面这份记录留着，
+是为了别人不用再走一遍——**要重新加回这个开关，先把下面的测量重做一遍。**
+
+A/B 方式：同一块板，`release` 预设，交替 DFU 烧录两个镜像，每档 3 次 5 s，
+工具 `host/examples/mc02_packet_rate.cpp`（下行泛洪，记录发给没接线的 UART1，
+固件把多余的丢掉，测的就是 USB + 反序列化这条路）。主机未跑 `host-tuning.sh`
+（governor 仍是 powersave），两臂条件相同。
+
+| 档位（秒 / 载荷 / 每包记录数） | OFF | ON | 差 |
+|---|---|---|---|
+| `5 8 1`（一包一条 8 B 记录） | 26650 / 26604 / 26628，第二轮 26623 / 26631 / 26563 包/s | 25934 / 25904 / 25912，第二轮 25808 / 25818 / 25921 包/s | **-2.9%** |
+| `5 64 4`（约 300 B 传输） | 884.5 KB/s | 882.9 KB/s | -0.2% |
+| `5 256 8`（约 2 KB 传输） | 1010.0 KB/s | 1009.0 KB/s | 0（都撞在 Full-Speed 线速上） |
+
+为什么省下的拷贝换不回吞吐（**省的是 CPU 周期，付的是墙钟延迟，卡住的是后者**）：
+
+- **拷贝本来就不在瓶颈上。** `LIBRMCS_APP_LOOP_PROFILE=ON` 再测一轮，主循环
+  avg 从 4782 降到 4737 cycles（550 MHz 下 -0.08 us/pass），`usb` 段 821 -> 805 cycles。
+  可是泛洪时主循环跑到 114-125 kHz，而包只有 25 kHz——**每来一个包主循环空转四五圈**，
+  省 45 cycles 换不到任何东西。**CPU 更闲了包率却更低**，这本身就说明瓶颈不在 CPU。
+- **真正卡住的是"包到 -> 端点重新 arm"这段墙钟时间**，因为主机是背靠背发的。用
+  `LIBRMCS_APP_USB_RX_HIST=ON` 量相邻两次 OUT 完成的间隔（板上 DWT，采样点在
+  `tud_vendor_rx_cb`），两臂各约 12900 样本/500 ms：
+
+  | 间隔档 | slave（OFF） | DMA（ON，按样本数归一） |
+  |---|---|---|
+  | <20 us（同一串背靠背） | 2081 | **1830** |
+  | 20-30 us | 3739 | 3739 |
+  | 34-38 us | 743 | 803 |
+  | 55-70 us | 3298 | 3443 |
+  | >=90 us（尾部） | 223 | 224 |
+
+  **少掉的全在 <20 us 那一档，尾部一个没多。** 所以不是"偶尔漏掉一整个 125 us 微帧"，
+  而是**每串背靠背里少接住一个包**：DWC2 内部 DMA 要先把包从 RX FIFO 经 AHB 搬进
+  AXI SRAM 才拉 `XFRC`，比 slave 模式"包一进 RX FIFO 就 `RXFLVL`、CPU 立刻开搬"晚，
+  重新 arm 还多写一个 `doepdma`。晚这一点，就赶不上主机约 17 us 后的下一个 OUT 令牌。
+  `[实测 2026-08-28，间隔直方图]`
+- 缓存维护不是原因：TinyUSB 的传输缓冲区（`_vendord_epbuf` 0x240009a0、`_dcd_usbbuf`、
+  `_ctrl_epbuf`）全在 AXI SRAM，且已由 `CFG_DWC2_MEM_UNCACHED_REGIONS` 声明为非缓存
+  （`tusb_config.h`），DMA 臂上没有额外的 clean/invalidate。
+- **这 3% 不是相位假象。** 见下一节：包率对主循环周期极其敏感（±35%），只在一个工作点
+  上比较不可信。在**两个**相差 35% 的工作点上各测三次，DMA 的差都是 -3.0%：
+
+  | | ballast 0 | ballast 825 cycles（1.5 us） |
+  |---|---|---|
+  | slave | 26637 / 26766 / 26736 | 36108 / 36050 / 36075 |
+  | DMA | 25934 / 25903 / 25933 | 34918 / 35093 / 34987 |
+  | 差 | -3.0% | -3.0% |
+
+当时 DMA 确实生效了，不是没开：`CFG_TUD_DWC2_DMA_ENABLE=1` 会让
+`CFG_TUD_DWC2_SLAVE_ENABLE` 默认变成 0（`tusb_option.h`），FIFO 拷贝那条路径整个编不进去
+——`dcd_int_handler` 从 0x990 字节缩到 0x788——而板子照常枚举、照常跑 1 MB/s，
+说明走的就是 DMA 路径。
+
+**和 5321 没有可比性**：`rmcs_board` 的 HPM5321 用的是 `dcd_hpm.c`（ChipIdea/EHCI 式的
+QHD/QTD 描述符控制器），本来就只有 DMA 一种工作方式，根本没有"FIFO 拷贝模式"可省，
+也没有对应的编译开关。这个开关是 Synopsys DWC2 独有的，只对 `c_board` / `mc02` 有意义。
+
+**但 5321 那边量出来的斜率可以用来验算这 3%**：[rmcs_board/AGENTS.md](../rmcs_board/AGENTS.md)
+「因果实验：`cycle = turnaround x 1.2~1.4 + 约 13.5 us`」实测**每包周期对 turnaround
+的斜率是 1.2~1.4**。把这条套到 mc02：DMA 让 turnaround 长约 1 us，预期包率损失
+1 x 1.3 / 37.6 us ≈ **3.5%**，实测 3.0%。两块板、两种控制器、独立测出来的两个数对得上，
+"DMA 的代价落在 turnaround 上"这个解释因此不只是本板的自圆其说。`[推断，基于两项实测]`
+
+### 下行包率是主循环周期的强非单调函数，摆幅 ±35% [实测 2026-08-28]
+
+**结论：给主循环每圈加 1.5 us 纯忙等，小包下行包率从 26700 涨到 36100（+35%）；加 3 us
+反而掉回 26000，加 6 us 掉到 23900。这不是"CPU 太忙"——加的是纯浪费的忙等。任何
+mc02 的 USB 性能 A/B，如果只在一个工作点上测，都可能测的是相位而不是改动本身。**
+
+`LIBRMCS_APP_LOOP_BALLAST_CYCLES=N` 扫描，`mc02_packet_rate 4 8 1`，各三次取中位，
+IMU=ON、无诊断开关（DMA=OFF 臂）：
+
+| ballast | 0 | 825（1.5 us） | 1650（3 us） | 2200（4 us） | 3300（6 us） | 4400（8 us） |
+|---|---|---|---|---|---|---|
+| 包/s | 26700 | **36100** | 26100 | 25500 | 23900 | 27300 |
+
+为什么会这样：整条链路是**闭环**——板子 arm 端点、主机才发下一个包、包到了板子再
+arm。所以"包到 -> 重新 arm"的相位是自锁的，而 arm 只发生在 `tud_task()` 里，
+即每个主循环周期一次。主循环周期与主机的事务节奏（微帧 125 us，串内背靠背约 17 us）
+形成拍频：**相位好时一串能接住两个包，相位差时只接住一个**。直方图看得很清楚——
+1.5 us ballast 那一臂 `<20 us` 档从 2081 涨到 5167，尾部（>=90 us）完全没动。
+
+**这不是可以直接拿来用的优化**，两条理由：
+
+- **最优点跟着主循环的组成变**。把 IMU 关掉（每圈少一次 BMI088 SPI 服务），同样的
+  1.5 us ballast 从 +35% 变成 -7%：IMU=OFF 时 ballast 0 是 29100、ballast 825 是 27100。
+  也就是说甜点位置由整圈的时序决定，任何一处改动都会挪走它。
+- 它只对"主机背靠背泛洪小包"这一种流量成立。控制回路那种 1 kHz 的往返上面没测过。
+
+**要用的话必须重测**，而且要连着扫几个 ballast 值确认自己不在悬崖边上。测量工具是
+`LIBRMCS_APP_USB_RX_HIST=ON`（间隔直方图）加 `LIBRMCS_APP_LOOP_BALLAST_CYCLES`（相位旋钮）。
+
+**5321 上没有这个现象，别照搬。** [rmcs_board/AGENTS.md](../rmcs_board/AGENTS.md)
+2026-08-07 做过同一类实验（在 `rx_cb` 里 re-arm 之前注入忙等），六个点**单调下降**、
+没有任何甜点：0 -> 54.3k、600 cy -> 52.5k、1200 cy -> 47.1k、1800 cy -> 40.8k。
+两处的注入点不完全相同（5321 注在 `rx_cb` 里，本板注在主循环开头，因而还改了
+`tud_task()` 的相位），但结论方向是清楚的：**High-Speed 的 5321 每包周期由约 13.5 us
+的主机侧地板 + 1.2~1.4 倍斜率决定，是单调的；本板这个甜点是 Full-Speed 下主循环周期与
+主机事务节奏打拍出来的，属于 mc02 特有。**
+
+本板这个峰**还没有被完整解释**。已知的线索是它跟上行有关：关掉 IMU（上行几乎没数据了）
+ballast 0 反而涨到 29100，说明上行 IN 事务本身在跟下行抢 Full-Speed 总线；而加 ballast
+会把上行攒成更少更大的包。但这解释不了全部 35%。`[实测有，机制未定论]`
 
 ## 目录结构
 - `app/`、`bootloader/`：两套独立镜像。`app/src/app.cpp` 提供自己的 `main()`，直接驱动生成的 `*_Config()` / `MX_*_Init()`。

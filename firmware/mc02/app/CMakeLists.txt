@@ -94,10 +94,14 @@ target_compile_definitions(
 target_compile_definitions(
     mc02_app PRIVATE LIBRMCS_APP_USB_RX_XFER_SIZE=${LIBRMCS_APP_USB_RX_XFER_SIZE})
 
-option(LIBRMCS_APP_USB_DWC2_DMA "Use the DWC2 device controller internal DMA" OFF)
-if(LIBRMCS_APP_USB_DWC2_DMA)
-    target_compile_definitions(tinyusb_app PUBLIC LIBRMCS_APP_USB_DWC2_DMA=1)
-endif()
+# There is deliberately no switch for the DWC2 controller's internal DMA. It was
+# built and measured on hardware (firmware/mc02/AGENTS.md, 2026-08-28): it costs
+# 3.0% of the small-packet rate at two operating points 35% apart, and buys
+# nothing anywhere, because what it removes is interrupt CPU time the board has
+# in surplus while what it adds -- the core moving the packet to SRAM before it
+# raises XFRC -- lands on the path that actually gates throughput, the race to
+# re-arm the OUT endpoint before the host's next token. Slave mode is the only
+# supported configuration; do not re-add the option without re-measuring.
 
 # Same switch and same default as rmcs_board's: OFF, because it adds counters to
 # the CAN forwarding hot path and occupies DataId::kUart0 on the uplink.
@@ -120,6 +124,14 @@ endif()
 option(LIBRMCS_APP_UART_RX_IN_ISR "Drain the RS-485 receive rings in the IDLE ISR" OFF)
 if(LIBRMCS_APP_UART_RX_IN_ISR)
     target_compile_definitions(mc02_app PRIVATE LIBRMCS_APP_UART_RX_IN_ISR=1)
+endif()
+
+# Distribution of the gap between consecutive bulk OUT completions, on the
+# kUart0 uplink. OFF by default: it costs a DWT read plus a bucket search per
+# received packet, and it shares DataId::kUart0 with the other diagnostics.
+option(LIBRMCS_APP_USB_RX_HIST "Emit bulk OUT inter-arrival histogram on the kUart0 uplink" OFF)
+if(LIBRMCS_APP_USB_RX_HIST)
+    target_compile_definitions(mc02_app PRIVATE LIBRMCS_APP_USB_RX_HIST=1)
 endif()
 
 option(LIBRMCS_APP_LOOP_PROFILE "Emit main-loop section timing on the kUart0 uplink" OFF)

@@ -6,6 +6,7 @@
 #include <main.h>
 
 #include "core/src/protocol/serializer.hpp"
+#include "firmware/mc02/app/src/diag/usb_rx_hist.hpp"
 #include "firmware/mc02/app/src/utility/boot_mailbox.hpp"
 
 namespace {
@@ -49,6 +50,8 @@ extern "C" {
 void tud_vendor_rx_cb(uint8_t itf, const uint8_t* buffer, uint32_t size) {
     if (itf != 0) [[unlikely]]
         return;
+
+    diag::usb_rx_hist::note();
 
     // "The host's transfer ended here" is a short transfer, not a short packet:
     // DWC2 completes an OUT transfer either when the requested rx_xfer_len is
