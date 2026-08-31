@@ -66,7 +66,8 @@ public:
                 .captured_microframe_q16 = captured_q16,
                 .ticks_per_microframe_q16 = sync::pulse::measured_ticks_per_microframe_q16(),
                 .flags = static_cast<uint8_t>(
-                    (pending_pulse_armed_ ? data::kPulseArmed : 0U) | data::kPulseCaptured),
+                    (pending_pulse_armed_ ? data::kPulseArmed : data::PulseReportFlags{})
+                    | data::kPulseCaptured),
             });
         }
     }
@@ -346,7 +347,8 @@ private:
             .scheduled_microframe = data.microframe,
             .captured_microframe_q16 = 0,
             .ticks_per_microframe_q16 = sync::pulse::measured_ticks_per_microframe_q16(),
-            .flags = static_cast<uint8_t>(pending_pulse_armed_ ? data::kPulseArmed : 0U),
+            .flags = static_cast<uint8_t>(
+                pending_pulse_armed_ ? data::kPulseArmed : data::PulseReportFlags{}),
         });
     }
 

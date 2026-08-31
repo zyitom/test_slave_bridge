@@ -28,11 +28,9 @@ public:
         config_can(hal_filter_index);
     }
 
-    // CAN forwarding hot path. Defined out-of-line in can.cpp and placed in the
-    // zero-wait ITCM (.itcm section) to keep worst-case forwarding latency free of
-    // I-cache misses and FLASH-XIP fetch jitter. Out-of-line (not inline-in-class)
-    // is deliberate: inline/COMDAT bodies in a custom section trip a GCC section
-    // type conflict, so the bodies live in the .cpp like the ISR callbacks.
+    // CAN 转发热路径。函数体在 can.cpp 中定义并放入零等待 ITCM(.itcm 段),
+    // 使最坏转发延迟不受 I-cache miss 和 FLASH-XIP 取指抖动影响。
+    // 必须 out-of-line: inline/COMDAT 函数体放自定义 section 会触发 GCC section 类型冲突。
     void handle_downlink(const data::CanDataView& data);
     void handle_uplink(data::DataId field_id, core::protocol::Serializer& serializer);
     bool try_transmit();
@@ -51,54 +49,42 @@ private:
         constexpr auto ok = HAL_OK;
         core::utility::assert_always(HAL_FDCAN_ConfigFilter(hal_can_handle_, &filter_config) == ok);
 
-        // Extended-ID frames are accepted through the global filter below, NOT a
-        // dedicated filter element: CubeMX configures ExtFiltersNbr = 0, so no
-        // extended filter list exists in the message RAM -- the HAL validates the
-        // index only via assert_param (compiled out), so a ConfigFilter call here
-        // would silently scribble the element into RX FIFO0's RAM area and never
-        // take effect. Making the accept-all policy explicit in GFC also stops
-        // relying on the register's reset value. Remote frames keep passing
-        // through normal filtering; handle_uplink() normalizes them to empty.
+        // 扩展帧靠下面的全局过滤器放行, 而非独立过滤器: CubeMX 配置 ExtFiltersNbr = 0,
+        // message RAM 里没有扩展过滤器表; HAL 只用 assert_param(已编译掉)校验下标,
+        // 此处再调 ConfigFilter 会把元素写进 RX FIFO0 的 RAM 区且不生效。
+        // 显式配置 GFC 也免于依赖寄存器复位值。远程帧仍走正常过滤,
+        // 由 handle_uplink() 归一化为空负载。
         core::utility::assert_always(
             HAL_FDCAN_ConfigGlobalFilter(
                 hal_can_handle_, FDCAN_ACCEPT_IN_RX_FIFO0, FDCAN_ACCEPT_IN_RX_FIFO0,
                 FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE)
             == ok);
 
-        // Hardware RX timestamping is disabled: the internal counter is 16 bits
-        // wide, which wraps every ~65.5 ms and cannot carry the 32-bit microsecond
-        // timestamp the protocol specifies. handle_uplink() leaves
-        // CanDataView::timestamp_us unset, so the counter would only burn bus
-        // cycles. Re-enable both calls here if the uplink ever reports timestamps
-        // again; they must run while the controller is still in READY state
-        // (before HAL_FDCAN_Start).
+        // 不启用硬件 RX 时间戳: 内部计数器只有 16 位, 约 65.5 ms 回绕,
+        // 无法承载协议要求的 32 位微秒时间戳。handle_uplink() 不填
+        // CanDataView::timestamp_us, 开着只会白耗总线周期。若上行恢复上报时间戳,
+        // 取消下面两行注释即可; 它们必须在控制器仍处于 READY 态时执行
+        // (即 HAL_FDCAN_Start 之前)。
         //
-        // Internal 16-bit counter, one tick = one nominal CAN bit time = 1 us at
-        // the 1 Mbit/s arbitration rate.
+        // 内部 16 位计数器, 一个 tick = 一个标称位时间, 在 1 Mbit/s 仲裁速率下即 1 us。
         // core::utility::assert_always(
         //     HAL_FDCAN_ConfigTimestampCounter(hal_can_handle_, FDCAN_TIMESTAMP_PRESC_1) == ok);
         // core::utility::assert_always(
         //     HAL_FDCAN_EnableTimestampCounter(hal_can_handle_, FDCAN_TIMESTAMP_INTERNAL) == ok);
 
-        // Transmitter delay compensation. The data phase runs at
-        // 80 MHz / (DataPrescaler 1 * (1 + DataTimeSeg1 13 + DataTimeSeg2 2)) =
-        // 5 Mbit/s, so a data bit is 200 ns and the primary sample point sits at
-        // 14/16 = 87.5%, i.e. 175 ns. A high-speed CAN transceiver's loop delay
-        // is typically 120-255 ns, so it can exceed that sample point: while
-        // transmitting the data phase the node would monitor its own bit too
-        // early, read the previous bit, and raise a bit error. TDC moves the
-        // check to a secondary sample point placed at
-        // (measured loop delay + TdcOffset), which tracks the transceiver
-        // instead of assuming it is fast.
+        // 发送延迟补偿(TDC)。数据段速率 =
+        // 80 MHz / (DataPrescaler 1 * (1 + DataTimeSeg1 13 + DataTimeSeg2 2)) = 5 Mbit/s,
+        // 即一位 200 ns, 主采样点在 14/16 = 87.5%, 也就是 175 ns。高速 CAN 收发器的
+        // 环路延迟通常 120-255 ns, 可能超过该采样点: 发送数据段时节点会过早回读自己的位,
+        // 读到上一位而报 bit error。TDC 把回读移到二级采样点
+        // (实测环路延迟 + TdcOffset), 跟随收发器而不是假定它足够快。
         //
-        // TdcOffset is expressed in data-phase time quanta and set to
-        // DataPrescaler * DataTimeSeg1, the standard recipe that puts the
-        // secondary sample point at the same relative position inside the bit as
-        // the primary one. TdcFilter = 0 leaves the filter window off, which is
-        // the usual choice when the transceiver has no glitch problem.
+        // TdcOffset 以数据段时间量子为单位, 取 DataPrescaler * DataTimeSeg1 --
+        // 让二级采样点落在位内同一相对位置的标准做法。TdcFilter = 0 关闭滤波窗口,
+        // 收发器无毛刺问题时的常规选择。
         //
-        // STM32F407 has no CAN-FD at all, so c_board has no counterpart to this.
-        // Must run in READY state, before HAL_FDCAN_Start below.
+        // STM32F407 完全没有 CAN-FD, 所以 c_board 没有对应逻辑。
+        // 必须在 READY 态执行, 即下面 HAL_FDCAN_Start 之前。
         const uint32_t tdc_offset =
             hal_can_handle_->Init.DataPrescaler * hal_can_handle_->Init.DataTimeSeg1;
         core::utility::assert_always(
@@ -110,17 +96,15 @@ private:
             HAL_FDCAN_ActivateNotification(
                 hal_can_handle_, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0)
             == ok);
-        // Bus-off recovery: this is a forwarding bridge, so a transient wire fault
-        // (downstream node unplugged, no ACK) must not park the port until reboot.
-        // The notification drives HAL_FDCAN_ErrorStatusCallback (see can.cpp), which
-        // restarts bus-off recovery so the port comes back on its own.
+        // 总线关闭恢复: 本板是转发桥, 瞬时线路故障(下游节点拔掉、无 ACK)不能让端口
+        // 挂死到重启为止。该通知触发 HAL_FDCAN_ErrorStatusCallback(见 can.cpp),
+        // 重启 bus-off 恢复流程, 端口可自行复活。
         core::utility::assert_always(
             HAL_FDCAN_ActivateNotification(hal_can_handle_, FDCAN_IT_BUS_OFF, 0) == ok);
     }
 
-    // Logical index for telemetry, derived from the peripheral instance rather
-    // than stored: the constructor takes no index, and adding one would touch
-    // every call site for a diagnostics-only value.
+    // 遥测用的逻辑编号, 由外设实例推导而非存储: 构造函数不带索引参数,
+    // 为一个纯诊断值新增参数会波及所有调用点。
     [[nodiscard]] std::size_t diag_index() const {
         if (hal_can_handle_->Instance == FDCAN1)
             return 0;
@@ -132,30 +116,27 @@ private:
     FDCAN_HandleTypeDef* hal_can_handle_;
 
     struct TransmitMailboxData {
-        uint32_t identifier; // Tx element T0: ID + XTD/RTR flags
-        uint32_t control;    // Tx element T1: DLC + FDF/BRS flags
+        uint32_t identifier; // Tx 元素 T0: ID + XTD/RTR 标志
+        uint32_t control;    // Tx 元素 T1: DLC + FDF/BRS 标志
         uint32_t data[2];
     };
 
-    // Free element count in the controller's Tx FIFO/queue, and a single write
-    // into it. Both are on the forwarding hot path (.itcm, defined in can.cpp)
-    // and are shared by handle_downlink's direct write and try_transmit's drain.
+    // 读取控制器 Tx FIFO/队列的空闲元素数, 以及向其写入一个元素。两者都在转发热路径上
+    // (.itcm, 定义在 can.cpp), 由 handle_downlink 的直写和 try_transmit 的排空共用。
     [[nodiscard]] uint32_t hardware_free_slots() const noexcept;
     void push_to_hardware(const TransmitMailboxData& mailbox_data) noexcept;
 
-    // Overflow queue behind the 32-element hardware Tx FIFO -- reached only when
-    // that FIFO is full, since handle_downlink writes the controller directly
-    // otherwise. 16 was inherited from c_board, whose bxCAN has just three Tx
-    // mailboxes and where a 16-deep stage is a real gain; on this part the FIFO
-    // alone is 32, so the old unconditional staging capped a single downlink
-    // packet at 16 frames -- half of what writing straight to the FIFO gives.
-    // 64 matches rmcs_board and costs 1 KB of DTCM per bus.
+    // 硬件 32 元素 Tx FIFO 之后的溢出队列 -- 只有 FIFO 满时才会用到,
+    // 否则 handle_downlink 直接写控制器。16 是从 c_board 继承的: 那边 bxCAN 只有
+    // 三个发送邮箱, 16 深确有收益; 本芯片光 FIFO 就有 32, 旧的无条件入队反而把单个
+    // 下行包限制在 16 帧 -- 只有直写 FIFO 的一半。64 与 rmcs_board 一致,
+    // 每路总线占 1 KB DTCM。
     static constexpr size_t kTransmitQueueSize = 64;
     utility::RingBuffer<TransmitMailboxData, kTransmitQueueSize> transmit_buffer_;
 };
 
-// In zero-wait DTCM (.dtcm): the RX ISR reads hal_can_handle_/data_id_ from here,
-// and the TX ring lives here -- keeps the forwarding hot path off the AXI bus.
+// 放在零等待 DTCM(.dtcm): RX 中断从这里读 hal_can_handle_/data_id_,
+// 发送环形队列也在这里 -- 让转发热路径避开 AXI 总线。
 [[gnu::section(".dtcm")]] inline constinit Can::Lazy can1{&hfdcan1, 0};
 [[gnu::section(".dtcm")]] inline constinit Can::Lazy can2{&hfdcan2, 0};
 [[gnu::section(".dtcm")]] inline constinit Can::Lazy can3{&hfdcan3, 0};

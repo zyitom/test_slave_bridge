@@ -32,7 +32,7 @@ public:
 
         // Channel EXTI lines: PA0->EXTI0, PA2->EXTI2, PE9->EXTI9_5. EXTI15_10
         // (PE13) is already enabled by MX_GPIO_Init -- it is shared with the
-        // BMI088 data-ready ISR, whose handler forwards pin 13 to this driver.
+        // BMI088 data-ready pins, so only its handler lives in gpio.cpp.
         HAL_NVIC_SetPriority(EXTI0_IRQn, 4, 0);
         HAL_NVIC_EnableIRQ(EXTI0_IRQn);
         HAL_NVIC_SetPriority(EXTI2_IRQn, 4, 0);

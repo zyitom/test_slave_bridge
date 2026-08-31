@@ -19,6 +19,25 @@
 #include "firmware/rmcs_board/app/src/utility/boot_mailbox.hpp"
 #include "firmware/rmcs_board/app/src/xcore/pd_link.hpp"
 
+// Copy the packet out and re-arm BEFORE processing it, instead of processing
+// first. Halves the window in which the endpoint has no buffer and NAKs the host
+// (turnaround 2.22 -> 1.27 us, measured), at the cost of one memcpy per packet.
+//
+// DEFAULT OFF, because it buys nothing here: this host schedules exactly 8 bulk
+// transactions per 125 us microframe per device (64000 packets/s, +-0.01% over
+// six runs), and the device is already idle waiting when the next one arrives.
+// Shrinking turnaround just moves the time into that idle wait -- measured
+// 63999/63996/64002 vs 63988/63988/63991, i.e. identical.
+//
+// Kept switchable rather than deleted: on a host that schedules more than 8 per
+// microframe the device would become the constraint and this would start to pay.
+//
+// Ahead of the anonymous namespace because the landing pad below is guarded on
+// it; moving this back down past that guard silently drops the pad.
+#ifndef LIBRMCS_COPY_THEN_ARM
+# define LIBRMCS_COPY_THEN_ARM 0
+#endif
+
 namespace {
 
 constexpr uint32_t kDfuRuntimeResetDelayMs = 50U;
@@ -40,7 +59,14 @@ constexpr uint32_t kDfuRuntimeResetDelayMs = 50U;
 //
 // One pad per pipe, and no locking: both callbacks run from tud_task() on the
 // main loop, and each consumes its pad before returning.
+//
+// The command pad stays defined either way, because tud_vendor_rx_cb() takes its
+// sizeof to clamp both pipes' copies. The CAN pad only exists when something
+// actually writes it.
 alignas(4) uint8_t g_downlink_copy[512];
+#if LIBRMCS_SPLIT_CAN_ENDPOINT && LIBRMCS_COPY_THEN_ARM
+alignas(4) uint8_t g_can_downlink_copy[512];
+#endif
 
 // Bulk endpoint size, refreshed at mount. tud_vendor_rx_cb() below needs it to
 // decide whether a packet is short (and therefore ends the transfer), and that
@@ -55,7 +81,6 @@ alignas(4) uint8_t g_downlink_copy[512];
 // therefore before any packet can arrive on it, and the speed is fixed by the
 // enumeration that just finished.
 std::size_t g_packet_size = 64;
-alignas(4) uint8_t g_can_downlink_copy[512];
 
 volatile bool g_dfu_runtime_reboot_requested = false;
 volatile uint32_t g_dfu_runtime_reboot_requested_ms = 0U;
@@ -111,22 +136,6 @@ void poll_dfu_runtime_reboot() {
 
     boot::BootMailbox::reboot_to_bootloader();
 }
-
-// Copy the packet out and re-arm BEFORE processing it, instead of processing
-// first. Halves the window in which the endpoint has no buffer and NAKs the host
-// (turnaround 2.22 -> 1.27 us, measured), at the cost of one memcpy per packet.
-//
-// DEFAULT OFF, because it buys nothing here: this host schedules exactly 8 bulk
-// transactions per 125 us microframe per device (64000 packets/s, +-0.01% over
-// six runs), and the device is already idle waiting when the next one arrives.
-// Shrinking turnaround just moves the time into that idle wait -- measured
-// 63999/63996/64002 vs 63988/63988/63991, i.e. identical.
-//
-// Kept switchable rather than deleted: on a host that schedules more than 8 per
-// microframe the device would become the constraint and this would start to pay.
-#ifndef LIBRMCS_COPY_THEN_ARM
-# define LIBRMCS_COPY_THEN_ARM 0
-#endif
 
 // TinyUSB device callbacks
 extern "C" {

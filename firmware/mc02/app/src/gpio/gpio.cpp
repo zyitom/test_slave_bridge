@@ -33,12 +33,27 @@ extern "C" void HAL_GPIO_EXTI_Callback(uint16_t gpio_pin) {
     }
 }
 
-// Channel edge interrupts. PA0/PA2/PE9 use dedicated EXTI lines whose handlers
-// CubeMX does not generate (the pins boot as PWM), so they are provided here
-// app-side and stay immune to .ioc regeneration. PE13 shares the CubeMX-owned
-// EXTI15_10 handler, which forwards GPIO_PIN_13 through a USER CODE section.
+// Channel edge interrupts. All four EXTI lines are owned app-side, so no edge
+// interrupt depends on a USER CODE section that a CubeMX regeneration can drop.
+//
+// EXTI0/2/9_5 need nothing from CubeMX: PA0/PA2/PE9 are S_TIM*_CH* pins in the
+// .ioc, so it never learns they are also inputs and generates no handler for
+// those lines. EXTI15_10 used to be different -- CubeMX owned that handler
+// because PE10/PE12 are GPXTI pins, and PE13 could only ride along through a
+// USER CODE section, which is exactly what commit b972290 silently deleted.
+// "Generate IRQ handler" is now off for EXTI15_10 in the .ioc (NVIC > Code
+// generation), which removes only the handler; MX_GPIO_Init still enables the
+// line and sets its priority.
 extern "C" void EXTI0_IRQHandler(void) { HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_0); }
 extern "C" void EXTI2_IRQHandler(void) { HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_2); }
 extern "C" void EXTI9_5_IRQHandler(void) { HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_9); }
+
+// PE10 (INT1_ACC), PE12 (INT1_GYRO) and PE13 (PWM channel 4) all sit on this
+// line, so it must serve both the IMU and the GPIO driver.
+extern "C" void EXTI15_10_IRQHandler(void) {
+    HAL_GPIO_EXTI_IRQHandler(INT1_ACC_Pin);
+    HAL_GPIO_EXTI_IRQHandler(INT1_GYRO_Pin);
+    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_13);
+}
 
 } // namespace librmcs::firmware::gpio
