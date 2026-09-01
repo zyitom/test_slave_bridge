@@ -20,14 +20,22 @@
 
 #include <librmcs/board/mc02.hpp>
 
-// Cross-board RS-485 test for two mc02 boards wired A-A / B-B on one of the two
-// RS-485 ports. RMCS_RS485_PORT picks which: 2 (the default) is USART3 --
-// connector P5, transceiver U6, DE on PB14 -- and 1 is USART2, transceiver U5,
-// DE on PD4, which owns kUart0. Both power up at 4800000 and are electrically
-// the same circuit, so every test below applies unchanged to either.
-// Needs firmware built with -DLIBRMCS_APP_RS485_ENABLE=ON at both ends: without it the firmware's
-// downlink switch has no kUart4 case, returns false, and the deserializer tears
-// the session down rather than ignoring the frame.
+// RS-485 test for mc02, over either of two rigs (RMCS_RS485_RIG, default by
+// board count):
+//
+//   - "cross": two boards wired A-A / B-B on the SAME port, chosen by
+//     RMCS_RS485_PORT -- 2 is USART3 (connector P5, transceiver U6, DE on PB14)
+//     and 1 is USART2 (transceiver U5, DE on PD4, owner of kUart0).
+//   - "single": ONE board with its own two RS-485 ports wired to each other,
+//     A = USART2 and B = USART3. This is the only rig that exercises USART3 when
+//     just one board is on the bench, and it is a real two-node bus: separate
+//     USARTs, separate transceivers, separate DE pins, 120R fitted at each end.
+//
+// Both power up at 4800000 and are electrically the same circuit, so every test
+// applies unchanged to either rig. Needs firmware built with
+// -DLIBRMCS_APP_RS485_ENABLE=ON at every end: without it the firmware's downlink
+// switch has no kUart4 case, returns false, and the deserializer tears the
+// session down rather than ignoring the frame.
 //
 // Why a separate program from uart_cross_test: that one addresses ports through
 // the board-agnostic BoardTransmitter, whose port indices come from
@@ -35,16 +43,21 @@
 // generic code walking every descriptor cannot take a default firmware offline.
 // Reaching this port means talking to librmcs::board::Mc02 directly.
 //
-// The two properties a same-board loopback cannot check, and the reason every
-// exchange below crosses a wire between two independent boards:
+// The two properties a self-loopback (one port's TX back into its own RX) cannot
+// check, and how each rig here still covers them:
 //
 //   - Direction control. DE is raised by the USART itself (CR3.DEM, set by
-//     HAL_RS485Ex_Init), so a board that never releases the bus still passes any
-//     test where only one board transmits. Both directions are exercised, and
-//     the sender is checked for silence while it transmits.
-//   - Baudrate. A silently ignored config request leaves both ends at whatever
-//     CubeMX programmed -- 4800000 for USART3 -- and a loopback still passes at
-//     every requested rate (see firmware/mc02/AGENTS.md).
+//     HAL_RS485Ex_Init), so an end that never releases the bus still passes any
+//     test where only one end transmits. Both directions are exercised, and the
+//     sender is checked for silence while it transmits. Two ports on one board
+//     have independent DE pins, so the single rig checks this as well as the
+//     cross rig does.
+//   - Baudrate. A silently ignored config request leaves every end at whatever
+//     CubeMX programmed -- 4800000 -- and a link whose ends move together passes
+//     at every requested rate while running at none of them (see
+//     firmware/mc02/AGENTS.md). On the single rig both ends are the same
+//     firmware, so that common-mode blindness is the default; test_baudrate_mismatch
+//     moves ONE end and requires the link to break, which is what sees through it.
 //
 // Framing contract the firmware presents: RxBuffer::try_dequeue() publishes a
 // chunk as soon as kMinFragmentSize (32) bytes are in the ring, without waiting
@@ -147,19 +160,56 @@ std::string hex_preview(std::span<const std::byte> data, std::size_t limit = 16)
     return out;
 }
 
-// One board, plus reassembly state for the USART3 RS-485 port. Traffic on any
-// other channel is counted rather than dropped, so a firmware that misroutes a
-// downlink shows up as a number instead of a silent pass.
-class Node final : public Mc02::Callback {
+class Node;
+
+// One mc02 and the endpoints living on it. Both RS-485 ports arrive through a
+// single Mc02 callback object, so the routing has to be here rather than in
+// Node: on the one-board rig (USART2 wired to USART3 on the same board) the two
+// endpoints under test are two ports of THIS object, and each has to reassemble
+// its own stream. Traffic on a channel nobody claimed is counted rather than
+// dropped, so a firmware that misroutes a downlink shows up as a number instead
+// of a silent pass.
+class BoardHost final : public Mc02::Callback {
 public:
-    Node(std::string tag, std::string_view serial)
-        : tag_(std::move(tag)) {
-        board_ = std::make_unique<Mc02>(*this, serial);
+    explicit BoardHost(std::string_view serial) { board_ = std::make_unique<Mc02>(*this, serial); }
+
+    Mc02& board() { return *board_; }
+
+    // Claim one RS-485 port for an endpoint. Unclaimed ports keep counting into
+    // the leak detector.
+    void attach(int port, Node* node) { (port == 1 ? node1_ : node2_) = node; }
+
+private:
+    void rs485_1_receive_callback(const UartDataView& data) override;
+    void rs485_2_receive_callback(const UartDataView& data) override;
+    void uart1_receive_callback(const UartDataView& data) override;
+    void uart2_receive_callback(const UartDataView& data) override;
+    void uart3_receive_callback(const UartDataView& data) override;
+    void dbus_receive_callback(const UartDataView& data) override;
+    void count_unclaimed(const UartDataView& data, const char* name);
+
+    Node* node1_ = nullptr;
+    Node* node2_ = nullptr;
+    std::unique_ptr<Mc02> board_;
+};
+
+// One endpoint of the bus: an RS-485 port on some board, plus the reassembly
+// state for it. Two endpoints make a link; whether they sit on one board or two
+// is the rig's business, not this class's.
+class Node {
+public:
+    Node(std::string tag, BoardHost& host, int port)
+        : tag_(std::move(tag))
+        , host_(&host)
+        , port_(port) {
+        host.attach(port, this);
     }
 
-    ~Node() override { stop_responder(); }
+    ~Node() { stop_responder(); }
 
     const std::string& tag() const { return tag_; }
+
+    int port() const { return port_; }
 
     void reset() {
         const std::lock_guard guard{mutex_};
@@ -175,20 +225,20 @@ public:
 
     void send(std::span<const std::byte> payload, bool idle_delimited = true) {
         const std::lock_guard guard{transmit_mutex_};
-        if (g_port == 1)
-            board_->start_transmit().rs485_1_transmit(
+        if (port_ == 1)
+            host_->board().start_transmit().rs485_1_transmit(
                 {.uart_data = payload, .idle_delimited = idle_delimited});
         else
-            board_->start_transmit().rs485_2_transmit(
+            host_->board().start_transmit().rs485_2_transmit(
                 {.uart_data = payload, .idle_delimited = idle_delimited});
     }
 
     void set_baudrate(uint32_t baudrate) {
         const std::lock_guard guard{transmit_mutex_};
-        if (g_port == 1)
-            board_->start_transmit().rs485_1_config({.baudrate = baudrate});
+        if (port_ == 1)
+            host_->board().start_transmit().rs485_1_config({.baudrate = baudrate});
         else
-            board_->start_transmit().rs485_2_config({.baudrate = baudrate});
+            host_->board().start_transmit().rs485_2_config({.baudrate = baudrate});
     }
 
     std::size_t message_count() {
@@ -280,17 +330,9 @@ public:
         reply_queue_.clear();
     }
 
-private:
-    void rs485_2_receive_callback(const UartDataView& data) override {
-        if (g_port != 2) {
-            count_other(data, "RS485-2");
-            return;
-        }
-        accept(data);
-    }
-
-    // The port under test. Everything below reassembles idle-delimited messages
-    // out of the chunk stream; which physical port feeds it is g_port's business.
+    // Called by BoardHost for the port this endpoint claimed. Reassembles
+    // idle-delimited messages out of the chunk stream; which physical port feeds
+    // it is the rig's business, not this function's.
     void accept(const UartDataView& data) {
         const std::lock_guard guard{mutex_};
         ++chunk_count_;
@@ -305,33 +347,8 @@ private:
         condition_.notify_all();
     }
 
-    // USART2's RS-485 port and the three ordinary UARTs. Nothing this test sends
-    // should land here; a nonzero count means the firmware routed a downlink or
-    // an uplink to the wrong channel id.
-    void rs485_1_receive_callback(const UartDataView& data) override {
-        if (g_port == 1) {
-            accept(data);
-            return;
-        }
-        count_other(data, "RS485-1");
-    }
-    void uart1_receive_callback(const UartDataView& data) override { count_other(data, "UART1"); }
-    void uart2_receive_callback(const UartDataView& data) override { count_other(data, "UART2"); }
-    void uart3_receive_callback(const UartDataView& data) override { count_other(data, "UART3"); }
-    // DBUS is UART5, RX-only at 100000 8E1, and it shares the uplink ring with
-    // every other channel. An unconnected receiver floats, so it can fill that
-    // ring on its own -- which looks exactly like an RS-485 fault from the
-    // outside, because the only symptom either produces is the LED. Counted
-    // separately for that reason: "the board is busy" and "the 485 port is busy"
-    // are different findings.
-    void dbus_receive_callback(const UartDataView& data) override {
-        if (data.uart_data.empty())
-            return;
-        const std::lock_guard guard{mutex_};
-        dbus_chunks_ += 1;
-        dbus_bytes_ += data.uart_data.size();
-    }
-
+    // Channels nothing this test sends should ever land on; a nonzero count
+    // means the firmware routed a downlink or an uplink to the wrong channel id.
     void count_other(const UartDataView& data, const char* name) {
         if (data.uart_data.empty())
             return;
@@ -340,7 +357,24 @@ private:
         other_channel_name_ = name;
     }
 
+    // DBUS is UART5, RX-only at 100000 8E1, and it shares the uplink ring with
+    // every other channel. An unconnected receiver floats, so it can fill that
+    // ring on its own -- which looks exactly like an RS-485 fault from the
+    // outside, because the only symptom either produces is the LED. Counted
+    // separately for that reason: "the board is busy" and "the 485 port is busy"
+    // are different findings.
+    void note_dbus(const UartDataView& data) {
+        if (data.uart_data.empty())
+            return;
+        const std::lock_guard guard{mutex_};
+        dbus_chunks_ += 1;
+        dbus_bytes_ += data.uart_data.size();
+    }
+
+private:
     std::string tag_;
+    BoardHost* host_;
+    int port_;
     std::mutex mutex_;
     std::mutex transmit_mutex_;
     std::condition_variable condition_;
@@ -357,9 +391,48 @@ private:
 
     bool responder_running_ = false;
     std::thread responder_;
-
-    std::unique_ptr<Mc02> board_;
 };
+
+void BoardHost::rs485_1_receive_callback(const UartDataView& data) {
+    if (node1_ != nullptr)
+        node1_->accept(data);
+    else
+        count_unclaimed(data, "RS485-1");
+}
+
+void BoardHost::rs485_2_receive_callback(const UartDataView& data) {
+    if (node2_ != nullptr)
+        node2_->accept(data);
+    else
+        count_unclaimed(data, "RS485-2");
+}
+
+void BoardHost::uart1_receive_callback(const UartDataView& data) {
+    count_unclaimed(data, "UART1");
+}
+void BoardHost::uart2_receive_callback(const UartDataView& data) {
+    count_unclaimed(data, "UART2");
+}
+void BoardHost::uart3_receive_callback(const UartDataView& data) {
+    count_unclaimed(data, "UART3");
+}
+
+void BoardHost::dbus_receive_callback(const UartDataView& data) {
+    for (Node* node : {node1_, node2_}) {
+        if (node != nullptr)
+            node->note_dbus(data);
+    }
+}
+
+// Attributed to every endpoint on this board: whichever one the report reads
+// from, the finding "the firmware put bytes on a channel nobody addressed" is
+// the same.
+void BoardHost::count_unclaimed(const UartDataView& data, const char* name) {
+    for (Node* node : {node1_, node2_}) {
+        if (node != nullptr)
+            node->count_other(data, name);
+    }
+}
 
 int g_failures = 0;
 
@@ -738,6 +811,154 @@ void test_latency_vs_size(Node& a, Node& b) {
     settle();
 }
 
+// Moves ONE end and checks the link breaks.
+//
+// Every other baudrate check here moves both ends together, and that shape
+// cannot tell "the config request was applied" from "the config request was
+// dropped at both ends identically" -- which is exactly how the
+// HAL_RCCEx_GetPeriphCLKFreq() bug survived a UART7<->UART10 loopback for
+// months (firmware/mc02/AGENTS.md). On the one-board rig both ends are the same
+// firmware, so common-mode blindness is the default and this is the only check
+// that sees through it: with the two ports at different bit rates the bytes MUST
+// arrive wrong, and if they arrive intact the config request did nothing.
+void test_baudrate_mismatch(Node& a, Node& b) {
+    printf("\n== Baudrate mismatch (proves the config request is applied) ==\n");
+    a.set_baudrate(115200);
+    b.set_baudrate(921600);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    a.reset();
+    b.reset();
+    const auto payload = make_pattern(64, 7000);
+    a.send(payload);
+    const auto received = b.wait_for_messages(1, k_message_timeout);
+    settle();
+
+    const bool intact = received.size() == 1 && received.front().size() == payload.size()
+                     && first_difference(payload, received.front()) == payload.size();
+    char scratch[192];
+    std::snprintf(
+        scratch, sizeof(scratch), "%s at 115200 -> %s at 921600 delivered %zu message(s), %zu B",
+        a.tag().c_str(), b.tag().c_str(), received.size(), b.byte_count());
+    report(!intact, "a one-sided baudrate change actually changes the bit rate", scratch);
+
+    a.set_baudrate(g_baudrate);
+    b.set_baudrate(g_baudrate);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    settle();
+}
+
+// What happens to a downlink larger than the port's 256-byte TX ring.
+//
+// UartRs485 sizes TxBuffer at kRs485BufferSize (256) while the protocol carries
+// payloads up to kProtocolBufferSize (1023), so there is a range of perfectly
+// legal host requests the port cannot hold. TxBuffer::try_enqueue() returns
+// false for them and handle_downlink() turns that into led->downlink_buffer_full()
+// -- no uplink, no error to the host. This measures where the cliff is and
+// whether anything worse than a clean drop happens at it (a truncated message
+// would be far worse than none, because the peer would act on half a command).
+void test_oversize(Node& a, Node& b) {
+    printf("\n== Downlink larger than the 256-byte TX ring ==\n");
+    a.set_baudrate(4800000);
+    b.set_baudrate(4800000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    constexpr std::size_t sizes[] = {200, 254, 255, 256, 257, 300, 512, 1000};
+    bool truncated_anywhere = false;
+    for (const auto size : sizes) {
+        a.reset();
+        b.reset();
+        const auto payload = make_pattern(size, static_cast<uint32_t>(8000 + size));
+        a.send(payload);
+        const auto received = b.wait_for_messages(1, std::chrono::milliseconds(300));
+        settle();
+        const auto extra = b.take_messages();
+        const std::size_t delivered = b.byte_count();
+        const char* verdict = nullptr;
+        if (delivered == 0)
+            verdict = "dropped silently";
+        else if (
+            received.size() + extra.size() == 1 && delivered == size
+            && first_difference(payload, received.front()) == size)
+            verdict = "delivered intact";
+        else {
+            verdict = "TRUNCATED / corrupt";
+            truncated_anywhere = true;
+        }
+        printf(
+            "  [INFO] %4zu B -> %-20s (%zu bytes, %zu message(s) on the wire)\n", size, verdict,
+            delivered, received.size() + extra.size());
+        fflush(stdout);
+    }
+    report(!truncated_anywhere, "an oversized downlink is never half-delivered");
+
+    a.set_baudrate(g_baudrate);
+    b.set_baudrate(g_baudrate);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    settle();
+}
+
+// A burst of separate commands queued faster than the bus can carry them.
+//
+// This is the normal shape of RS-485 master traffic -- a poll cycle over several
+// nodes -- and it is where the 256-byte ring is actually spent, because the
+// half-duplex gate holds each packet for up to kTurnaroundDeadline (1000 us)
+// while the host keeps enqueuing. Anything the ring cannot hold is dropped with
+// only an LED to say so, so the number that matters is how many of N go out.
+void test_burst(Node& a, Node& b) {
+    printf("\n== Command burst (half-duplex gate vs the 256-byte ring) ==\n");
+    a.set_baudrate(4800000);
+    b.set_baudrate(4800000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    constexpr std::size_t kPacketSize = 32;
+    constexpr int counts[] = {4, 8, 12, 16, 24};
+    bool any_loss = false;
+    for (const auto count : counts) {
+        a.reset();
+        b.reset();
+        for (int i = 0; i < count; ++i)
+            a.send(make_pattern(kPacketSize, static_cast<uint32_t>(6000 + i)));
+        auto messages =
+            b.wait_for_messages(static_cast<std::size_t>(count), std::chrono::milliseconds(3000));
+        settle();
+        for (auto& late : b.take_messages())
+            messages.push_back(std::move(late));
+
+        // Which commands were lost matters more than how many: dropping the tail
+        // of a poll cycle is a different fault from dropping the middle, and a
+        // short message would mean the ring cut a command in half.
+        std::string missing;
+        std::size_t next = 0;
+        bool truncated = false;
+        for (int i = 0; i < count; ++i) {
+            const auto expected = make_pattern(kPacketSize, static_cast<uint32_t>(6000 + i));
+            if (next < messages.size() && messages[next].size() == expected.size()
+                && first_difference(expected, messages[next]) == expected.size()) {
+                ++next;
+                continue;
+            }
+            missing += " " + std::to_string(i);
+        }
+        for (const auto& message : messages)
+            truncated = truncated || message.size() != kPacketSize;
+        if (next != messages.size() || !missing.empty())
+            any_loss = true;
+        printf(
+            "  [INFO] %2d x %zu B queued (%zu bytes) -> %zu arrived%s%s%s\n", count, kPacketSize,
+            kPacketSize * static_cast<std::size_t>(count), messages.size(),
+            missing.empty() ? "" : ", missing indices", missing.c_str(),
+            truncated ? "  [SHORT MESSAGE]" : "");
+        fflush(stdout);
+    }
+    report(!any_loss, "every queued command reaches the bus");
+
+    a.set_baudrate(g_baudrate);
+    b.set_baudrate(g_baudrate);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    settle();
+}
+
 void test_channel_isolation(Node& a, Node& b) {
     printf("\n== Channel isolation ==\n");
     char scratch[128];
@@ -768,27 +989,60 @@ int main(int argc, char** argv) {
     // producing traffic that nobody sent" on its own.
     const bool quiet_only = mode == "quiet";
     const bool latency_only = mode == "latency";
+    // Everything that probes a boundary rather than normal operation: the
+    // per-port config actually taking effect, the TX ring ceiling, and a queued
+    // command burst.
+    const bool limits_only = mode == "limits";
+    // Request/response only, for a long soak: the shape real master traffic has,
+    // repeated RMCS_RS485_ROUNDS times.
+    const bool ping_pong_only = mode == "pingpong";
 
     const auto boards = enumerate_boards();
     printf("mc02 boards found: %zu\n", boards.size());
     for (const auto& [serial, product] : boards)
         printf("  %s  %s\n", serial.c_str(), product.c_str());
-    if (boards.size() < 2) {
+    if (boards.empty()) {
+        printf("\nNo mc02 found.\n");
+        return 1;
+    }
+
+    // Two rigs, same tests. "cross" is two boards wired A-A / B-B on the same
+    // port; "single" is one board with its two RS-485 ports wired to each other,
+    // which is the only way to exercise USART3 when just one board is on the
+    // bench. RMCS_RS485_RIG forces one; the default follows the board count.
+    bool single_board = boards.size() < 2;
+    if (const char* value = std::getenv("RMCS_RS485_RIG"))
+        single_board = std::string{value} == "single";
+    if (!single_board && boards.size() < 2) {
         printf(
-            "\nNeed two mc02 boards wired A-A / B-B on the RS-485 port under test "
-            "(RMCS_RS485_PORT=1 -> USART2/U5, 2 -> USART3/P5).\n");
+            "\nRMCS_RS485_RIG=cross needs two mc02 boards wired A-A / B-B on the RS-485 port "
+            "under test (RMCS_RS485_PORT=1 -> USART2/U5, 2 -> USART3/P5).\n");
         return 1;
     }
 
     printf("\nOpening boards...\n");
-    Node a{"A", boards[0].first};
-    Node b{"B", boards[1].first};
+    std::vector<std::unique_ptr<BoardHost>> hosts;
+    hosts.push_back(std::make_unique<BoardHost>(boards[0].first));
+    if (!single_board)
+        hosts.push_back(std::make_unique<BoardHost>(boards[1].first));
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    printf(
-        "Driving RS-485 port %d (%s). Setting both ends to %u baud "
-        "(both USARTs power up at 4800000).\n",
-        g_port, g_port == 1 ? "USART2, transceiver U5" : "USART3, connector P5", g_baudrate);
+    // In the single-board rig the two endpoints are the board's own two ports,
+    // so g_port stops meaning "the port under test" -- both are under test.
+    Node a{"A", *hosts[0], single_board ? 1 : g_port};
+    Node b{"B", single_board ? *hosts[0] : *hosts[1], single_board ? 2 : g_port};
+
+    if (single_board)
+        printf(
+            "One board, USART2 (transceiver U5, kUart0) wired to USART3 (connector P5, kUart4). "
+            "A = port 1, B = port 2. Setting both to %u baud "
+            "(both USARTs power up at 4800000).\n",
+            g_baudrate);
+    else
+        printf(
+            "Driving RS-485 port %d (%s). Setting both ends to %u baud "
+            "(both USARTs power up at 4800000).\n",
+            g_port, g_port == 1 ? "USART2, transceiver U5" : "USART3, connector P5", g_baudrate);
     a.set_baudrate(g_baudrate);
     b.set_baudrate(g_baudrate);
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
@@ -819,7 +1073,7 @@ int main(int argc, char** argv) {
     report(link, "A -> B carries a short message", detail);
     if (!link) {
         printf("\nNothing crossed the bus. Check, in order:\n"
-               "  1. Both boards flashed with -DLIBRMCS_APP_RS485_ENABLE=ON.\n"
+               "  1. Every board flashed with -DLIBRMCS_APP_RS485_ENABLE=ON.\n"
                "     A firmware without it drops the session on the first kUart4 frame,\n"
                "     which shows up as an immediate USB error rather than as silence.\n"
                "  2. A-A and B-B, not A-B (a crossed pair is silent, not corrupt).\n"
@@ -831,12 +1085,21 @@ int main(int argc, char** argv) {
 
     if (sweep_only) {
         test_baudrates(a, b);
+    } else if (ping_pong_only) {
+        test_ping_pong(a, b);
+    } else if (limits_only) {
+        test_baudrate_mismatch(a, b);
+        test_oversize(a, b);
+        test_burst(a, b);
     } else {
         test_sizes(a, b);
         test_baudrates(a, b);
+        test_baudrate_mismatch(a, b);
         test_turnaround(a, b);
         test_ping_pong(a, b);
         test_collision_recovery(a, b);
+        test_oversize(a, b);
+        test_burst(a, b);
         test_latency_vs_size(a, b);
         test_quiet_bus(a, b);
         test_channel_isolation(a, b);

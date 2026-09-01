@@ -335,9 +335,7 @@ public:
     // the bus is free again depends only on the peer having stopped talking, not
     // on whether the host has picked the bytes up yet.
     void try_transmit() {
-#if !(defined(LIBRMCS_APP_UART_RX_IN_ISR) && LIBRMCS_APP_UART_RX_IN_ISR)
         RxBuffer::try_dequeue();
-#endif
         TxBuffer::try_dequeue(RxBuffer::idle_count());
     }
 
@@ -355,30 +353,17 @@ public:
 
     void tx_dma_error_callback() { TxBuffer::tx_error_callback(); }
 
-    // Draining here instead of from the main loop is what removes this port's
-    // per-pass NDTR read -- a D2 peripheral access competing with USB, which
-    // measured 2.09% of USB packet rate for the two RS-485 ports together.
-    //
-    // Only correct for a port whose traffic is idle-delimited, which this one is
-    // by construction: a bus master sends a request, stays quiet, and receives
-    // one answer, so every message ends in an IDLE and nothing is ever left
-    // waiting for a byte-count threshold. A STREAMING port must NOT do this --
-    // its only other trigger would be the DMA half/full-transfer interrupts,
-    // which land every 1024 bytes against kMinFragmentSize's 32, i.e. 11 ms
-    // rather than 347 us at 921600 baud. rmcs_board gets both properties at once
-    // because HPM's DMA chains 32 linked descriptors; STM32H7's cannot.
-    //
-    // The loop drains rather than publishing once: a message longer than
-    // kProtocolMaxPayloadSize is cut into chunks and try_dequeue() puts the idle
-    // flag on the LAST of them, so a single call would strand the tail. It ends
-    // on the same condition the main-loop caller relied on -- no idle pending and
-    // fewer than kMinFragmentSize bytes left.
-    void rx_event_callback() {
-        RxBuffer::uart_idle_event_callback();
-#if defined(LIBRMCS_APP_UART_RX_IN_ISR) && LIBRMCS_APP_UART_RX_IN_ISR
-        while (RxBuffer::try_dequeue()) { }
-#endif
-    }
+    // Deliberately does NOT drain the ring here. Draining from this ISR instead
+    // of from the main loop was built behind LIBRMCS_APP_UART_RX_IN_ISR and
+    // measured on two cross-wired boards; the switch is gone because it lost.
+    // See firmware/mc02/AGENTS.md for the numbers. In short: it does remove this
+    // port's per-pass NDTR read (main loop 5410 -> 5133 cycles per pass, 101 ->
+    // 107 kHz), but that time is surplus -- the loop already runs four passes per
+    // arriving USB packet -- and it costs 26% of the round trip on a 200-byte
+    // message, because publishing only on IDLE gives up the chunked streaming
+    // RxBuffer::try_dequeue() does at every kMinFragmentSize boundary while the
+    // bytes are still arriving.
+    void rx_event_callback() { RxBuffer::uart_idle_event_callback(); }
 
 private:
     static void hal_rx_dma_error_callback(DMA_HandleTypeDef* hal_dma_handle);
@@ -436,10 +421,21 @@ private:
 //     sweep passed both directions at every step through 4800000, with payloads
 //     from 1 to 200 bytes and 200 ping-pong rounds at 0 lost / 0 corrupt.
 //
-// Still unverified: the same two questions for the USART3 port below. Its
-// circuit is the same and it powers up at the same 4800000, but P5 was not wired
-// on the rig that produced the numbers above -- run the same test with
-// RMCS_RS485_PORT=2 before assuming it inherits them.
+// The USART3 port below now answers the same two questions the same way, on a
+// one-board rig with USART2 wired to USART3 (RMCS_RS485_RIG=single). Full suite
+// ALL PASSED: sizes 1-200 B both directions, the sweep through 4800000, the
+// turnaround gate, 5000 ping-pong rounds at 4800000 with 0 lost / 0 corrupt,
+// collision recovery, a silent bus, and channel isolation. A one-sided baudrate
+// change was checked to break the link, so the sweep is not passing on two ends
+// that both ignored it. `[实测 2026-09-01]`
+//
+// What that run did find: a downlink the TX ring cannot hold is dropped with
+// nothing but an LED to say so. 257 B and above never reach the bus (256 B and
+// below are intact), and a burst of 32-byte commands loses everything past the
+// ninth -- 12 queued deliver 9, 24 queued deliver 10, always the tail, never a
+// truncated frame. The ring size is the documented design point above; the
+// silence is not, and mc02 has the same gap on CAN (see the "未做" note in
+// firmware/mc02/AGENTS.md: rmcs_board's downlink flow control was never ported).
 //
 // Uses DataId::kUart0, the one channel slot mc02 leaves free -- which is also
 // what diag/can_diag.cpp and diag/loop_profile.cpp emit on, hence the guard in
