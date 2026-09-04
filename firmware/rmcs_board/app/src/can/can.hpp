@@ -90,8 +90,42 @@ public:
         config.baudrate = kArbitrationBaudrate;
         config.mode = mcan_mode_normal;
         config.enable_canfd = canfd_;
-        if (canfd_)
+        if (canfd_) {
             config.baudrate_fd = kCanFdDataBaudrate;
+
+            // Transmitter Delay Compensation, mandatory at this data-phase rate
+            // and previously never enabled here -- mcan_get_default_config()
+            // memsets the struct, so the field stayed false and mcan_init()
+            // cleared DBTP.TDC outright.
+            //
+            // A 5 Mbit data bit is 200 ns and the primary sample point sits at
+            // 87.5% = 175 ns. A high-speed CAN transceiver's TXD->RXD loop delay
+            // is typically 120-255 ns, so without compensation a transmitting
+            // node can read back the PREVIOUS bit while checking its own output
+            // and raise a bit error. TDC moves that read-back to a secondary
+            // sample point placed at (measured loop delay + TDCO), which follows
+            // the transceiver instead of assuming it is fast enough.
+            //
+            // This is the other half of the sample-point fix below. That one
+            // made both ends of the bus agree on WHERE to sample; this one makes
+            // the transmitter's self-check survive its own transceiver. The
+            // symptom family is the same (PSR.DLEC = bit error, TEC climbing
+            // into error-passive, one direction failing while classic CAN
+            // works), which is why the surviving half was easy to miss.
+            //
+            // mc02 has done this since its FDCAN bring-up (mc02/app/src/can/
+            // can.hpp: HAL_FDCAN_EnableTxDelayCompensation with offset =
+            // DataPrescaler * DataTimeSeg1). Both boards run the same 5 Mbit
+            // data phase off the same 80 MHz kernel clock, so leaving this board
+            // uncompensated made the pair asymmetric.
+            //
+            // ssp_offset stays 0, which asks the SDK to derive TDCO from the
+            // bit timing it just solved: DBTP.DTSEG1 + 2 in mtq. That equals the
+            // primary sample point only while the data-phase prescaler is 1 --
+            // TDCO counts CAN clock periods, not time quanta -- which the assert
+            // after mcan_init() pins down.
+            config.enable_tdc = true;
+        }
 
         // Sample point pinned to 87.5% in BOTH phases, because that is what the
         // other boards on this bus actually run.
@@ -190,6 +224,17 @@ public:
         ptpc_set_timer_output(HPM_PTPC, mcan_get_instance_from_base(can_base_), false);
 
         mcan_init(can_base_, &config, can_source_clock_freq);
+
+        // The auto TDCO above is expressed in DTSEG1 units but programmed in
+        // mtq, so it only lands on the sample point while the data-phase
+        // prescaler is 1. That is what the SDK solver picks at 80 MHz / 5 Mbit
+        // (brp=1 tseg1=13 tseg2=2, which -DLIBRMCS_CAN_DIAG=ON prints), but the
+        // solver is free to choose otherwise if either number ever moves --
+        // and a silently mis-placed secondary sample point looks exactly like
+        // no compensation at all. Trap it here instead.
+        if (canfd_)
+            core::utility::assert_always(MCAN_DBTP_DBRP_GET(can_base_->DBTP) == 0U);
+
         mcan_enable_interrupts(can_base_, kEnabledInterrupts);
         // CAN RX is the forwarding-critical path (motor feedback -> host).
         // Priority 3: above USB (2) and UART (1) -- ensures CAN frames are

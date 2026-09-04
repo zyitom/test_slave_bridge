@@ -14,7 +14,9 @@
 #include "firmware/mc02/app/src/diag/can_diag.hpp"
 #include "firmware/mc02/app/src/diag/loop_profile.hpp"
 #include "firmware/mc02/app/src/gpio/gpio.hpp"
+#include "firmware/mc02/app/src/key/key.hpp"
 #include "firmware/mc02/app/src/led/led.hpp"
+#include "firmware/mc02/app/src/power/power.hpp"
 #include "firmware/mc02/app/src/spi/bmi088/accel.hpp"
 #include "firmware/mc02/app/src/spi/bmi088/gyro.hpp"
 #include "firmware/mc02/app/src/spi/bmi088/service.hpp"
@@ -227,6 +229,17 @@ App::App() {
     spi::bmi088::gyroscope.init();
     spi::bmi088::temperature.init();
 #endif
+
+    // Two drivers are compiled but deliberately not started. Both are included
+    // so their code is type-checked and their pin macros verified against the
+    // current .ioc; neither changes what the board does at power-on.
+    //
+    //   power.hpp  The three switched rails stay exactly as MX_GPIO_Init() set
+    //              them (24 V off, 5 V on). What hangs off the terminals is a
+    //              wiring decision, so the power-on state belongs in the .ioc.
+    //   key.hpp    PA15 is read, but what a long press should do is a product
+    //              decision, not a driver one. start(key::mc02_config()) plus a
+    //              poll() in run() is all it takes once that is decided.
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)

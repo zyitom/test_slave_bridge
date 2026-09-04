@@ -25,6 +25,14 @@ set(MX_Include_Dirs
 set(MX_Application_Src
     ${MX_CUBEMX}/Core/Src/main.c
     ${MX_CUBEMX}/Core/Src/gpio.c
+    # Battery-voltage ADC on PC4 (ADC1_INP4). Listed here rather than picked up
+    # automatically because this file is hand-maintained: CubeMX writes its own
+    # source list to bsp/cubemx/cmake/stm32cubemx/CMakeLists.txt, which nothing
+    # in the build references. Enabling a new peripheral in the .ioc therefore
+    # always needs a matching line here -- and leaving it out is not a silent
+    # omission, it is a link error, because the generated stm32h7xx_it.c gains an
+    # IRQ handler referencing the new file's DMA handle (hdma_adc1).
+    ${MX_CUBEMX}/Core/Src/adc.c
     ${MX_CUBEMX}/Core/Src/fdcan.c
     ${MX_CUBEMX}/Core/Src/dma.c
     ${MX_CUBEMX}/Core/Src/bdma.c
@@ -41,6 +49,8 @@ set(MX_Application_Src
 
 set(STM32_Drivers_Src
     ${MX_CUBEMX}/Core/Src/system_stm32h7xx.c
+    ${MX_HAL_DRV}/Src/stm32h7xx_hal_adc.c
+    ${MX_HAL_DRV}/Src/stm32h7xx_hal_adc_ex.c
     ${MX_HAL_DRV}/Src/stm32h7xx_hal_fdcan.c
     ${MX_HAL_DRV}/Src/stm32h7xx_hal_rcc.c
     ${MX_HAL_DRV}/Src/stm32h7xx_hal_rcc_ex.c

@@ -152,6 +152,14 @@ if(NOT LIBRMCS_APP_LOOP_BALLAST_CYCLES STREQUAL "0")
         mc02_app PRIVATE LIBRMCS_APP_LOOP_BALLAST_CYCLES=${LIBRMCS_APP_LOOP_BALLAST_CYCLES})
 endif()
 
+# Bring-up aid, never shipped: exposes writable tone/loudness knobs and
+# read-only battery mirrors for a debugger's watch window. Costs one tick read
+# per main-loop pass when on, nothing when off. See src/diag/knobs.hpp.
+option(LIBRMCS_APP_DEBUG_KNOBS "Expose debugger-writable tuning knobs" OFF)
+if(LIBRMCS_APP_DEBUG_KNOBS)
+    target_compile_definitions(mc02_app PRIVATE LIBRMCS_APP_DEBUG_KNOBS=1)
+endif()
+
 option(LIBRMCS_APP_CAN_DIAG "Emit CAN telemetry on the kUart0 uplink" OFF)
 if(LIBRMCS_APP_CAN_DIAG)
     target_compile_definitions(mc02_app PRIVATE LIBRMCS_APP_CAN_DIAG=1)

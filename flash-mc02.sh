@@ -12,6 +12,7 @@
 # Usage:
 #   ./flash-mc02.sh                 # builds the release preset, then flashes
 #   PRESET=debug ./flash-mc02.sh    # build/flash a debuggable (-O0) image instead
+#   SKIP_BOOTLOADER=1 ./flash-mc02.sh   # app only, do not touch the bootloader target
 #
 set -euo pipefail
 
@@ -31,6 +32,24 @@ PRESET="${PRESET:-release}"
 echo ">> Building mc02_app (preset: $PRESET)"
 cmake --preset "$PRESET" -S "$SCRIPT_DIR/firmware/mc02"
 cmake --build "$SCRIPT_DIR/firmware/mc02/build" --target mc02_app
+
+# The bootloader is not flashed here -- it goes over SWD and normally never
+# changes. It is still built, for two reasons: the two images share the flash
+# layout and the metadata-record format (bootloader/src/flash/validation.hpp),
+# so building only the app hides breakage in that shared code until the next
+# cold boot rejects the image; and ozone/mc02.jdebug opens
+# build/bootloader/mc02_bootloader.elf, which does not exist until something
+# builds it.
+#
+# Deliberately after the app and deliberately non-fatal: this script's job is to
+# get an app onto the board, and a bootloader that fails to compile must not
+# stand between you and that. Ninja no-ops when nothing changed, so the usual
+# cost is zero.
+if [[ -z "${SKIP_BOOTLOADER:-}" ]]; then
+    echo ">> Building mc02_bootloader (not flashed; SWD only)"
+    cmake --build "$SCRIPT_DIR/firmware/mc02/build" --target mc02_bootloader ||
+        echo "warning: mc02_bootloader failed to build; flashing the app anyway." >&2
+fi
 
 if [[ ! -f "$DFU_IMAGE" ]]; then
     echo "error: $DFU_IMAGE not found after the build." >&2
