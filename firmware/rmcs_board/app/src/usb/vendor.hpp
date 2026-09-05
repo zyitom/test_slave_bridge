@@ -12,6 +12,7 @@
 #include <class/vendor/vendor_device.h>
 #include <common/tusb_types.h>
 #include <device/usbd.h>
+#include <device/usbd_pvt.h>
 #include <tusb.h>
 
 #include "board_app.hpp"
@@ -93,11 +94,11 @@ public:
     // revert, which is how its cost on the packet rate gets measured at all.
     void poll_downlink_arm() {
 #if CFG_TUD_VENDOR_RX_MANUAL_XFER
-        // Only when this pipe is the one carrying CAN. With the split on it
-        // carries UART, config and session control -- none of which feed the CAN
-        // transmit queue, so throttling here would stall traffic it does not
-        // protect, including the session keepalive.
-        if (!LIBRMCS_SPLIT_CAN_ENDPOINT && downlink_throttled()) {
+        // Reads the answer cached by the main-loop hook rather than walking the
+        // CAN queues here: this runs in the receive completion callback, and
+        // anything added to that path costs 1.2-1.4x its own time in packet
+        // rate. Evaluating the policy per packet measured 2.3% for nothing.
+        if (throttle_active_) {
             arm_pending_ = true;
             return;
         }
@@ -116,98 +117,80 @@ public:
     // time on every packet. What still has to reach the main loop is the initial
     // arm before any packet has arrived, and the release once a throttled queue
     // drains -- neither of which has a completion callback to ride on.
+    // Main-loop hook. Re-evaluates the throttle off the hot path and caches the
+    // answer for the receive callback above, then settles any arm still owed.
+    //
+    // Steady state is two bool loads and a return. The policy is re-evaluated
+    // only when it is already engaged (so it can release), when an arm is owed,
+    // or on a coarse tick -- every 16 passes is about 21 us, against a queue
+    // that needs milliseconds to drain and watermarks with 16 slots of
+    // headroom, so nothing can cross unnoticed. Evaluating it on every pass
+    // would be ~770k queue walks a second for no benefit.
     void poll_downlink_arm_if_pending() {
 #if CFG_TUD_VENDOR_RX_MANUAL_XFER
+        if (arm_pending_ || throttle_active_ || (++throttle_tick_ & 0xFU) == 0U)
+            throttle_active_ = downlink_throttled();
+        audit_downlink_arm();
         if (arm_pending_)
             poll_downlink_arm();
 #endif
     }
 
-#if LIBRMCS_SPLIT_CAN_ENDPOINT
-    // Uplink serializer for CAN. Its own batch pool and its own endpoint, so a
-    // UART batch can never occupy the pipe a CAN record is waiting for.
-    core::protocol::Serializer& can_serializer() { return can_serializer_; }
-
-    void handle_can_downlink(std::span<const std::byte> buffer, bool finished) {
-        can_deserializer_.feed(buffer);
-        if (finished)
-            can_deserializer_.finish_transfer();
-    }
-
-    // Backpressure lives on whichever pipe carries CAN, which is this one once
-    // the split is on. Leaving it unthrottled here was measured to undo the
-    // feature completely: stress at 25000 f/s went from 0.0000% loss back to
-    // 20.5%, because the frames simply arrived on a pipe that never said no.
-    // The bulk pipe's throttle is correspondingly disabled below -- with CAN
-    // gone from it there is no queue there left to protect.
-    void poll_can_downlink_arm() {
-        if (throttle_active_) {
-            can_arm_pending_ = true;
-            return;
-        }
-        can_arm_pending_ = !tud_vendor_n_read_xfer(1);
-    }
-
-    // Re-evaluates the policy off the hot path and caches the answer for the
-    // receive callback above, which then costs one bool load. The policy works on
-    // millisecond scales (a 20 ms escape, watermarks a burst needs milliseconds
-    // to cross), so the staleness this introduces cannot change its decisions.
+    // The debt above is the ONLY thing that ever re-arms the endpoint, and it is
+    // set by callbacks -- mount, suspend, session teardown. Anything that
+    // cancels the armed transfer WITHOUT one of those leaves the board deaf
+    // forever: arm_pending_ is false, so the hook does nothing, while the
+    // hardware holds no transfer. That is not hypothetical, it is how TinyUSB's
+    // own vendord_set_itf() behaves -- it stalls and clears both bulk endpoints
+    // to abort them, and the automatic re-arm right after is inside
+    // `#if CFG_TUD_VENDOR_RX_MANUAL_XFER == 0`, which this build compiles out.
     //
-    // Chosen on structure, NOT on a measurement: the idle control's p99 is
-    // bimodal at roughly 105 or 117 us across repeats of one identical firmware,
-    // which swamps any difference between this and evaluating per packet. Do not
-    // read a latency win into this shape -- there is no evidence of one.
-    void poll_can_downlink_arm_if_pending() {
-        // Steady state is two bool loads and a return. The policy is re-evaluated
-        // only when it is already engaged (so it can release), when an arm is
-        // owed, or on a coarse tick -- every 16 passes is about 21 us, against a
-        // queue that needs milliseconds to drain and watermarks with 16 slots of
-        // headroom, so nothing can cross unnoticed. Evaluating it on every pass
-        // would be ~770k queue walks a second for no benefit.
-        if (can_arm_pending_ || throttle_active_ || (++throttle_tick_ & 0xFU) == 0U)
-            throttle_active_ = downlink_throttled();
-        if (can_arm_pending_)
-            poll_can_downlink_arm();
-    }
-
-    // Same shape as try_transmit() below, on endpoint index 1 and the CAN batch
-    // pool. Kept as a separate function rather than a parameterized one so the
-    // single-pipe build compiles to byte-identical code.
-    bool try_transmit_can() {
-        if (!session_established())
-            return false;
-
-        if (!can_transmitting_batch_)
-            can_transmitting_batch_ = can_transmit_buffer_.pop_batch();
-        if (!can_transmitting_batch_)
-            return false;
-
-        if (!tud_vendor_n_write_available(1))
-            return false;
-
-        const auto data = can_transmitting_batch_->data();
-        const std::size_t max_packet_size = max_packet_size_;
-        const auto target_size = std::min(data.size() - can_transmitted_size_, max_packet_size);
-
-        if (target_size) {
-            const auto* src = reinterpret_cast<const uint8_t*>(data.data() + can_transmitted_size_);
-            core::utility::assert_debug(
-                tud_vendor_n_write(1, src, target_size) == target_size);
-        } else {
-            static constexpr uint8_t kZlpByte = 0;
-            (void)tud_vendor_n_write(1, &kZlpByte, 0);
-        }
-
-        can_transmitted_size_ += target_size;
-        if (can_transmitted_size_ == data.size() && target_size < max_packet_size) {
-            link::InterruptSafeBuffer::release_batch(can_transmitting_batch_);
-            can_transmitting_batch_ = nullptr;
-            can_transmitted_size_ = 0;
-        }
-
-        return true;
-    }
+    // So stop trusting the debt and look at the endpoint. Every 256 passes is
+    // about 340 us; the failure it catches is permanent, so the sampling rate
+    // only has to be fast enough that a human never sees it. Steady state is one
+    // increment and a mask, because arm_pending_ is false and short-circuits
+    // ahead of the endpoint query.
+    void audit_downlink_arm() {
+#if CFG_TUD_VENDOR_RX_MANUAL_XFER
+        if (arm_pending_ || throttle_active_)
+            return;
+        if ((++arm_audit_tick_ & 0xFFU) != 0U)
+            return;
+        if (!usbd_edpt_busy(0, UsbDescriptors::kEpnumCdc0DataOut))
+            arm_pending_ = true;
 #endif
+    }
+
+    // Re-owe the initial arm after the endpoints are torn down. Manual transfer
+    // mode leaves the very first arm to the application, and in steady state no
+    // arm is owed -- the rx completion callback has already re-armed, so
+    // arm_pending_ is false. A bus reset then destroys the transfer the hardware
+    // was holding, and nothing above would ever set the debt again: the hook is
+    // gated on a debt that no longer exists, so the board transmits fine and
+    // never receives another byte until the MCU restarts.
+    //
+    // Measured 2026-09-03: after the host rebooted with the boards still powered
+    // on VBUS, both bulk OUT endpoints NAKed every byte while EP0 control
+    // transfers stayed healthy, and every session died on SESSION_ACK.
+    //
+    // Setting the debt is safe from any context: poll_downlink_arm() keeps it
+    // outstanding while tud_vendor_n_read_xfer() refuses, so the main loop
+    // retries until the endpoint is open again.
+    // Flipped by the EP0 configuration handler once this host has read the
+    // board's interface descriptor (usb/vendor_control.cpp). Cleared on every
+    // teardown so a new host must perform the handshake for itself rather than
+    // inheriting the previous one's.
+    void set_ep0_handshake_done(bool done) { ep0_handshake_done_ = done; }
+
+    bool session_allowed() const override { return ep0_handshake_done_; }
+
+    void session_deactivated_callback() override { ep0_handshake_done_ = false; }
+
+    void reset_downlink_arm() {
+#if CFG_TUD_VENDOR_RX_MANUAL_XFER
+        arm_pending_ = true;
+#endif
+    }
 
     bool try_transmit() {
         const auto* batch = next_batch();
@@ -257,18 +240,9 @@ protected:
         max_packet_size_ = (tud_speed_get() == TUSB_SPEED_HIGH) ? 512U : 64U;
 
         transmitted_size_ = 0;
-#if LIBRMCS_SPLIT_CAN_ENDPOINT
         // The CAN pipe's pool is separate, so HostSession's own reset does not
         // reach it: a stale batch here would be transmitted into the new session
         // and decoded against the wrong stream.
-        if (can_transmitting_batch_) {
-            link::InterruptSafeBuffer::release_batch(can_transmitting_batch_);
-            can_transmitting_batch_ = nullptr;
-        }
-        can_transmit_buffer_.clear();
-        can_transmitted_size_ = 0;
-        can_deserializer_.finish_transfer();
-#endif
     }
 
 private:
@@ -332,21 +306,21 @@ private:
     // overrun the endpoint.
     std::size_t max_packet_size_ = 64;
 
-#if LIBRMCS_SPLIT_CAN_ENDPOINT
-    link::InterruptSafeBuffer can_transmit_buffer_;
-    core::protocol::Serializer can_serializer_{can_transmit_buffer_};
-    core::protocol::Deserializer can_deserializer_{deserialize_callback()};
-    const link::InterruptSafeBuffer::Batch* can_transmitting_batch_ = nullptr;
-    size_t can_transmitted_size_ = 0;
-    bool can_arm_pending_ = true;
-#endif
-
     // Starts true: the endpoint has to be armed once before any packet can
     // arrive, and only the main-loop hook can do it.
     bool arm_pending_ = true;
+
+    // See set_ep0_handshake_done().
+    bool ep0_handshake_done_ = false;
+
     // Cached answer of downlink_throttled(), refreshed once per main-loop pass.
     bool throttle_active_ = false;
     uint32_t throttle_tick_ = 0;
+
+    // Separate from throttle_tick_ on purpose: that one only advances on passes
+    // where nothing else already triggered a re-evaluation, so it is not a clock.
+    // See audit_downlink_arm().
+    uint32_t arm_audit_tick_ = 0;
     bool throttling_ = false;
     bool throttle_abandoned_ = false;
     uint64_t throttle_started_ = 0;

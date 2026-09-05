@@ -5,8 +5,8 @@
 // busy-waiting sender, one frame in flight) so the RTT is directly comparable
 // to that tool's `ecat`/`usb` numbers.
 //
-// Wire CAN0 and CAN1 as one terminated bus. The host stages a frame into bus-0's
-// downlink mailbox; the board transmits it on CAN0; CAN1 receives it and the
+// Wire CAN1 and CAN2 as one terminated bus. The host stages a frame into bus-0's
+// downlink mailbox; the board transmits it on CAN1; CAN2 receives it and the
 // board latches it into bus-1's uplink mailbox; the host reads it back.
 //
 // Build (raw ecrt, like the sibling reference tools -- not part of the CMake
@@ -53,7 +53,7 @@ constexpr auto kResponseTimeout = std::chrono::microseconds{500};
 constexpr auto kEchoTimeout = std::chrono::milliseconds{20};
 constexpr auto kOperationalTimeout = std::chrono::seconds{10};
 
-// Downlink is bus 0 (CAN0 TX), the echo returns on bus 1 (CAN1 RX).
+// Downlink is bus 0 (CAN1 TX), the echo returns on bus 1 (CAN2 RX).
 constexpr uint8_t kTxBus = 0;
 constexpr uint8_t kRxBus = 1;
 
@@ -296,7 +296,7 @@ int main(int argc, char** argv) {
     cycle_thread.join();
 
     if (rtts_us.empty()) {
-        fprintf(stderr, "no valid loopback frames (check CAN0<->CAN1 wiring + native firmware)\n");
+        fprintf(stderr, "no valid loopback frames (check CAN1<->CAN2 wiring + native firmware)\n");
         ecrt_master_deactivate(master);
         ecrt_release_master(master);
         return 2;

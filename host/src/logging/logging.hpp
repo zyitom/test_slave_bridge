@@ -160,4 +160,18 @@ private:
 
 inline Logger& get_logger() { return Logger::get_instance(); }
 
+/**
+ * @brief Whether the `count`-th occurrence of a repeating condition should be logged.
+ *
+ * True for the 1st, 2nd, 4th, 8th ... occurrence, so a fault that repeats per
+ * packet still says so immediately, keeps saying so while it is rare, and then
+ * falls silent instead of burying the log. Measured need: a disconnected board
+ * made a flood loop emit 473 MB of identical error lines in twenty seconds.
+ *
+ * @param count 1-based occurrence number, i.e. the value AFTER incrementing.
+ */
+constexpr bool should_log_occurrence(std::uint64_t count) noexcept {
+    return count != 0 && (count & (count - 1U)) == 0U;
+}
+
 } // namespace librmcs::host::logging

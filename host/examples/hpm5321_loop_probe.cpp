@@ -1,7 +1,7 @@
 // Main-loop period probe for a single HPM5321 DualCan board.
 //
 // can_stall_probe is the richer tool but it cannot run on this rig: it targets
-// the HPM6E8Y (PID 0xA904), drives CAN0->CAN1 and CAN2->CAN3 as two SINGLE-BOARD
+// the HPM6E8Y (PID 0xA904), drives CAN1->CAN2 and CAN3->CAN4 as two SINGLE-BOARD
 // loopbacks, and therefore assumes four buses. The HPM5321 has two, and the
 // two-board rig wires them across to a second board rather than back to itself.
 //
@@ -46,6 +46,11 @@
 #include <librmcs/board/rmcs_board_hpm5321_dual_can.hpp>
 
 #include "can_diag_record.hpp"
+
+
+// CAN ports are named as the ENCLOSURE labels them (1-based), not as the
+// 0-based DataId underneath. See librmcs/board/rmcs_can_port.hpp.
+using librmcs::board::rmcs::CanPort;
 
 namespace {
 
@@ -161,13 +166,13 @@ int main(int argc, char** argv) {
                     // sharing one packet across two boards.
                     {
                         auto builder = board_a.start_transmit();
-                        builder.can0_transmit(
+                        builder.can_transmit(CanPort::kCan1, 
                             {.can_id = kCanIdA, .can_data = payload, .is_fdcan = true});
                     }
                     packets.fetch_add(1, std::memory_order_relaxed);
                     if (board_b) {
                         auto builder = board_b->start_transmit();
-                        builder.can1_transmit(
+                        builder.can_transmit(CanPort::kCan2, 
                             {.can_id = kCanIdB, .can_data = payload, .is_fdcan = true});
                         packets.fetch_add(1, std::memory_order_relaxed);
                     }

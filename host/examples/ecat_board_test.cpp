@@ -1,6 +1,6 @@
 // P2 validation tool for the rmcs_board EtherCAT stream bridge: exercises the
 // FULL librmcs protocol stack over EtherCAT (session handshake + keepalive,
-// CAN0 = physical CAN0 / MCAN0 on PC00/PC01, UART0 = UART1 on PY06/PY07) through the public
+// CAN1 = physical CAN1 / MCAN0 on PC00/PC01, UART0 = UART1 on PY06/PY07) through the public
 // RmcsBoardEcatBridge board class -- the same API shape as every USB board.
 //
 // Pair it with the protocol firmware image (the default ecat superbuild, NOT
@@ -24,6 +24,11 @@
 
 #include <librmcs/board/rmcs_board_ecat_bridge.hpp>
 
+
+// CAN ports are named as the ENCLOSURE labels them (1-based), not as the
+// 0-based DataId underneath. See librmcs/board/rmcs_can_port.hpp.
+using librmcs::board::rmcs::CanPort;
+
 namespace {
 
 constexpr auto kSendPeriod = std::chrono::milliseconds{100};
@@ -44,18 +49,25 @@ private:
     // speed under CAN load. Print the first few for eyeballing, then count.
     static constexpr uint64_t kPrintLimit = 20;
 
-    void can0_receive_callback(const librmcs::data::CanDataView& data) override {
-        const uint64_t n = can_frames.fetch_add(1, std::memory_order_relaxed);
-        if (n >= kPrintLimit) {
-            if (n == kPrintLimit)
-                printf("[CAN0 RX] ... (further frames counted silently)\n");
-            return;
+    void can_receive(
+        CanPort port, const librmcs::data::CanDataView& data) override {
+        switch (port) {
+        case CanPort::kCan1: {
+            const uint64_t n = can_frames.fetch_add(1, std::memory_order_relaxed);
+            if (n >= kPrintLimit) {
+                if (n == kPrintLimit)
+                    printf("[CAN1 RX] ... (further frames counted silently)\n");
+                return;
+            }
+            printf(
+                "[CAN1 RX] id=0x%X%s dlc=%zu data=", data.can_id, data.is_extended_can_id ? " ext" : "",
+                data.can_data.size());
+            print_bytes(data.can_data);
+            printf("\n");
+            break;
         }
-        printf(
-            "[CAN0 RX] id=0x%X%s dlc=%zu data=", data.can_id, data.is_extended_can_id ? " ext" : "",
-            data.can_data.size());
-        print_bytes(data.can_data);
-        printf("\n");
+        default: break;
+        }
     }
 
     void uart0_receive_callback(const librmcs::data::UartDataView& data) override {
@@ -94,7 +106,7 @@ int main(int argc, char** argv) {
         librmcs::board::RmcsBoardEcatBridge board{argv[1], receiver};
         printf("EtherCAT bridge connected on %s, session established.\n", argv[1]);
         printf(
-            "Sending CAN0 + UART0 every %lld ms for %d s...\n",
+            "Sending CAN1 + UART0 every %lld ms for %d s...\n",
             static_cast<long long>(kSendPeriod.count()), duration_s);
 
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{duration_s};
@@ -105,7 +117,7 @@ int main(int argc, char** argv) {
             const std::string text = "ecat " + std::to_string(counter) + "\n";
 
             board.start_transmit()
-                .can0_transmit({.can_id = 0x123, .can_data = can_payload})
+                .can_transmit(CanPort::kCan1, {.can_id = 0x123, .can_data = can_payload})
                 .uart0_transmit(
                     {.uart_data = std::as_bytes(std::span{text.data(), text.size()}),
                      .idle_delimited = true});

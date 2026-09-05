@@ -201,3 +201,15 @@ target_link_libraries(imu_uart_latency PRIVATE librmcs-sdk)
 # arriving, which is exactly when its timeout never fires).
 add_executable(usb_event_loop_bench usb_event_loop_bench.cpp)
 target_link_libraries(usb_event_loop_bench PRIVATE librmcs-sdk)
+
+# EP0 configuration channel: proves a rejected UART baudrate and a wrong CAN
+# mode expectation are now reported to the host, which the retired in-band
+# config field could not do. One hpm5321 dual-CAN board, no CAN/UART wiring.
+add_executable(ep0_config_test ep0_config_test.cpp)
+target_link_libraries(ep0_config_test PRIVATE librmcs-sdk)
+
+# Per-bus CAN health from the controller's own PSR/ECR registers, decoded from
+# the LIBRMCS_CAN_DIAG telemetry. Tells "transmitted, nobody ACKed" apart from
+# "never reached the wire" when a bus delivers nothing.
+add_executable(can_bus_diag can_bus_diag.cpp)
+target_link_libraries(can_bus_diag PRIVATE librmcs-sdk)

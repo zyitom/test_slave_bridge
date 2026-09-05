@@ -11,7 +11,7 @@
 #include "common/multi_board.hpp"
 
 // DM (Damiao) motor stress test, on whichever board is connected (uses the
-// board's primary CAN0 + UART0, so it runs on every project board).
+// board's primary CAN1 + UART0, so it runs on every project board).
 //
 // The bus carries 9 motors. Per the user's setup:
 //   ids 1,2,3,4,5,6,9 are commanded with the trailing byte 0xCD

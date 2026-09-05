@@ -75,23 +75,17 @@ extern "C" {
 // interrupt endpoint is polled once per bInterval, so at high speed it would
 // quantize the uplink to a 125 us microframe. A second BULK pair keeps the
 // existing continuous-poll behaviour and only stops sharing the queue.
-//
-// Host and firmware MUST agree on this: with it on, CAN travels on endpoints
-// 0x02/0x82 and a host that only claims interface 0 sees no CAN at all. Default
-// off so the two can be switched over together.
-#ifndef LIBRMCS_SPLIT_CAN_ENDPOINT
-# define LIBRMCS_SPLIT_CAN_ENDPOINT 1
-#endif
 
 #define CFG_TUD_CDC 0
 #define CFG_TUD_MSC 0
 #define CFG_TUD_HID 0
 #define CFG_TUD_MIDI 0
-#if LIBRMCS_SPLIT_CAN_ENDPOINT
-# define CFG_TUD_VENDOR 2
-#else
-# define CFG_TUD_VENDOR 1
-#endif
+// Two vendor interfaces: the main bulk pipe, plus a second pair that carries
+// CAN uplink. Whether the second pair is USED is negotiated at run time over
+// EP0 (kSetEndpointMode), so this is no longer a build-time choice -- the pipe
+// costs nothing while the host declines to post URBs on it, and having it
+// always present is what lets one image serve both workloads.
+#define CFG_TUD_VENDOR 1
 #define CFG_TUD_DFU_RUNTIME 1
 #define CFG_TUD_DFU         0
 

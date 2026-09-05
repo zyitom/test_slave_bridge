@@ -25,6 +25,15 @@ namespace librmcs::firmware::usb {
 
 class UsbDescriptors {
 public:
+    // Align endpoint numbering to STM32 HAL style:
+    // EP1 OUT: data OUT, EP1 IN: data IN.
+    //
+    // Public because the endpoint address is not only descriptor content: the
+    // vendor transport audits the OUT endpoint's armed state against it, and a
+    // second copy of the number is exactly the kind of thing that drifts.
+    static constexpr uint8_t kEpnumCdc0DataOut = 0x01;
+    static constexpr uint8_t kEpnumCdc0DataIn = 0x81;
+
     UsbDescriptors() {
         update_serial_string();
         update_product_id();
@@ -176,6 +185,13 @@ private: // Device Descriptor
     // so hosts, udev rules and dfu-util command lines are unaffected by the
     // merge; only which one a given binary reports is now decided at run time.
     static constexpr uint16_t kSingleCanProductId = 0xA901;
+    // Bus-powered, and NO remote wakeup. The bit used to be set here while the
+    // firmware never called tud_remote_wakeup() even once -- a descriptor that
+    // claimed a capability the device does not have. A host may legitimately
+    // suspend a bus and wait to be woken; advertising wakeup without
+    // implementing it is the one way to make that wait never end.
+    static constexpr uint8_t kConfigAttributes = 0;
+
     static constexpr uint16_t kDualCanFdProductId = 0xA902;
 
     static constexpr tusb_desc_device_t kDeviceDescriptor = {
@@ -205,15 +221,8 @@ private: // Device Descriptor
 
 private: // Configuration Descriptor
          // NOLINTNEXTLINE(cppcoreguidelines-use-enum-class)
-    // The CAN interface is inserted BEFORE the DFU runtime one, so enabling the
-    // split renumbers DFU from 1 to 2. dfu-util locates its interface by
-    // descriptor class, not by number, so the flashing workflow is unaffected --
-    // but anything that hardcodes interface 1 as DFU would not be.
     enum InterfaceNumber : uint8_t {
         kItfNumVendor = 0,
-#if LIBRMCS_SPLIT_CAN_ENDPOINT
-        kItfNumVendorCan,
-#endif
         kItfNumDfuRuntime,
         kItfNumTotal,
     };
@@ -222,30 +231,20 @@ private: // Configuration Descriptor
                                             + CFG_TUD_VENDOR * TUD_VENDOR_DESC_LEN
                                             + CFG_TUD_DFU_RUNTIME * TUD_DFU_RT_DESC_LEN;
 
-    // Align endpoint numbering to STM32 HAL style:
-    // EP1 OUT: data OUT, EP1 IN: data IN
-    static constexpr uint8_t kEpnumCdc0DataOut = 0x01;
-    static constexpr uint8_t kEpnumCdc0DataIn = 0x81;
-
-    // Second bulk pair, carrying CAN only when the split is enabled.
-    static constexpr uint8_t kEpnumCanOut = 0x02;
-    static constexpr uint8_t kEpnumCanIn = 0x82;
-
-#if LIBRMCS_SPLIT_CAN_ENDPOINT
-# define LIBRMCS_VENDOR_CAN_DESCRIPTOR(size)                                                       \
-     TUD_VENDOR_DESCRIPTOR(kItfNumVendorCan, 0, kEpnumCanOut, kEpnumCanIn, (size)),
-#else
-# define LIBRMCS_VENDOR_CAN_DESCRIPTOR(size)
-#endif
+    // There is deliberately no second bulk pair. One was added 2026-08-07 to
+    // give CAN a pipe of its own and removed 2026-09-05: an idle IN endpoint is
+    // polled continuously by the host controller whether or not it carries
+    // data, which cost a quarter of the packet rate and one host service
+    // interval on the median of every CAN frame -- more than the head-of-line
+    // blocking it removed. See firmware/rmcs_board/AGENTS.md.
 
     static constexpr uint8_t const kConfigurationDescriptorFs[] = {
         // Config number, interface count, string index, total length, attribute, power in mA
         TUD_CONFIG_DESCRIPTOR(
-            1, kItfNumTotal, 0, kConfigTotalLen, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+            1, kItfNumTotal, 0, kConfigTotalLen, kConfigAttributes, 100),
 
         // Interface number, string index, EP data address (out, in) and size.
         TUD_VENDOR_DESCRIPTOR(kItfNumVendor, 0, kEpnumCdc0DataOut, kEpnumCdc0DataIn, 64),
-        LIBRMCS_VENDOR_CAN_DESCRIPTOR(64)
         TUD_DFU_RT_DESCRIPTOR(
             kItfNumDfuRuntime, 4, DFU_ATTR_CAN_DOWNLOAD | DFU_ATTR_WILL_DETACH, 1000, 1024),
     };
@@ -254,11 +253,10 @@ private: // Configuration Descriptor
     static constexpr uint8_t const kConfigurationDescriptorHs[] = {
         // Config number, interface count, string index, total length, attribute, power in mA
         TUD_CONFIG_DESCRIPTOR(
-            1, kItfNumTotal, 0, kConfigTotalLen, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+            1, kItfNumTotal, 0, kConfigTotalLen, kConfigAttributes, 100),
 
         // Interface number, string index, EP data address (out, in) and size.
         TUD_VENDOR_DESCRIPTOR(kItfNumVendor, 0, kEpnumCdc0DataOut, kEpnumCdc0DataIn, 512),
-        LIBRMCS_VENDOR_CAN_DESCRIPTOR(512)
         TUD_DFU_RT_DESCRIPTOR(
             kItfNumDfuRuntime, 4, DFU_ATTR_CAN_DOWNLOAD | DFU_ATTR_WILL_DETACH, 1000, 1024),
     };

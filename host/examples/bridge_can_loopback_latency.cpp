@@ -1,5 +1,5 @@
 // Queue-free CAN-FD loopback latency for the HPM6E8Y bridge over either USB
-// or EtherCAT. Wire CAN0 and CAN1 as one terminated bus. One frame is in
+// or EtherCAT. Wire CAN1 and CAN2 as one terminated bus. One frame is in
 // flight at a time, so the host-clock RTT includes transport downlink, board
 // CAN TX, one CAN frame on the wire, board CAN RX, and transport uplink.
 //
@@ -34,6 +34,11 @@
 #include <librmcs/board/rmcs_board_ecat_bridge.hpp>
 #include <librmcs/board/rmcs_board_hpm5321_dual_can.hpp>
 #include <librmcs/board/rmcs_board_hpm6e8y.hpp>
+
+
+// CAN ports are named as the ENCLOSURE labels them (1-based), not as the
+// 0-based DataId underneath. See librmcs/board/rmcs_can_port.hpp.
+using librmcs::board::rmcs::CanPort;
 
 namespace {
 
@@ -136,47 +141,56 @@ public:
     uint64_t unexpected() const { return unexpected_.load(std::memory_order_relaxed); }
 
 private:
-    void can1_receive_callback(const librmcs::data::CanDataView& data) override {
-        const auto receive_time = Clock::now();
-        if (data.can_id != kCanId || data.is_fdcan != use_fdcan() || data.is_extended_can_id
-            || data.is_remote_transmission || data.can_data.size() != kPayloadSize) {
-            invalid_.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
+    void can_receive(
+        CanPort port, const librmcs::data::CanDataView& data) override {
+        switch (port) {
+        case CanPort::kCan2: {
+            const auto receive_time = Clock::now();
+            if (data.can_id != kCanId || data.is_fdcan != use_fdcan() || data.is_extended_can_id
+                || data.is_remote_transmission || data.can_data.size() != kPayloadSize) {
+                invalid_.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
 
-        const uint32_t sequence = get_u32_le(data.can_data.data());
-        if (get_u32_le(data.can_data.data() + 4) != mix(sequence)) {
-            invalid_.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
+            const uint32_t sequence = get_u32_le(data.can_data.data());
+            if (get_u32_le(data.can_data.data() + 4) != mix(sequence)) {
+                invalid_.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
 
-        uint64_t expected_state = static_cast<uint64_t>(sequence) << kStateBits;
-        if (!state_.compare_exchange_strong(
-                expected_state, expected_state | kWritingState, std::memory_order_acquire,
-                std::memory_order_relaxed)) {
+            uint64_t expected_state = static_cast<uint64_t>(sequence) << kStateBits;
+            if (!state_.compare_exchange_strong(
+                    expected_state, expected_state | kWritingState, std::memory_order_acquire,
+                    std::memory_order_relaxed)) {
+                unexpected_.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+
+            const int64_t receive_time_ns =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(receive_time.time_since_epoch())
+                    .count();
+            rtt_ns_.store(
+                receive_time_ns - send_time_ns_.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
+            state_.store(
+                (static_cast<uint64_t>(sequence) << kStateBits) | kReceivedState,
+                std::memory_order_release);
+            break;
+        }
+        case CanPort::kCan1: {
             unexpected_.fetch_add(1, std::memory_order_relaxed);
-            return;
+            break;
         }
-
-        const int64_t receive_time_ns =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(receive_time.time_since_epoch())
-                .count();
-        rtt_ns_.store(
-            receive_time_ns - send_time_ns_.load(std::memory_order_relaxed),
-            std::memory_order_relaxed);
-        state_.store(
-            (static_cast<uint64_t>(sequence) << kStateBits) | kReceivedState,
-            std::memory_order_release);
-    }
-
-    void can0_receive_callback(const librmcs::data::CanDataView&) override {
-        unexpected_.fetch_add(1, std::memory_order_relaxed);
-    }
-    void can2_receive_callback(const librmcs::data::CanDataView&) override {
-        unexpected_.fetch_add(1, std::memory_order_relaxed);
-    }
-    void can3_receive_callback(const librmcs::data::CanDataView&) override {
-        unexpected_.fetch_add(1, std::memory_order_relaxed);
+        case CanPort::kCan3: {
+            unexpected_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+        case CanPort::kCan4: {
+            unexpected_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+        default: break;
+        }
     }
 
     static constexpr unsigned kStateBits = 2;
@@ -207,7 +221,7 @@ int run_latency(Board& board, Receiver& receiver, uint32_t samples, std::string_
         put_u32_le(payload + 4, mix(sequence));
 
         receiver.arm(sequence, Receiver::Clock::now());
-        board.start_transmit().can0_transmit(
+        board.start_transmit().can_transmit(CanPort::kCan1, 
             {.can_id = kCanId, .can_data = payload, .is_fdcan = use_fdcan()});
 
         double rtt_us = 0.0;
@@ -312,7 +326,7 @@ int run_latency_paced(
         put_u32_le(payload + 4, mix(sequence));
 
         receiver.arm(sequence, tick_time);
-        board.start_transmit().can0_transmit(
+        board.start_transmit().can_transmit(CanPort::kCan1, 
             {.can_id = kCanId, .can_data = payload, .is_fdcan = use_fdcan()});
 
         double rtt_us = 0.0;
@@ -441,7 +455,7 @@ int main(int argc, char** argv) {
         }
 
         if (use_5321) {
-            // HPM5321 DualCan (PID 0xA902): CAN0 -> CAN1, same wiring shape as
+            // HPM5321 DualCan (PID 0xA902): CAN1 -> CAN2, same wiring shape as
             // the 6E8Y's first pair, so the two numbers are directly comparable.
             librmcs::board::RmcsBoardHpm5321DualCan board{receiver, {}, options};
             configure_thread(main_core, 70, "bridge-lat-main");

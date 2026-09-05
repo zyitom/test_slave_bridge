@@ -17,8 +17,9 @@ static constexpr int kRtCpu = 7;
 #include "common/multi_board.hpp"
 
 // Receive-only monitor. Auto-detects any project board (c_board, mc02, hpm5321,
-// hpm5321_dual_can). CAN/UART channels are shown 0-based: CAN0 is the board's
-// primary CAN bus, etc.
+// hpm5321_dual_can). CAN channels are named as the ENCLOSURE labels them
+// (1-based): CAN1 is the board's first CAN bus. UART is still 0-based --
+// its ports carry no silkscreen number.
 // Columns: host time, channel, size, host delta, hw-ts, hw-ts delta, fwd jitter
 //   hw-ts delta  = delta between consecutive CAN hardware timestamps (1 us/tick)
 //   fwd jitter   = host delta - hw-ts delta  (USB forwarding latency jitter)
@@ -31,9 +32,9 @@ std::atomic<bool> g_running{true};
 void on_sigint(int) { g_running.store(false, std::memory_order_relaxed); }
 
 // --- Channels -----------------------------------------------------------------
-enum Channel : uint8_t { kCan0, kCan1, kCan2, kUart0, kUart1, kUart2, kDbus, kChannelCount };
+enum Channel : uint8_t { kCan1, kCan2, kCan3, kUart0, kUart1, kUart2, kDbus, kChannelCount };
 static constexpr const char* kChannelName[kChannelCount] =
-    {"CAN0", "CAN1", "CAN2", "UART0", "UART1", "UART2", "DBUS"};
+    {"CAN1", "CAN2", "CAN3", "UART0", "UART1", "UART2", "DBUS"};
 
 // --- Lock-free SPSC log queue -------------------------------------------------
 struct LogEntry {
@@ -219,7 +220,7 @@ private:
     void on_can(int bus, const librmcs::data::CanDataView& data) override {
         if (bus < 0 || bus > 2)
             return;
-        const auto ch = static_cast<Channel>(kCan0 + bus);
+        const auto ch = static_cast<Channel>(kCan1 + bus);
         g_stats[ch].record(ch, data.can_data.size(), data.timestamp_us.value_or(0),
             data.timestamp_us.has_value());
     }

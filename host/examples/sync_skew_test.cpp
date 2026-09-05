@@ -53,6 +53,11 @@
 #include <librmcs/board/rmcs_board_hpm5321_dual_can.hpp>
 #include <librmcs/time/timeline.hpp>
 
+
+// CAN ports are named as the ENCLOSURE labels them (1-based), not as the
+// 0-based DataId underneath. See librmcs/board/rmcs_can_port.hpp.
+using librmcs::board::rmcs::CanPort;
+
 namespace {
 
 // One microframe is 125 us, and reports carry Q16 microframes.
@@ -293,7 +298,7 @@ int main(int argc, char** argv) {
             std::memcpy(payload.data(), &tag, sizeof(tag));
             {
                 auto builder = board_a.start_transmit();
-                builder.can0_transmit(
+                builder.can_transmit(CanPort::kCan1, 
                     {.can_id = librmcs::data::kSyncProbeCanId,
                      .can_data = payload,
                      .is_fdcan = true});
@@ -373,8 +378,8 @@ int main(int argc, char** argv) {
     printf("\n=== control: two controllers on ONE board (one PTPC, no cross-board term) ===\n");
     Stats floor_b = summarise(within_b);
     Stats floor_a = summarise(within_a);
-    print_stats("board A, CAN0 vs CAN1", floor_a);
-    print_stats("board B, CAN0 vs CAN1", floor_b);
+    print_stats("board A, CAN1 vs CAN2", floor_a);
+    print_stats("board B, CAN1 vs CAN2", floor_b);
     printf("  This is the noise floor of the method. Cross-board numbers below are only\n"
            "  meaningful to the extent they exceed it.\n");
 

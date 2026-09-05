@@ -4,8 +4,8 @@
 // is not what a tick actually sends. rmcs_core's OmniInfantry::command_update()
 // stages five CLASSIC 8-byte frames across two buses, in this order:
 //
-//     CAN1   0x1FE supercap  ->  0x145 gimbal yaw   ->  0x200 chassis wheels
-//     CAN2   0x142 gimbal pitch                     ->  0x200 shooter
+//     CAN2   0x1FE supercap  ->  0x145 gimbal yaw   ->  0x200 chassis wheels
+//     CAN3   0x142 gimbal pitch                     ->  0x200 shooter
 //
 // Two differences from the earlier test change the arithmetic, both in the same
 // direction:
@@ -15,7 +15,7 @@
 //   frame that queues behind another pays that, so the queueing term the split
 //   removes is more than twice what flush_split_test measured.
 //
-//   THE GIMBAL FRAME IS NOT FIRST. On CAN1 the yaw command is staged behind the
+//   THE GIMBAL FRAME IS NOT FIRST. On CAN2 the yaw command is staged behind the
 //   supercap frame, so even in the batched case it already waits one full frame
 //   time before it reaches the wire. Splitting moves it to the head of an empty
 //   queue, which is a second, separate saving on top of the compute gap.
@@ -66,6 +66,11 @@
 #include <librmcs/board/rmcs_board_hpm5321_dual_can.hpp>
 #include <librmcs/time/timeline.hpp>
 
+
+// CAN ports are named as the ENCLOSURE labels them (1-based), not as the
+// 0-based DataId underneath. See librmcs/board/rmcs_can_port.hpp.
+using librmcs::board::rmcs::CanPort;
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -81,21 +86,21 @@ constexpr size_t kGapCount = sizeof(kGapsUs) / sizeof(kGapsUs[0]);
 
 // Slots in a trial, named after the frames they stand in for.
 enum Slot : size_t {
-    kSupercap = 0,   // CAN1 0x1FE, staged first today
-    kGimbalYaw,      // CAN1 0x145
-    kChassis,        // CAN1 0x200
-    kGimbalPitch,    // CAN2 0x142
-    kShooter,        // CAN2 0x200
+    kSupercap = 0,   // CAN2 0x1FE, staged first today
+    kGimbalYaw,      // CAN2 0x145
+    kChassis,        // CAN2 0x200
+    kGimbalPitch,    // CAN3 0x142
+    kShooter,        // CAN3 0x200
     kSlotCount,
 };
 
 const char* slot_name(size_t slot) {
     switch (slot) {
-    case kSupercap: return "supercap  CAN1 0x1FE";
-    case kGimbalYaw: return "gimbal yaw CAN1 0x145";
-    case kChassis: return "chassis   CAN1 0x200";
-    case kGimbalPitch: return "gimbal pitch CAN2 0x142";
-    case kShooter: return "shooter   CAN2 0x200";
+    case kSupercap: return "supercap  CAN2 0x1FE";
+    case kGimbalYaw: return "gimbal yaw CAN2 0x145";
+    case kChassis: return "chassis   CAN2 0x200";
+    case kGimbalPitch: return "gimbal pitch CAN3 0x142";
+    case kShooter: return "shooter   CAN3 0x200";
     default: return "?";
     }
 }
@@ -269,7 +274,7 @@ int main(int argc, char** argv) {
         }
 
         printf("timeline locked: %.4f ns/microframe\n", tl.measured_period_ns());
-        printf("layout: CAN1 [supercap, gimbal_yaw, chassis]  CAN2 [gimbal_pitch, shooter]\n");
+        printf("layout: CAN2 [supercap, gimbal_yaw, chassis]  CAN3 [gimbal_pitch, shooter]\n");
         printf("classic 8-byte frames, %d rounds x %zu gaps x 2 modes\n\n", rounds, kGapCount);
 
         uint32_t tag = 1;
@@ -297,26 +302,32 @@ int main(int argc, char** argv) {
                         spin_until(reference);
                         {
                             auto builder = board_a.start_transmit();
-                            builder.can0_transmit(probe(tagged(trial.tags[kGimbalYaw])));
-                            builder.can1_transmit(probe(tagged(trial.tags[kGimbalPitch])));
+                            builder.can_transmit(
+                                CanPort::kCan1, probe(tagged(trial.tags[kGimbalYaw])));
+                            builder.can_transmit(
+                                CanPort::kCan2, probe(tagged(trial.tags[kGimbalPitch])));
                         }
                         // Everything else once the slow solve finishes.
                         spin_until(late);
                         {
                             auto builder = board_a.start_transmit();
-                            builder.can0_transmit(probe(tagged(trial.tags[kSupercap])));
-                            builder.can0_transmit(probe(tagged(trial.tags[kChassis])));
-                            builder.can1_transmit(probe(tagged(trial.tags[kShooter])));
+                            builder.can_transmit(
+                                CanPort::kCan1, probe(tagged(trial.tags[kSupercap])));
+                            builder.can_transmit(
+                                CanPort::kCan1, probe(tagged(trial.tags[kChassis])));
+                            builder.can_transmit(
+                                CanPort::kCan2, probe(tagged(trial.tags[kShooter])));
                         }
                     } else {
                         // Today: one packet, RMCS's staging order.
                         spin_until(late);
                         auto builder = board_a.start_transmit();
-                        builder.can0_transmit(probe(tagged(trial.tags[kSupercap])));
-                        builder.can0_transmit(probe(tagged(trial.tags[kGimbalYaw])));
-                        builder.can0_transmit(probe(tagged(trial.tags[kChassis])));
-                        builder.can1_transmit(probe(tagged(trial.tags[kGimbalPitch])));
-                        builder.can1_transmit(probe(tagged(trial.tags[kShooter])));
+                        builder.can_transmit(CanPort::kCan1, probe(tagged(trial.tags[kSupercap])));
+                        builder.can_transmit(CanPort::kCan1, probe(tagged(trial.tags[kGimbalYaw])));
+                        builder.can_transmit(CanPort::kCan1, probe(tagged(trial.tags[kChassis])));
+                        builder.can_transmit(
+                            CanPort::kCan2, probe(tagged(trial.tags[kGimbalPitch])));
+                        builder.can_transmit(CanPort::kCan2, probe(tagged(trial.tags[kShooter])));
                     }
 
                     trials.push_back(trial);

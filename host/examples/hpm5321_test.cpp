@@ -12,7 +12,7 @@
 
 // Non-interactive sanity tester for any project board. After auto-detecting the
 // connected board it keeps sending one CAN frame and one UART message every
-// period (on the board's primary CAN0 / UART0) and prints whatever it receives
+// period (on the board's primary CAN1 / UART0) and prints whatever it receives
 // back. Works on every board, since all of them expose at least one CAN bus and
 // one UART. Stop with Ctrl-C.
 
@@ -36,7 +36,7 @@ public:
     void bind(examples::BoardSession* board) { board_ = board; }
 
     void send_round(uint32_t counter) {
-        // CAN0: id 0x123, 4 payload bytes carrying the counter (big-endian).
+        // CAN1: id 0x123, 4 payload bytes carrying the counter (big-endian).
         const std::byte can_payload[4] = {
             static_cast<std::byte>(counter >> 24), static_cast<std::byte>(counter >> 16),
             static_cast<std::byte>(counter >> 8), static_cast<std::byte>(counter)};
@@ -51,7 +51,7 @@ public:
                         .idle_delimited = true});
         });
 
-        printf("[TX #%u] CAN0 id=0x123 + UART0 \"hello %u\"\n", counter, counter);
+        printf("[TX #%u] CAN1 id=0x123 + UART0 \"hello %u\"\n", counter, counter);
     }
 
 private:
@@ -88,7 +88,7 @@ int main() {
         return 1;
     }
     tester.bind(board.get());
-    printf("Connected: %.*s. Sending CAN0 + UART0 every %lldms. Ctrl-C to stop.\n",
+    printf("Connected: %.*s. Sending CAN1 + UART0 every %lldms. Ctrl-C to stop.\n",
         static_cast<int>(board->name().size()), board->name().data(),
         static_cast<long long>(k_send_period.count()));
 

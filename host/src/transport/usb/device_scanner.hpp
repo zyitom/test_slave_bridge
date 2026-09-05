@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -24,8 +25,13 @@ namespace librmcs::host::transport::usb {
 
 class DeviceScanner {
 public:
+    // An empty product_ids matches any product under this vendor. More than one
+    // is not a convenience: one firmware image can serve several PCBs and report
+    // which it is only after it is open, so the variants differ by product ID
+    // while being one device to the caller (the hpm5321 single- and dual-CAN
+    // boards are exactly this).
     static libusb_device_handle* select_device(
-        libusb_context* context, uint16_t vendor_id, int32_t product_id,
+        libusb_context* context, uint16_t vendor_id, std::span<const uint16_t> product_ids,
         std::string_view serial_filter, const ConnectionOptions& options) {
         libusb_device** device_list = nullptr;
         const ssize_t device_count = libusb_get_device_list(context, &device_list);
@@ -41,7 +47,7 @@ public:
             [&device_list]() noexcept { libusb_free_device_list(device_list, 1); }};
 
         auto infos =
-            scan_devices(device_list, device_count, vendor_id, product_id, serial_filter, options);
+            scan_devices(device_list, device_count, vendor_id, product_ids, serial_filter, options);
 
         std::vector<libusb_device_handle*> devices_opened;
         for (const auto& info : infos) {
@@ -55,7 +61,7 @@ public:
 
             const bool multiple_compatible_devices = devices_opened.size() > 1;
             const auto report = generate_device_discovery_report(
-                infos, vendor_id, product_id, serial_filter, options, multiple_compatible_devices);
+                infos, vendor_id, product_ids, serial_filter, options, multiple_compatible_devices);
             throw std::runtime_error(
                 std::format(
                     "{}\n\n{}",
@@ -120,7 +126,8 @@ private:
     };
 
     static std::vector<DeviceInfo> scan_devices(
-        libusb_device** device_list, ssize_t device_count, uint16_t vendor_id, int32_t product_id,
+        libusb_device** device_list, ssize_t device_count, uint16_t vendor_id,
+        std::span<const uint16_t> product_ids,
         std::string_view serial_filter, const ConnectionOptions& options) {
         std::vector<DeviceInfo> infos;
         infos.reserve(static_cast<size_t>(device_count));
@@ -143,7 +150,9 @@ private:
                 info.result = DeviceInfo::VendorMismatch{};
                 continue;
             }
-            if (product_id >= 0 && !std::cmp_equal(info.descriptor.idProduct, product_id)) {
+            if (!product_ids.empty()
+                && std::ranges::find(product_ids, info.descriptor.idProduct)
+                       == product_ids.end()) {
                 info.result = DeviceInfo::ProductMismatch{};
                 continue;
             }
@@ -274,10 +283,14 @@ private:
     }
 
     static std::string generate_device_discovery_report(
-        std::span<const DeviceInfo> infos, uint16_t vendor_id, int32_t product_id,
-        std::string_view serial_filter, const ConnectionOptions& options,
-        bool multiple_compatible_devices) {
-        const std::string pid_text = product_id >= 0 ? std::format("0x{:04x}", product_id) : "Any";
+        std::span<const DeviceInfo> infos, uint16_t vendor_id,
+        std::span<const uint16_t> product_ids, std::string_view serial_filter,
+        const ConnectionOptions& options, bool multiple_compatible_devices) {
+        std::string pid_text;
+        for (const uint16_t pid : product_ids)
+            pid_text += (pid_text.empty() ? "" : " or ") + std::format("0x{:04x}", pid);
+        if (pid_text.empty())
+            pid_text = "Any";
         const std::string serial_filter_text =
             serial_filter.empty() ? "Any" : std::string{serial_filter};
         const std::string firmware_filter_text =

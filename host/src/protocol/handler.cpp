@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <format>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -25,6 +26,7 @@
 #include "core/src/protocol/deserializer.hpp"
 #include "core/src/protocol/protocol.hpp"
 #include "core/src/protocol/serializer.hpp"
+#include <librmcs/protocol/vendor_control.hpp>
 #include "core/src/utility/assert.hpp"
 #include "host/src/logging/logging.hpp"
 #include "host/src/protocol/stream_buffer.hpp"
@@ -45,7 +47,6 @@ public:
         bool enable_time_sync)
         : callback_(callback)
         , deserializer_(*this)
-        , can_deserializer_(*this)
         , expected_session_nonce_(generate_session_nonce())
         , expected_session_start_ack_(make_session_start_ack(expected_session_nonce_))
         , time_sync_enabled_(enable_time_sync)
@@ -53,15 +54,6 @@ public:
         // USB bulk completions and EtherCAT callbacks are both arbitrary
         // slices of one reliable byte stream, not protocol-field boundaries.
         transport_->receive([this](std::span<const std::byte> buffer) { receive_stream(buffer); });
-        // The CAN pipe, when the board has one, is a separate reliable byte
-        // stream and needs its own deserializer: interleaving its bytes with the
-        // bulk stream's would corrupt both. It carries no session control, so it
-        // needs none of receive_stream()'s session-start-ack window -- the board
-        // does not put a CAN field on the wire before the session is up.
-        if (transport_->has_priority_channel()) {
-            transport_->receive_priority(
-                [this](std::span<const std::byte> buffer) { can_deserializer_.feed(buffer); });
-        }
         transport_->receive_cyclic_can([this](data::DataId id, const data::CanDataView& data) {
             (void)can_deserialized_callback(id, data);
         });
@@ -70,7 +62,6 @@ public:
             // protocol field. The callback runs on the transport receive
             // thread, so it is serialized with deserializer_.feed().
             deserializer_.finish_transfer();
-            can_deserializer_.finish_transfer();
             awaiting_session_start_ack_ = true;
             session_start_ack_window_size_ = 0;
             {
@@ -82,8 +73,34 @@ public:
             session_cv_.notify_all();
         });
 
+        // NOT started here: a transport may have an out-of-band handshake that
+        // has to complete before the first kStart, and the caller can only run
+        // it once this object exists. See Handler's constructor.
+    }
+
+    [[nodiscard]] Handler::LinkState link_state() const noexcept {
+        if (transport_->link_faulted())
+            return Handler::LinkState::kFaulted;
+        return session_established() ? Handler::LinkState::kUp
+                                     : Handler::LinkState::kSessionDown;
+    }
+
+    // Opens the session and starts the keepalive. Separate from construction so
+    // a caller can do transport-level configuration in between; throws if the
+    // board never acknowledges.
+    void start() {
         establish_session();
         keepalive_thread_ = std::thread{[this] { keepalive_loop(); }};
+    }
+
+    // Re-run the caller's out-of-band handshake before re-opening a session.
+    // The board forgets the handshake when a session ends, so a reconnect that
+    // skipped this would be refused exactly like a host that never handshook.
+    void set_before_session(std::function<void()> hook) { before_session_ = std::move(hook); }
+
+    void run_before_session() {
+        if (before_session_)
+            before_session_();
     }
 
     ~Impl() override {
@@ -409,6 +426,31 @@ public:
             {.nonce = expected_session_nonce_, .microframe = microframe});
     }
 
+    // EP0 configuration channel. `payload` is written for an OUT request and
+    // filled for an IN one; see librmcs/protocol/vendor_control.hpp.
+    //
+    // Bypasses the session entirely -- no nonce, no keepalive, no serializer.
+    // Configuration is applied while the board object is being constructed,
+    // before the keepalive thread has opened a session, and it must keep
+    // answering after one has lapsed.
+    bool vendor_control(
+        uint8_t request_type, uint8_t request, uint16_t index, std::span<std::byte> payload) {
+        switch (transport_->vendor_control(request_type, request, index, payload)) {
+        case transport::Transport::ControlResult::kOk: return true;
+        case transport::Transport::ControlResult::kStalled: return false;
+        case transport::Transport::ControlResult::kUnsupported:
+            throw std::runtime_error(
+                "This transport has no control endpoint: channel configuration over EP0 is "
+                "available on USB only. An EtherCAT-connected board is configured through the "
+                "in-band config fields instead.");
+        case transport::Transport::ControlResult::kFailed:
+        default:
+            throw std::runtime_error(
+                std::string{"EP0 vendor request 0x"} + std::format("{:02x}", request)
+                + " failed; see the transport log for the libusb error.");
+        }
+    }
+
 private:
     void send_time_anchor() {
         // One process-wide axis, queried per round: see librmcs/time/timeline.hpp
@@ -446,21 +488,63 @@ private:
                 break;
 
             try {
-                if (session_established())
+                if (session_established()) {
                     refresh_session();
-                else
+                } else {
+                    run_before_session();
                     establish_session();
+                }
 
                 // After the keepalive, so an anchor is only ever sent on a
                 // session the board has just confirmed is alive.
                 if (time_sync_enabled_ && session_established())
                     send_time_anchor();
+
+                consecutive_session_failures_ = 0;
             } catch (const std::exception& exception) {
-                logging::get_logger().error(
-                    "Failed to refresh session: {}. Terminating...", exception.what());
-                std::terminate();
+                handle_session_failure(exception);
             }
         }
+    }
+
+    // Until 2026-09-05 this was std::terminate(). Losing a board is the
+    // application's decision, not this thread's -- and the failure it fires on
+    // is often repairable: the board answers EP0 while its bulk endpoints are
+    // halted or un-armed, which is the one thing a transport-level recovery can
+    // fix and no amount of protocol retrying can.
+    void handle_session_failure(const std::exception& exception) noexcept try {
+        // refresh_session() gives up without clearing the flag, so clear it
+        // here: the next pass must re-open the session rather than keep
+        // keepaliving one the board has already forgotten.
+        {
+            const std::scoped_lock guard{session_mutex_};
+            session_established_.store(false, std::memory_order::release);
+        }
+
+        ++consecutive_session_failures_;
+
+        const bool recovered = transport_->try_recover_link();
+
+        // The 1st, 2nd, 4th, 8th ... failure. A board that is simply unplugged
+        // fails every attempt forever, and that must not bury the log.
+        if (logging::should_log_occurrence(consecutive_session_failures_))
+            logging::get_logger().error(
+                "Failed to refresh session ({} in a row): {}. Link recovery {}; retrying.",
+                consecutive_session_failures_, exception.what(),
+                recovered ? "attempted" : "not available");
+
+        // Pace the retries. The loop's own wait returns immediately while the
+        // session is down, and a faulted transport fails instantly, so without
+        // this a dead board would spin this thread at full speed.
+        std::unique_lock lock{session_mutex_};
+        (void)session_cv_.wait_for(lock, kSessionRefreshInterval, [this] {
+            return stop_keepalive_.load(std::memory_order_relaxed);
+        });
+    } catch (const std::exception& nested) {
+        // A function-try-block, because this one runs on the catch path of a
+        // thread whose escaping exception used to be the std::terminate() this
+        // whole change removes. Nothing here may throw its way out.
+        logging::get_logger().error("While handling a session failure: {}", nested.what());
     }
 
     static uint32_t generate_session_nonce() {
@@ -471,7 +555,6 @@ private:
 
     data::DataCallback& callback_;
     core::protocol::Deserializer deserializer_;
-    core::protocol::Deserializer can_deserializer_;
 
     mutable std::mutex session_mutex_;
     std::condition_variable session_cv_;
@@ -486,7 +569,11 @@ private:
     size_t session_start_ack_window_size_ = 0;
     bool awaiting_session_start_ack_ = true;
 
+    std::function<void()> before_session_;
     std::unique_ptr<transport::Transport> transport_;
+
+    // Keepalive thread only; reset by the first pass that gets through cleanly.
+    uint64_t consecutive_session_failures_ = 0;
 
     std::atomic<bool> stop_keepalive_{false};
     std::thread keepalive_thread_;
@@ -495,24 +582,13 @@ private:
 namespace {
 
 struct PacketBuilderImpl {
-    // The CAN pipe is only split off when the transport actually has a second
-    // channel AND this is not a cyclic (fixed-PDO) batch. Without both, CAN keeps
-    // using the main buffer, so a board with one pipe produces exactly the packets
-    // it always did -- splitting unconditionally would turn a single CAN+UART
-    // packet into two on hardware that gains nothing from it.
     explicit PacketBuilderImpl(transport::Transport& transport, bool cyclic) noexcept
         : buffer_(transport, cyclic)
-        , serializer_(buffer_)
-        , split_can_(!cyclic && transport.has_priority_channel())
-        , can_buffer_(transport, false, split_can_)
-        , can_serializer_(can_buffer_) {}
+        , serializer_(buffer_) {}
 
     PacketBuilderImpl(PacketBuilderImpl&& other) noexcept
         : buffer_(std::move(other.buffer_))
-        , serializer_(buffer_)
-        , split_can_(other.split_can_)
-        , can_buffer_(std::move(other.can_buffer_))
-        , can_serializer_(can_buffer_) {}
+        , serializer_(buffer_) {}
 
     PacketBuilderImpl& operator=(PacketBuilderImpl&&) = delete;
     PacketBuilderImpl(const PacketBuilderImpl&) = delete;
@@ -527,8 +603,6 @@ struct PacketBuilderImpl {
             return buffer_.try_stage_cyclic_can(field_id, view);
         if (buffer_.try_stage_cyclic_can(field_id, view))
             return true;
-        if (split_can_)
-            return process_result(can_serializer_.write_can(field_id, view));
         return process_result(serializer_.write_can(field_id, view));
     }
 
@@ -590,7 +664,15 @@ private:
         if (result == Serializer::SerializeResult::kSuccess) [[likely]]
             return true;
         if (result == Serializer::SerializeResult::kBadAlloc) {
-            logging::get_logger().error("Transmit buffer unavailable (acquire failed)");
+            // Reachable in steady state since 2026-09-05: a faulted transport
+            // hands out no buffers at all, so a caller in a tight loop hits this
+            // on every attempt. Unthrottled it produced 473 MB of identical
+            // lines in twenty seconds.
+            static std::atomic<uint64_t> occurrences{0};
+            if (const uint64_t count = occurrences.fetch_add(1, std::memory_order::relaxed) + 1;
+                logging::should_log_occurrence(count))
+                logging::get_logger().error(
+                    "Transmit buffer unavailable (acquire failed) x{}", count);
             return true;
         }
         if (result == Serializer::SerializeResult::kInvalidArgument) {
@@ -601,9 +683,6 @@ private:
 
     StreamBuffer buffer_;
     core::protocol::Serializer serializer_;
-    bool split_can_;
-    StreamBuffer can_buffer_;
-    core::protocol::Serializer can_serializer_;
 };
 
 } // namespace
@@ -655,11 +734,38 @@ bool Handler::PacketBuilder::write_gpio_analog_data(
 }
 
 Handler::Handler(
-    uint16_t usb_vid, int32_t usb_pid, std::string_view serial_filter,
-    const board::AdvancedOptions& options, data::DataCallback& callback)
+    uint16_t usb_vid, std::span<const uint16_t> usb_pids, std::string_view serial_filter,
+    const board::AdvancedOptions& options, data::DataCallback& callback,
+    const BeforeSession& before_session)
     : impl_(new Impl(
-          transport::usb::create_transport(usb_vid, usb_pid, serial_filter, options), callback,
-          options.enable_time_sync)) {}
+          transport::usb::create_transport(usb_vid, usb_pids, serial_filter, options), callback,
+          options.enable_time_sync)) {
+    // The hook runs with the transport up but no session yet -- the only window
+    // in which an out-of-band handshake can precede the first kStart.
+    //
+    // Both of these can throw, and a throw from a constructor BODY does not run
+    // this object's destructor -- impl_ would leak, and with it the claimed
+    // libusb interface, so the next open of the same board fails with
+    // ERROR_BUSY. That does not happen when the work sits inside Impl's own
+    // constructor, which is where it used to be.
+    try {
+        if (before_session) {
+            // Registered as well as run, so the keepalive thread can repeat it
+            // on a reconnect -- the board forgets the handshake when a session
+            // ends.
+            // By value: `before_session` is a constructor parameter and would
+            // dangle the moment construction returns, while this hook has to
+            // survive for every later reconnect.
+            impl_->set_before_session([this, hook = before_session] { hook(*this); });
+            before_session(*this);
+        }
+        impl_->start();
+    } catch (...) {
+        delete impl_;
+        impl_ = nullptr;
+        throw;
+    }
+}
 
 #if defined(LIBRMCS_ENABLE_SOEM) || defined(LIBRMCS_ENABLE_IGH)
 namespace {
@@ -699,7 +805,18 @@ Handler::Handler(
     data::DataCallback& callback)
     : impl_(new Impl(
           create_ethercat_transport(ethercat_interface_name, options), callback,
-          options.enable_time_sync)) {}
+          options.enable_time_sync)) {
+    // No hook: the EtherCAT transport has no control endpoint to hold an
+    // out-of-band handshake on. The catch is for the same reason as the USB
+    // constructor above -- a throw from a constructor body leaks impl_.
+    try {
+        impl_->start();
+    } catch (...) {
+        delete impl_;
+        impl_ = nullptr;
+        throw;
+    }
+}
 #else
 Handler::Handler(
     std::string_view ethercat_interface_name, const board::AdvancedOptions& options,
@@ -736,9 +853,42 @@ Handler::PacketBuilder Handler::start_cyclic_transmit() noexcept {
     return impl_->start_transmit(true);
 }
 
+Handler::LinkState Handler::link_state() const noexcept {
+    core::utility::assert_debug(impl_);
+    return impl_->link_state();
+}
+
 void Handler::send_pulse_schedule(uint64_t microframe) noexcept {
     core::utility::assert_debug(impl_);
     impl_->send_pulse_schedule(microframe);
+}
+
+bool Handler::vendor_control_out(
+    uint8_t request, uint16_t index, const void* payload, size_t size) {
+    core::utility::assert_debug(impl_);
+    // libusb writes from the caller's buffer but the transport signature is one
+    // mutable span for both directions, so copy through a scratch buffer rather
+    // than casting away const on something the caller owns.
+    std::array<std::byte, kVendorControlPayloadMax> scratch{};
+    if (size > scratch.size())
+        throw std::invalid_argument{"EP0 payload too large"};
+    std::memcpy(scratch.data(), payload, size);
+    return impl_->vendor_control(
+        core::protocol::vendor_control::kRequestTypeOut, request, index,
+        std::span<std::byte>{scratch.data(), size});
+}
+
+bool Handler::vendor_control_in(uint8_t request, uint16_t index, void* payload, size_t size) {
+    core::utility::assert_debug(impl_);
+    std::array<std::byte, kVendorControlPayloadMax> scratch{};
+    if (size > scratch.size())
+        throw std::invalid_argument{"EP0 payload too large"};
+    const bool ok = impl_->vendor_control(
+        core::protocol::vendor_control::kRequestTypeIn, request, index,
+        std::span<std::byte>{scratch.data(), size});
+    if (ok)
+        std::memcpy(payload, scratch.data(), size);
+    return ok;
 }
 
 } // namespace librmcs::host::protocol

@@ -1,151 +1,18 @@
 #pragma once
 
-#include <cstdint>
-#include <stdexcept>
-#include <string_view>
+// Compatibility header. The dual-CAN hpm5321 no longer has a class of its own:
+// both PCBs run one firmware image and report their bus count over EP0, so
+// RmcsBoardHpm5321 serves both and opens either product ID. See
+// rmcs_board_hpm5321.hpp.
+//
+// The alias is not deprecated by attribute on purpose -- it names a real board
+// and reads better than the generic name at call sites that only ever talk to
+// the dual-CAN PCB.
 
-#include <librmcs/board/common.hpp>
-#include <librmcs/data/datas.hpp>
-#include <librmcs/protocol/handler.hpp>
-#include <librmcs/spec/rmcs_board_hpm5321_dual_can/can.hpp>
-#include <librmcs/spec/rmcs_board_hpm5321_dual_can/uart.hpp>
+#include <librmcs/board/rmcs_board_hpm5321.hpp>
 
 namespace librmcs::board {
 
-// Board interface for the HPM5321 DualCan board (PID 0xA902). Compared to the
-// single-CAN hpm5321 it adds CAN1 (MCAN3). It has no IMU, no GPIO application
-// channels and no DBUS, so those callbacks are intentionally absent.
-class RmcsBoardHpm5321DualCan final {
-public:
-    class Callback : public data::DataCallback {
-    public:
-        // Channel descriptors for this board. Addressing a channel through its
-        // descriptor is what lets generic code reach data_id and, for UARTs,
-        // config_data_id without a second lookup table.
-        struct Spec {
-            using Can = spec::rmcs_board_hpm5321_dual_can::CanDescriptor;
-            static constexpr spec::rmcs_board_hpm5321_dual_can::internal::CanDescriptors kCans{};
-
-            using Uart = spec::rmcs_board_hpm5321_dual_can::UartDescriptor;
-            static constexpr spec::rmcs_board_hpm5321_dual_can::internal::UartDescriptors kUarts{};
-        };
-
-        struct View {
-            using Can = data::CanDataView;
-            using Uart = data::UartDataView;
-            using UartConfig = data::UartConfigView;
-            using ImuAccelerometer = data::ImuAccelerometerDataView;
-            using ImuGyroscope = data::ImuGyroscopeDataView;
-            using ImuTemperature = data::ImuTemperatureDataView;
-        };
-
-        virtual void can0_receive_callback(const librmcs::data::CanDataView& data) { (void)data; }
-        virtual void can1_receive_callback(const librmcs::data::CanDataView& data) { (void)data; }
-
-        virtual void uart0_receive_callback(const librmcs::data::UartDataView& data) { (void)data; }
-
-        void accelerometer_receive_callback(
-            const librmcs::data::ImuAccelerometerDataView& data) override {
-            (void)data;
-        }
-        void gyroscope_receive_callback(const librmcs::data::ImuGyroscopeDataView& data) override {
-            (void)data;
-        }
-        void temperature_receive_callback(
-            const librmcs::data::ImuTemperatureDataView& data) override {
-            (void)data;
-        }
-
-    public:
-        bool can_receive_callback(data::DataId id, const data::CanDataView& data) final {
-            switch (id) {
-            case data::DataId::kCan0: can0_receive_callback(data); return true;
-            case data::DataId::kCan1: can1_receive_callback(data); return true;
-            default: return false;
-            }
-        }
-
-        bool uart_receive_callback(data::DataId id, const data::UartDataView& data) final {
-            switch (id) {
-            case data::DataId::kUart0: uart0_receive_callback(data); return true;
-            default: return false;
-            }
-        }
-
-        bool gpio_digital_read_result_callback(
-            uint8_t channel_index, const data::GpioDigitalDataView& data) final {
-            (void)channel_index;
-            (void)data;
-            return false;
-        }
-        bool gpio_analog_read_result_callback(
-            uint8_t channel_index, const data::GpioAnalogDataView& data) final {
-            (void)channel_index;
-            (void)data;
-            return false;
-        }
-    };
-
-    explicit RmcsBoardHpm5321DualCan(
-        Callback& callback = default_callback_, std::string_view serial_filter = {},
-        const AdvancedOptions& options = {})
-        : handler_(0xA11C, 0xA902, serial_filter, options, callback) {}
-
-    RmcsBoardHpm5321DualCan(const RmcsBoardHpm5321DualCan&) = delete;
-    RmcsBoardHpm5321DualCan& operator=(const RmcsBoardHpm5321DualCan&) = delete;
-    RmcsBoardHpm5321DualCan(RmcsBoardHpm5321DualCan&&) = delete;
-    RmcsBoardHpm5321DualCan& operator=(RmcsBoardHpm5321DualCan&&) = delete;
-    ~RmcsBoardHpm5321DualCan() = default;
-
-    class PacketBuilder {
-        friend class RmcsBoardHpm5321DualCan;
-
-    public:
-        PacketBuilder& can0_transmit(const librmcs::data::CanDataView& data) {
-            if (!builder_.write_can(data::DataId::kCan0, data)) [[unlikely]]
-                throw std::invalid_argument{"CAN0 transmission failed: Invalid CAN data"};
-            return *this;
-        }
-
-        PacketBuilder& can1_transmit(const librmcs::data::CanDataView& data) {
-            if (!builder_.write_can(data::DataId::kCan1, data)) [[unlikely]]
-                throw std::invalid_argument{"CAN1 transmission failed: Invalid CAN data"};
-            return *this;
-        }
-
-        PacketBuilder& uart0_transmit(const librmcs::data::UartDataView& data) {
-            if (!builder_.write_uart(data::DataId::kUart0, data)) [[unlikely]]
-                throw std::invalid_argument{"UART0 transmission failed: Invalid UART data"};
-            return *this;
-        }
-
-        // Runtime reconfiguration of UART0. Rides the same downlink stream as the
-        // data above, so it is ordered against it: bytes queued earlier in this
-        // batch are sent at the old baudrate, later ones at the new one.
-        PacketBuilder& uart0_config(const librmcs::data::UartConfigView& config) {
-            if (!builder_.write_uart_config(data::DataId::kUart0Config, config)) [[unlikely]]
-                throw std::invalid_argument{"UART0 configuration failed: Invalid UART config"};
-            return *this;
-        }
-
-    private:
-        explicit PacketBuilder(host::protocol::Handler& handler) noexcept
-            : builder_(handler.start_transmit()) {}
-
-        host::protocol::Handler::PacketBuilder builder_;
-    };
-    PacketBuilder start_transmit() noexcept { return PacketBuilder{handler_}; }
-
-    // Cross-board timing measurement only; see Handler::send_pulse_schedule.
-    // Not part of a control path: the board answers on the session stream, and
-    // only firmware built with -DLIBRMCS_PULSE_TEST=ON does anything with it.
-    void send_pulse_schedule(uint64_t microframe) noexcept {
-        handler_.send_pulse_schedule(microframe);
-    }
-
-private:
-    static inline Callback default_callback_{};
-    host::protocol::Handler handler_;
-};
+using RmcsBoardHpm5321DualCan = RmcsBoardHpm5321;
 
 } // namespace librmcs::board

@@ -244,6 +244,39 @@ public:
 
     [[nodiscard]] data::DataId data_id() const { return data_id_; }
 
+    // Controller error state, for the EP0 status query (usb/vendor_control.cpp).
+    // Read straight from the registers on each call rather than cached: PSR.LEC
+    // self-clears to "no change" when read, so a cached copy would report a
+    // stale error forever and a fresh one would hide errors from any other
+    // reader. There is only one reader.
+    struct Status {
+        uint8_t tec, rec, last_error, data_last_error, flags;
+        uint32_t tx_occurred, tx_cancelled, rx_frames, rx_fifo_level;
+    };
+
+    [[nodiscard]] Status status() const {
+        const uint32_t psr = can_base_->PSR;
+        const uint32_t ecr = can_base_->ECR;
+        uint8_t flags = 0;
+        if ((psr >> 5) & 1U)
+            flags |= 1U << 0; // error passive
+        if ((psr >> 6) & 1U)
+            flags |= 1U << 1; // warning
+        if ((psr >> 7) & 1U)
+            flags |= 1U << 2; // bus off
+        return {
+            .tec = static_cast<uint8_t>(ecr & 0xFFU),
+            .rec = static_cast<uint8_t>((ecr >> 8) & 0x7FU),
+            .last_error = static_cast<uint8_t>(psr & 0x7U),
+            .data_last_error = static_cast<uint8_t>((psr >> 8) & 0x7U),
+            .flags = flags,
+            .tx_occurred = can_base_->TXBTO,
+            .tx_cancelled = can_base_->TXBCF,
+            .rx_frames = forwarded_frames_,
+            .rx_fifo_level = can_base_->RXF0S & 0x7FU,
+        };
+    }
+
     // Forwarding hot path -- defined out-of-line in can.cpp, in the ILM (.fast)
     // section, to remove FLASH-XIP fetch jitter from the worst case. See can.cpp
     // for the rationale and why they are not inline-in-class.
@@ -308,7 +341,7 @@ private:
     // contiguous by construction (kCanDataIds below), so this needs no extra
     // member; it exists for the diagnostic counters, which are per board index.
     std::size_t can_index() const {
-        return static_cast<std::size_t>(data_id_) - static_cast<std::size_t>(data::DataId::kCan0);
+        return static_cast<std::size_t>(data_id_) - static_cast<std::size_t>(data::DataId::kCan1);
     }
 
     // Read and normalize one RX FIFO frame. `true` means an element was
@@ -358,6 +391,15 @@ private:
     // aligned loads and stores are atomic on RV32 and only the change matters,
     // not the exact value.
     uint32_t irq_count_ = 0;
+    // Frames handed to the serializer since boot. Written only by the receive
+    // path (ISR context), read only by the EP0 status query on the main loop --
+    // an aligned 32-bit load/store is atomic on RV32 and only the change
+    // matters, so no synchronization is needed.
+    uint32_t forwarded_frames_ = 0;
+
+    // CSR_MCYCLE at receive-interrupt entry, closed once the frame has been
+    // serialized. Written and read inside the same interrupt.
+    uint32_t uplink_opened_at_ = 0;
     uint32_t watchdog_irq_count_ = 0;
     bool watchdog_armed_ = false;
 
@@ -403,7 +445,7 @@ static_assert(kCanCount >= 1 && kCanCount <= 4);
 inline size_t can_count() { return board::can_port_count(); }
 
 constexpr data::DataId kCanDataIds[] = {
-    data::DataId::kCan0, data::DataId::kCan1, data::DataId::kCan2, data::DataId::kCan3};
+    data::DataId::kCan1, data::DataId::kCan2, data::DataId::kCan3, data::DataId::kCan4};
 
 namespace internal {
 

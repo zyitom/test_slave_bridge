@@ -289,10 +289,10 @@ private:
 
     static int can_bus(data::DataId field_id) noexcept {
         switch (field_id) {
-        case data::DataId::kCan0: return 0;
-        case data::DataId::kCan1: return 1;
-        case data::DataId::kCan2: return 2;
-        case data::DataId::kCan3: return 3;
+        case data::DataId::kCan1: return 0;
+        case data::DataId::kCan2: return 1;
+        case data::DataId::kCan3: return 2;
+        case data::DataId::kCan4: return 3;
         default: return -1;
         }
     }
@@ -722,10 +722,10 @@ private:
 
     static data::DataId can_data_id(std::size_t bus) noexcept {
         constexpr std::array ids = {
-            data::DataId::kCan0,
             data::DataId::kCan1,
             data::DataId::kCan2,
             data::DataId::kCan3,
+            data::DataId::kCan4,
         };
         return ids[bus];
     }

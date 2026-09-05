@@ -35,6 +35,44 @@ public:
     bool dangerously_skip_version_checks = false;
 
     /**
+     * @brief CPU to pin the transport's event thread to, or -1 to leave it free.
+     *
+     * This is the single largest latency lever measured on this link, and it
+     * acts on the tail rather than the average. With an isolated core and
+     * SCHED_FIFO (2026-09-04, CAN round trip under 82 kB/s of UART):
+     *
+     *     free-running   p99.9 = 529 us   max = 990 us
+     *     pinned + RT    p99.9 = 161 us   max = 196 us
+     *
+     * Roughly 3.3x on p99.9 and 5x on max -- an order of magnitude more than
+     * any USB-side tuning available on this hardware. Prefer a core that the
+     * kernel has been told to leave alone (isolcpus / nohz_full); pinning to a
+     * core the scheduler still uses buys much less.
+     */
+    int io_thread_cpu = -1;
+
+    /**
+     * @brief SCHED_FIFO priority for that thread, or 0 to leave the policy alone.
+     *
+     * Only applied when io_thread_cpu is set. Needs CAP_SYS_NICE (or root);
+     * failure is reported through the transport log and does not abort the
+     * connection -- an unprivileged run still works, just with the free-running
+     * tail above.
+     *
+     * @warning Do NOT pin an SCHED_FIFO thread to the same core as another
+     * equally-prioritised busy thread. Equal-priority FIFO threads never
+     * preempt each other, and the repository has a measured case of exactly
+     * that deadlocking a link (see the event-loop comment in transport/usb).
+     */
+    int io_thread_rt_priority = 0;
+
+    AdvancedOptions& set_io_thread_affinity(int cpu, int rt_priority = 0) {
+        io_thread_cpu = cpu;
+        io_thread_rt_priority = rt_priority;
+        return *this;
+    }
+
+    /**
      * @brief Callback invoked on the transport event thread before transport I/O handling begins.
      *
      * This hook is intended only for per-thread environment setup, such as thread priority,

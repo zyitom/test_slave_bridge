@@ -8,7 +8,7 @@
 // start_cyclic_transmit() API removes stream queueing but remains asynchronous
 // to the master cycle unless called from a transport callback.
 //
-// Wire CAN0 <-> CAN1 and CAN2 <-> CAN3 as two terminated buses. Every controller
+// Wire CAN1 <-> CAN2 and CAN3 <-> CAN4 as two terminated buses. Every controller
 // queues seven CAN-FD frames per tick. Its paired controller receives those
 // frames, so all 28 commands return through the 28 rotating uplink slots.
 //
@@ -266,7 +266,7 @@ int main(int argc, char** argv) {
 
     configure_thread(cycle_core);
     printf(
-        "hybrid 28-slot link up: %u Hz, CAN0<->CAN1 and CAN2<->CAN3, %u measured ticks\n",
+        "hybrid 28-slot link up: %u Hz, CAN1<->CAN2 and CAN3<->CAN4, %u measured ticks\n",
         hz, samples);
 
     const auto period = std::chrono::duration_cast<Clock::duration>(

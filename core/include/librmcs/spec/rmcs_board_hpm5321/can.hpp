@@ -6,6 +6,11 @@
 #include <librmcs/data/datas.hpp>
 #include <librmcs/spec/can.hpp>
 
+// One firmware image serves both hpm5321 PCBs: the single-CAN board (PID
+// 0xA901) and the dual-CAN one (0xA902), which the board tells apart from OTP
+// word 25. This table is therefore the IMAGE's capacity, not any one board's --
+// how many buses are really present is read over EP0 at connect time and lives
+// in board::rmcs::Interface::can_count.
 namespace librmcs::spec::rmcs_board_hpm5321 {
 
 namespace internal {
@@ -32,7 +37,8 @@ public:
 namespace internal {
 class CanDescriptors {
     static constexpr CanDescriptor kArray[]{
-        CanDescriptor{data::DataId::kCan0},
+        CanDescriptor{data::DataId::kCan1},
+        CanDescriptor{data::DataId::kCan2},
     };
 
 public:
@@ -56,7 +62,8 @@ public:
         return nullptr;
     }
 
-    static constexpr const CanDescriptor& kCan0 = kArray[0];
+    static constexpr const CanDescriptor& kCan1 = kArray[0];
+    static constexpr const CanDescriptor& kCan2 = kArray[1];
 };
 } // namespace internal
 

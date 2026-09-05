@@ -2,7 +2,7 @@
 // actually push to one board, as opposed to how many CAN frames the wire can
 // carry.
 //
-// WHY THIS EXISTS: `dual_board_test stress` batches CAN0 and CAN1 into ONE USB
+// WHY THIS EXISTS: `dual_board_test stress` batches CAN1 and CAN2 into ONE USB
 // packet per iteration, so a run at 19000 frames/s per bus only ever produced
 // 19000 packets/s. That measured the CAN wire (which saturates at ~19870
 // frames/s for an 8-byte CAN-FD frame at 1M/5M) and said nothing about the USB
@@ -16,9 +16,9 @@
 // how fast memcpy runs.
 //
 // MODES
-//   combined  can0+can1 in one packet         1 packet  / 2 CAN frames
-//   split     can0 and can1 in own packets    2 packets / 2 CAN frames
-//   split3    can0, can1, uart0 each its own  3 packets / 2 CAN frames + 1 UART
+//   combined  can1+can2 in one packet         1 packet  / 2 CAN frames
+//   split     can1 and can2 in own packets    2 packets / 2 CAN frames
+//   split3    can1, can2, uart0 each its own  3 packets / 2 CAN frames + 1 UART
 //
 // Pass rate 0 to flood (no pacing): the loop then reports the ceiling the pool
 // back-pressure allows. Any positive rate paces to that many ITERATIONS per
@@ -54,6 +54,11 @@
 #include <librmcs/board/rmcs_board_hpm5321_dual_can.hpp>
 
 #include "can_diag_record.hpp"
+
+
+// CAN ports are named as the ENCLOSURE labels them (1-based), not as the
+// 0-based DataId underneath. See librmcs/board/rmcs_can_port.hpp.
+using librmcs::board::rmcs::CanPort;
 
 namespace {
 
@@ -123,11 +128,19 @@ public:
     const librmcs::diag::UsbOutTimingAccumulator& usb_timing() const { return usb_timing_; }
 
 private:
-    void can0_receive_callback(const librmcs::data::CanDataView& data) override {
-        tally_can(0, data);
-    }
-    void can1_receive_callback(const librmcs::data::CanDataView& data) override {
-        tally_can(1, data);
+    void can_receive(
+        CanPort port, const librmcs::data::CanDataView& data) override {
+        switch (port) {
+        case CanPort::kCan1: {
+            tally_can(0, data);
+            break;
+        }
+        case CanPort::kCan2: {
+            tally_can(1, data);
+            break;
+        }
+        default: break;
+        }
     }
     void uart0_receive_callback(const librmcs::data::UartDataView& data) override {
         librmcs::diag::UsbOutTiming timing{};
@@ -246,20 +259,20 @@ uint64_t send_loop(Node& node, Mode mode, uint32_t iterations_per_sec, Clock::ti
             packets += 1;
         } else if (mode == Mode::kCombined) {
             auto builder = node.board().start_transmit();
-            builder.can0_transmit(
+            builder.can_transmit(CanPort::kCan1, 
                 {.can_id = kCanIdBase, .can_data = can_payload, .is_fdcan = true});
-            builder.can1_transmit(
+            builder.can_transmit(CanPort::kCan2, 
                 {.can_id = kCanIdBase + 1, .can_data = can_payload, .is_fdcan = true});
             packets += 1;
         } else {
             {
                 auto builder = node.board().start_transmit();
-                builder.can0_transmit(
+                builder.can_transmit(CanPort::kCan1, 
                     {.can_id = kCanIdBase, .can_data = can_payload, .is_fdcan = true});
             }
             {
                 auto builder = node.board().start_transmit();
-                builder.can1_transmit(
+                builder.can_transmit(CanPort::kCan2, 
                     {.can_id = kCanIdBase + 1, .can_data = can_payload, .is_fdcan = true});
             }
             packets += 2;

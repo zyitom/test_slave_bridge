@@ -223,13 +223,6 @@ bool host_session_established() {
         // and its next_batch() returns nullptr on every pass. It stays in the
         // loop only to keep single-core builds -- where usb::Vendor IS the host
         // transport -- on the identical code path.
-#if LIBRMCS_SPLIT_CAN_ENDPOINT
-        // CAN first: within one pass the call order is the only priority the
-        // board has, and under UART line-rate load pumping it first measured
-        // p99 123.7 us against 128.4 us for bulk-first.
-        usb::vendor->try_transmit_can();
-        usb::vendor->poll_can_downlink_arm_if_pending();
-#endif
         usb::vendor->try_transmit();
         xcore::pump_data_plane();
 

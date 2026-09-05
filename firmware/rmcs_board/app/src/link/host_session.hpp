@@ -96,6 +96,7 @@ public:
     void deactivate_session() {
         uplink_enabled_ = false;
         session_established_ = false;
+        session_deactivated_callback();
     }
 
 protected:
@@ -126,6 +127,26 @@ protected:
     // A kStart with a new nonce reset the stream: the in-flight batch and all
     // pending batches were just dropped. Transports reset transfer progress.
     virtual void session_activated_callback() {}
+
+    // Whether this transport will accept a kStart yet. A transport carrying an
+    // out-of-band configuration handshake refuses until that handshake has
+    // happened, so a host which never performed it cannot open a session and
+    // then act on assumptions the board does not share -- concretely, a host
+    // from before the frame type moved to EP0 would keep setting a per-frame
+    // is_fdcan the firmware no longer reads, and get FD frames where it
+    // expected classic ones with nothing reporting the mismatch.
+    //
+    // Default true, and it must stay so: the EtherCAT process-data transport
+    // has no control endpoint to hold such a handshake on.
+    virtual bool session_allowed() const { return true; }
+
+    // The session ended -- lease expired, bus reset, or unplug. A transport
+    // that gates on an out-of-band handshake forgets it here, so the NEXT host
+    // has to perform its own: tud_mount_cb only fires on re-enumeration, and
+    // swapping the host program without replugging the cable does not
+    // re-enumerate. Without this, a host that never handshakes inherits the
+    // previous host's -- measured, it walked straight through the gate.
+    virtual void session_deactivated_callback() {}
 
     // Lets a transport drive a SECOND deserializer into this same session, for a
     // transport that carries the protocol on more than one pipe (the USB CAN
@@ -190,25 +211,42 @@ private:
         return false;
     }
 
-    // NOTE: a rejected baudrate cannot be reported to the host through the return
-    // value -- it means "this field id was recognised", not "the operation
-    // succeeded". Echoing the config field back on the uplink does NOT work
-    // either: UartConfig is a downlink-only channel by contract, and the host's
-    // handler treats an uplink one as a routing error, fails the deserializer and
-    // kills the link (measured: UART went from PASS to 0/320). Reporting it needs
-    // a NEW uplink field, i.e. a real protocol extension. See
-    // rmcs_board/AGENTS.md "已知缺口".
+    // In-band UART configuration. Retired on the USB transport: a rejected
+    // baudrate could not be reported through this return value -- it means "this
+    // field id was recognised", not "the operation succeeded" -- and echoing the
+    // config field back on the uplink does not work either, because UartConfig
+    // is a downlink-only channel by contract and the host's handler treats an
+    // uplink one as a routing error, fails the deserializer and kills the link
+    // (measured: UART went from PASS to 0/320). Configuration now rides EP0,
+    // where the status stage carries the acknowledgement natively; see
+    // usb/vendor_control.cpp and librmcs/protocol/vendor_control.hpp.
+    //
+    // The EtherCAT-owned build keeps the in-band path, and must: that transport
+    // reaches the board over the process-data stream and has no control
+    // endpoint to move to. Removing it there would delete the capability rather
+    // than relocate it.
     bool uart_config_deserialized_callback(
         core::protocol::FieldId id, const data::UartConfigView& data) override {
         if (!session_established_)
             return true;
+#if defined(LIBRMCS_APP_RELEASE_CORE1) && LIBRMCS_APP_RELEASE_CORE1
         for (auto& board_uart : uart::uart_array) {
             if (static_cast<core::protocol::FieldId>(board_uart->config_data_id()) == id) {
-                board_uart->handle_config(data);
+                board_uart->set_baudrate(data.baudrate.value_or(0));
                 return true;
             }
         }
         return false;
+#else
+        // Refused, not ignored. false puts the deserializer into discard mode
+        // for the rest of the transfer, which is the correct answer to a field
+        // this transport no longer implements: silently dropping it would leave
+        // a host believing it had switched a baudrate that never moved -- the
+        // exact failure the move to EP0 exists to end.
+        (void)id;
+        (void)data;
+        return false;
+#endif
     }
 
     // This board has no GPIO application; GPIO commands from the host are ignored.
@@ -263,6 +301,13 @@ private:
     void session_control_deserialized_callback(const data::SessionControlView& data) override {
         switch (data.type) {
         case data::SessionType::kStart: {
+            // Silently refuse. The session protocol has no negative ack, and a
+            // host that cannot open a session fails its own ack timeout in
+            // about a second with a message of its own; saying nothing is the
+            // only thing this layer can say.
+            if (!session_allowed())
+                return;
+
             const bool same_session = session_established_ && data.nonce == current_session_nonce_;
 
             if (!same_session)

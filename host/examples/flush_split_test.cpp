@@ -59,6 +59,11 @@
 #include <librmcs/board/rmcs_board_hpm5321_dual_can.hpp>
 #include <librmcs/time/timeline.hpp>
 
+
+// CAN ports are named as the ENCLOSURE labels them (1-based), not as the
+// 0-based DataId underneath. See librmcs/board/rmcs_can_port.hpp.
+using librmcs::board::rmcs::CanPort;
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -257,26 +262,34 @@ int main(int argc, char** argv) {
                         spin_until(reference);
                         {
                             auto builder = board_a.start_transmit();
-                            builder.can0_transmit({.can_id = librmcs::data::kSyncProbeCanId,
-                                                   .can_data = payload1,
-                                                   .is_fdcan = true});
+                            builder.can_transmit(
+                                CanPort::kCan1,
+                                {.can_id = librmcs::data::kSyncProbeCanId,
+                                 .can_data = payload1,
+                                 .is_fdcan = true});
                         }
                         spin_until(late);
                         {
                             auto builder = board_a.start_transmit();
-                            builder.can0_transmit({.can_id = librmcs::data::kSyncProbeCanId,
-                                                   .can_data = payload2,
-                                                   .is_fdcan = true});
+                            builder.can_transmit(
+                                CanPort::kCan1,
+                                {.can_id = librmcs::data::kSyncProbeCanId,
+                                 .can_data = payload2,
+                                 .is_fdcan = true});
                         }
                     } else {
                         spin_until(late);
                         auto builder = board_a.start_transmit();
-                        builder.can0_transmit({.can_id = librmcs::data::kSyncProbeCanId,
-                                               .can_data = payload1,
-                                               .is_fdcan = true});
-                        builder.can0_transmit({.can_id = librmcs::data::kSyncProbeCanId,
-                                               .can_data = payload2,
-                                               .is_fdcan = true});
+                        builder.can_transmit(
+                            CanPort::kCan1,
+                            {.can_id = librmcs::data::kSyncProbeCanId,
+                             .can_data = payload1,
+                             .is_fdcan = true});
+                        builder.can_transmit(
+                            CanPort::kCan1,
+                            {.can_id = librmcs::data::kSyncProbeCanId,
+                             .can_data = payload2,
+                             .is_fdcan = true});
                     }
 
                     trials.push_back({tag1, tag2, gap_index, split,

@@ -8,6 +8,7 @@
 
 #include "core/src/utility/assert.hpp"
 #include "firmware/rmcs_board/app/src/diag/can_diag.hpp"
+#include "firmware/rmcs_board/app/src/diag/latency.hpp"
 
 // The CAN forwarding hot path is defined out-of-line here, in the ILM (.fast)
 // section, rather than inline in can.hpp. ILM is zero-wait-state and never
@@ -31,14 +32,14 @@ void Can::handle_downlink(const data::CanDataView& data) {
         frame.use_ext_id = false;
         frame.std_id = data.can_id;
     }
-    // The controller stays permanently in CAN-FD mode, which is a strict
-    // superset: an FD-enabled M_CAN transmits and receives classic CAN 2.0
-    // frames too, selected per element via the FDF/BRS bits.  So the frame
-    // type is chosen per-frame from the host's is_fdcan flag instead of a
-    // fixed controller mode -- no INIT-mode reconfiguration, no bus
-    // interruption, just two bool assignments on the hot path.  canfd_ caps
-    // it: a classic-only controller can never be asked to emit an FD frame.
-    const bool send_fd = canfd_ && data.is_fdcan;
+    // Frame type follows the BUS, not the frame. It used to be chosen per frame
+    // from the host's is_fdcan flag; that flag now lives on EP0 as a per-bus
+    // setting the host reads back during its construction handshake
+    // (librmcs/protocol/vendor_control.hpp), so the only value that can be in
+    // force here is this controller's own compiled mode. Reading the header bit
+    // as well would let a host and a board disagree about a frame that the wire
+    // had already settled.
+    const bool send_fd = canfd_;
     frame.canfd_frame = send_fd;
     frame.bitrate_switch = send_fd;
     frame.rtr = data.is_remote_transmission;
@@ -63,8 +64,10 @@ void Can::handle_downlink(const data::CanDataView& data) {
     //
     // Queueing only on overflow keeps the common path free of any added work.
     if (transmit_buffer_.peek_front() == nullptr
-        && mcan_transmit_via_txfifo_nonblocking(can_base_, &frame, nullptr) == status_success)
+        && mcan_transmit_via_txfifo_nonblocking(can_base_, &frame, nullptr) == status_success) {
+        diag::latency::close_downlink();
         return;
+    }
 
     // Compress into the queue element: T0/T1 plus the (at most 8) data bytes.
     // mcan_tx_frame_t's leading words are exactly T0/T1, so they copy straight
@@ -202,6 +205,13 @@ bool Can::handle_uplink(core::protocol::FieldId field_id, core::protocol::Serial
         return false;
     if (valid) {
         serialize_uplink(field_id, data, serializer);
+        // One increment on the forwarding path, unconditional -- unlike the
+        // diag counter next to it, this one has to exist in the shipping image:
+        // it is what tells a host "this bus has received nothing at all" from
+        // "this bus is receiving but something downstream drops it", and that
+        // distinction is the first fork of every dead-bus investigation.
+        ++forwarded_frames_;
+        diag::latency::close_uplink(uplink_opened_at_);
         diag::note_frame(can_index());
     }
 
@@ -214,6 +224,9 @@ void Can::irq_handler() {
     // shows up: a frozen entry count is the signal that separates "the
     // interrupt stopped arriving" from "the controller stopped receiving".
     diag::note_isr_entry(can_index());
+    // Stamped here, consumed in handle_uplink below: both run in this same
+    // interrupt, so a plain member needs no synchronization.
+    uplink_opened_at_ = diag::latency::now();
     irq_count_++;
 
     uint32_t flags = mcan_get_interrupt_flags(can_base_);
@@ -333,7 +346,7 @@ void Can::handle_interrupt_flags(uint32_t flags) {
                 if (!valid)
                     continue;
                 if (link::hybrid_can_uplink(
-                        static_cast<size_t>(data_id_) - static_cast<size_t>(data::DataId::kCan0),
+                        static_cast<size_t>(data_id_) - static_cast<size_t>(data::DataId::kCan1),
                         view)) {
                     forwarded = true;
                 } else if (link::uplink_enabled()) {
@@ -392,10 +405,11 @@ void Can::handle_interrupt_flags(uint32_t flags) {
         }
         // Index the indicator by this controller's position in board::kCanPorts,
         // which is what report_can_fault's per-controller state is keyed on.
-        // The previous two-way "CAN0 or else 1" test collapses every controller
-        // above CAN1 onto indicator 1, so on a board with more than two CAN
-        // ports plus a matching indicator table, a CAN2/CAN3 fault would light
-        // CAN1's LED and overwrite CAN1's own state. Latent rather than
+        // The previous two-way "first port or else the second" test collapses
+        // every controller above the second onto indicator 1, so on a board with
+        // more than two CAN ports plus a matching indicator table, a CAN3/CAN4
+        // fault would light CAN2's LED and overwrite CAN2's own state. Latent
+        // rather than
         // observable today -- the only >2-CAN board (hpm6e8y) ships an empty
         // kCanIndicatorPins, and report_can_fault() bounds-checks against it, so
         // the bad index was discarded there. Deriving it correctly keeps that

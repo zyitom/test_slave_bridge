@@ -2,6 +2,15 @@
 // without any mode switch, and that it reports each frame's real type back to
 // the host.
 //
+// OBSOLETE FOR rmcs_board AS OF 2026-09-04. Its transmit half depends on the
+// per-frame is_fdcan flag, and rmcs_board firmware no longer reads that bit:
+// the frame type moved to EP0 as a per-bus setting, so an FD bus now sends
+// every frame as FD (firmware can/can.cpp, librmcs/protocol/vendor_control.hpp).
+// The three "classic 2.0" cases below can therefore never pass against an
+// rmcs_board -- the board answers in FD regardless of what was asked. The tool
+// still means what it says on mc02 / c_board / ch32_board, whose firmware
+// continues to honour the per-frame bit.
+//
 // Why this is worth testing: the controllers are held in CAN-FD mode
 // permanently (CanMode::kCanFd in the board's kCanPorts), but FD mode is a
 // strict superset -- an FD-enabled M_CAN decodes the FDF bit per frame and
@@ -10,8 +19,8 @@
 // frame is classic unless the caller asks for FD. This tool exercises the whole
 // matrix in one run.
 //
-// WIRING: join CAN bus 0 and bus 1 onto ONE bus -- CAN0_H<->CAN1_H,
-// CAN0_L<->CAN1_L -- with a 120 ohm terminator at EACH end. Missing termination
+// WIRING: join CAN bus 0 and bus 1 onto ONE bus -- CAN1_H<->CAN2_H,
+// CAN1_L<->CAN2_L -- with a 120 ohm terminator at EACH end. Missing termination
 // shows up as lost FD frames first (the 5 Mbit data phase is far less tolerant
 // of reflections than the 1 Mbit arbitration phase), so a run that loses only
 // FD frames is a wiring result, not a firmware result.

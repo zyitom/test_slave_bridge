@@ -180,6 +180,13 @@ public:
 
         host::protocol::Handler::PacketBuilder builder_;
     };
+    // Whether this board's link is up, re-establishing, or gone for good.
+    // kFaulted means the device disappeared: the transport refuses traffic and
+    // only destroying this object and constructing a new one recovers it.
+    [[nodiscard]] host::protocol::Handler::LinkState link_state() const noexcept {
+        return handler_.link_state();
+    }
+
     PacketBuilder start_transmit() noexcept { return PacketBuilder{handler_}; }
 
 private:

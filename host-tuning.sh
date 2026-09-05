@@ -13,7 +13,15 @@
 # 1 ms gap, SCHED_FIFO 80, pinned); board+USB RTT numbers come from
 # can_loopback_latency. Full write-up and the negative results in HOST_TUNING.md.
 #
-#   CPU frequency       MEASURED, LARGEST SINGLE EFFECT. p50 77.5 -> 67.5 us,
+#   CPU frequency       MEASURED, LARGEST SINGLE EFFECT *ON A MACHINE WITHOUT
+#                       isolcpus*. On TL101 it is worth ZERO, twice measured
+#                       (2026-08-21 and 2026-09-05, 4 interleaved rounds each):
+#                       isolcpus=7 + SCHED_FIFO already pins the core at 4100 MHz,
+#                       so the governor has nothing left to do. The real
+#                       requirement is "something must hold the frequency up",
+#                       and either mechanism satisfies it. See HOST_TUNING.md
+#                       11.3 and 11.11.3 before quoting the number below.
+#                       p50 77.5 -> 67.5 us,
 #                       p99 ~100 -> ~82 us, reproduced over 3 rounds. A
 #                       SCHED_FIFO thread that SLEEPS between transfers does NOT
 #                       hold the clock up: under powersave the core sat at
@@ -292,14 +300,14 @@ else
     ok "sched_rt_runtime_us: $RT_RUNTIME -> -1"
 fi
 
-echo "== CPU frequency (MEASURED: largest single effect, ~10 us of p50) =="
+echo "== CPU frequency (worth ~10 us of p50 ONLY without isolcpus; 0 on this box, see HOST_TUNING.md 11.3/11.11.3) =="
 GOV="$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo n/a)"
 if [[ "$GOV" == "n/a" ]]; then
     info "no cpufreq sysfs; skipping"
 elif [[ "$GOV" == "performance" ]]; then
     ok "governor already performance"
 elif [[ "$CHECK_ONLY" == "1" ]]; then
-    warn "governor = $GOV -- costs ~10 us of p50; run without --check to fix"
+    warn "governor = $GOV -- run without --check to fix. NOTE: worth ~10 us of p50 only when nothing else holds the clock up; with isolcpus + SCHED_FIFO (this box) it is measured at ZERO"
 else
     for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
         echo performance > "$g" 2>/dev/null || true

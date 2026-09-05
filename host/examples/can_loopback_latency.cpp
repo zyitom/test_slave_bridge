@@ -4,8 +4,8 @@
 // from a host timestamp, which mixes two unsynchronized clocks; see rx_monitor,
 // which only measures jitter).
 //
-// WIRING: join CAN bus 0 and bus 1 onto ONE wire -- CAN0_H<->CAN1_H,
-// CAN0_L<->CAN1_L -- with a 120 ohm terminator at EACH end. The host sends a
+// WIRING: join CAN bus 0 and bus 1 onto ONE wire -- CAN1_H<->CAN2_H,
+// CAN1_L<->CAN2_L -- with a 120 ohm terminator at EACH end. The host sends a
 // tagged frame on bus 0; the board drives it onto the wire; bus 1 receives it
 // (and ACKs bus 0); the board forwards it back to the host. The measured round
 // trip therefore covers:

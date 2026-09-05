@@ -15,7 +15,7 @@
 //     -> the drain loop or the serializer is the problem, not delivery.
 //   * alloc_fail climbing -> the uplink batch pool is the bottleneck.
 //
-// WIRING: same as usb_canfd_stress -- CAN0<->CAN1 and CAN2<->CAN3, each pair a
+// WIRING: same as usb_canfd_stress -- CAN1<->CAN2 and CAN3<->CAN4, each pair a
 // single bus with a 120 ohm terminator at each end.
 //
 // Build: cmake --preset linux-release -S host -DBUILD_EXAMPLES=ON
@@ -38,6 +38,11 @@
 #include <thread>
 
 #include <librmcs/board/rmcs_board_hpm6e8y.hpp>
+
+
+// CAN ports are named as the ENCLOSURE labels them (1-based), not as the
+// 0-based DataId underneath. See librmcs/board/rmcs_can_port.hpp.
+using librmcs::board::rmcs::CanPort;
 
 namespace {
 
@@ -306,11 +311,19 @@ public:
     uint64_t telemetry_count() const { return telemetry_count_.load(std::memory_order_relaxed); }
 
 private:
-    void can1_receive_callback(const librmcs::data::CanDataView& data) override {
-        pair01.verify(data, kCanId0);
-    }
-    void can3_receive_callback(const librmcs::data::CanDataView& data) override {
-        pair23.verify(data, kCanId2);
+    void can_receive(
+        CanPort port, const librmcs::data::CanDataView& data) override {
+        switch (port) {
+        case CanPort::kCan2: {
+            pair01.verify(data, kCanId0);
+            break;
+        }
+        case CanPort::kCan4: {
+            pair23.verify(data, kCanId2);
+            break;
+        }
+        default: break;
+        }
     }
 
     void uart0_receive_callback(const librmcs::data::UartDataView& data) override {
@@ -370,8 +383,10 @@ int main(int argc, char** argv) {
                 encode(a, static_cast<uint32_t>(sent));
                 encode(b, static_cast<uint32_t>(sent));
                 board.start_transmit()
-                    .can0_transmit({.can_id = kCanId0, .can_data = a, .is_fdcan = true})
-                    .can2_transmit({.can_id = kCanId2, .can_data = b, .is_fdcan = true});
+                    .can_transmit(
+                        CanPort::kCan1, {.can_id = kCanId0, .can_data = a, .is_fdcan = true})
+                    .can_transmit(
+                        CanPort::kCan3, {.can_id = kCanId2, .can_data = b, .is_fdcan = true});
                 rx.pair01.tx.fetch_add(1, std::memory_order_relaxed);
                 rx.pair23.tx.fetch_add(1, std::memory_order_relaxed);
                 ++sent;

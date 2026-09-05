@@ -14,6 +14,10 @@ enum class DataId : uint8_t {
 
     kGpio = 1,
 
+    // Unused by every board in this repository: all of them number their CAN
+    // ports from 1, matching the enclosure silkscreen. Kept because the
+    // numeric value is wire format -- removing it would renumber every id
+    // after it and break every deployed firmware.
     kCan0 = 2,
     kCan1 = 3,
     kCan2 = 4,

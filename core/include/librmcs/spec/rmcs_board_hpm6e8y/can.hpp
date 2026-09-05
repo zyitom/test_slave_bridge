@@ -32,10 +32,10 @@ public:
 namespace internal {
 class CanDescriptors {
     static constexpr CanDescriptor kArray[]{
-        CanDescriptor{data::DataId::kCan0},
         CanDescriptor{data::DataId::kCan1},
         CanDescriptor{data::DataId::kCan2},
         CanDescriptor{data::DataId::kCan3},
+        CanDescriptor{data::DataId::kCan4},
     };
 
 public:
@@ -59,10 +59,10 @@ public:
         return nullptr;
     }
 
-    static constexpr const CanDescriptor& kCan0 = kArray[0];
-    static constexpr const CanDescriptor& kCan1 = kArray[1];
-    static constexpr const CanDescriptor& kCan2 = kArray[2];
-    static constexpr const CanDescriptor& kCan3 = kArray[3];
+    static constexpr const CanDescriptor& kCan1 = kArray[0];
+    static constexpr const CanDescriptor& kCan2 = kArray[1];
+    static constexpr const CanDescriptor& kCan3 = kArray[2];
+    static constexpr const CanDescriptor& kCan4 = kArray[3];
 };
 } // namespace internal
 

@@ -45,15 +45,21 @@ public:
 
     [[nodiscard]] data::DataId config_data_id() const { return config_data_id_; }
 
-    // Runtime baudrate switch requested by the host. An empty view (no baudrate
-    // set) is a deliberate no-op per the sparse-patch semantics of the config
-    // type, reported as false so the caller can tell it apart from a hit.
+    // Runtime baudrate switch requested by the host over EP0
+    // (usb/vendor_control.cpp). Returns whether the port is now running at
+    // `baudrate`; false leaves the hardware exactly as it was, and the control
+    // transfer's status stage is stalled so the host learns that -- which is
+    // what the old in-band kUart*Config field could not express.
     //
     // RX bytes arriving inside the switch window may be garbled -- the line rate
     // changes mid-character and there is no way to synchronize with the peer.
     // That is accepted; the host is expected to quiesce the link first.
-    bool handle_config(const data::UartConfigView& data) {
-        if (!data.baudrate.has_value() || *data.baudrate == 0) [[unlikely]]
+    //
+    // Runs on the main loop, from tud_task(): the DLAB window below is only
+    // safe with the transmit DMA provably stopped, which interrupt context
+    // cannot guarantee.
+    bool set_baudrate(uint32_t baudrate) {
+        if (baudrate == 0) [[unlikely]]
             return false;
 
         // Bytes already handed to the DMA would be shifted out at the new rate.
@@ -67,7 +73,7 @@ public:
         // merely expected to be idle.
         TxBuffer::abort_transmit();
 
-        const hpm_stat_t status = uart_set_baudrate(uart_base_, *data.baudrate, uart_clock_hz_);
+        const hpm_stat_t status = uart_set_baudrate(uart_base_, baudrate, uart_clock_hz_);
         // Unconditionally, and before anything else touches the port:
         // uart_set_baudrate() sets DLAB up front but returns early WITHOUT
         // clearing it when its solver rejects the baudrate, so on that path the
@@ -122,7 +128,7 @@ public:
     // address the TX DMA writes to (THR at 0x20 becomes DLL) -- a diagnostic
     // read racing a live TX would overwrite the divisor with a data byte and
     // silently kill the port. Cheap and correct: nothing changes the divisor
-    // except init and handle_config, and both snapshot it while TX is stopped.
+    // except init and set_baudrate, and both snapshot it while TX is stopped.
     [[nodiscard]] uint32_t clock_hz() const { return uart_clock_hz_; }
     [[nodiscard]] uint32_t divisor() const { return uart_divisor_; }
     [[nodiscard]] uint32_t oscr() const { return uart_base_->OSCR; }
@@ -240,7 +246,7 @@ inline Uart::Uart(UartPort port, size_t storage_index)
     , config_data_id_(port.config_data_id)
     , uart_base_(reinterpret_cast<UART_Type*>(port.base))
     , uart_clock_hz_(init_uart(port.irq_num, port.baudrate, port.parity)) {
-    // Safe here for the same reason handle_config's call is: no TX has been
+    // Safe here for the same reason set_baudrate's call is: no TX has been
     // queued yet, so nothing can be writing THR while DLAB is set.
     snapshot_divisor();
 }

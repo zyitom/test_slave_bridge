@@ -171,38 +171,59 @@ public:
     virtual void on_link_restart(std::function<void()> callback) { (void)callback; }
     // NOLINTEND(performance-unnecessary-value-param)
 
+    /**
+     * @brief Optional link-level recovery, attempted before giving up on a session.
+     *
+     * Called from the keepalive thread once the board has stopped answering on a
+     * link the transport layer still believes is up -- the failure mode where
+     * every transfer is accepted and nothing comes back. Implementations should
+     * do the cheap, local repairs only (USB: clear the endpoint halts, re-arm
+     * the receive pool) and must not block for long: the caller is about to
+     * re-open the protocol session either way.
+     *
+     * @return true when something was actually repaired or retried, so the
+     *         caller can log the difference between "tried and failed" and
+     *         "this transport has no recovery to offer" (the default).
+     */
+    virtual bool try_recover_link() { return false; }
+
+    /**
+     * @brief Whether the link has failed beyond local repair.
+     *
+     * A faulted transport accepts no further traffic: transmits are dropped and
+     * acquire_transmit_buffer() returns nullptr. Recovery is out of its hands --
+     * the board object has to be destroyed and re-created once the device is
+     * back. Transports that cannot fail this way keep the default.
+     */
+    virtual bool link_faulted() const noexcept { return false; }
+
     //------------------------------------------------------------------
-    // Optional priority channel: a second, independent pipe for CAN.
+
     //------------------------------------------------------------------
-    // A transport that reports has_priority_channel() carries CAN on a pipe of
-    // its own, so CAN never queues behind bulk traffic (UART, config, telemetry).
-    // On USB that is a second bulk endpoint pair: the host controller schedules
-    // each endpoint independently, which is the whole point -- sharing one pipe
-    // costs a colliding CAN frame ~40 us, taking p99 from 104.5 to 143.9 us at
-    // UART line rate (firmware/rmcs_board/AGENTS.md).
+    // Optional control channel: EP0 vendor requests.
+    //------------------------------------------------------------------
+    // Channel configuration (UART baudrate, CAN bus mode) rides this rather
+    // than the data stream, because a control transfer's status stage carries
+    // the one thing the bulk stream could not: whether the board accepted the
+    // setting. See librmcs/protocol/vendor_control.hpp.
     //
-    // Everything below falls back to the single channel by default, so the
-    // EtherCAT backends (which have one stream and no such queueing) inherit
-    // correct behaviour without implementing anything.
-    virtual bool has_priority_channel() const noexcept { return false; }
+    // Only USB has such an endpoint. The EtherCAT backends inherit
+    // kUnsupported, which is a distinct answer from kStalled on purpose -- the
+    // first means "ask another way", the second means "the board said no".
+    enum class ControlResult : uint8_t {
+        kOk,          // completed; `payload` holds the reply for an IN request
+        kStalled,     // the device rejected it; nothing on the board changed
+        kUnsupported, // this transport has no control endpoint
+        kFailed,      // I/O error, timeout, or a short transfer
+    };
 
-    virtual std::unique_ptr<TransportBuffer> acquire_priority_transmit_buffer() noexcept {
-        return acquire_transmit_buffer();
-    }
-
-    virtual void transmit_priority(std::unique_ptr<TransportBuffer> buffer, size_t payload_size) {
-        transmit(std::move(buffer), payload_size);
-    }
-
-    virtual void release_priority_transmit_buffer(std::unique_ptr<TransportBuffer> buffer) {
-        release_transmit_buffer(std::move(buffer));
-    }
-
-    // Never called unless has_priority_channel() is true, so the default is to
-    // drop the registration rather than silently duplicate the main callback.
-    // NOLINTNEXTLINE(performance-unnecessary-value-param)
-    virtual void receive_priority(std::function<void(std::span<const std::byte>)> callback) {
-        (void)callback;
+    virtual ControlResult vendor_control(
+        uint8_t request_type, uint8_t request, uint16_t index, std::span<std::byte> payload) {
+        (void)request_type;
+        (void)request;
+        (void)index;
+        (void)payload;
+        return ControlResult::kUnsupported;
     }
 };
 
@@ -210,9 +231,19 @@ namespace usb {
 
 using ConnectionOptions = board::AdvancedOptions;
 
+// An empty usb_pids matches any product under this vendor; more than one entry
+// is how a single device that ships under several product IDs is addressed.
 std::unique_ptr<Transport> create_transport(
-    uint16_t usb_vid, int32_t usb_pid, std::string_view serial_filter,
+    uint16_t usb_vid, std::span<const uint16_t> usb_pids, std::string_view serial_filter,
     const ConnectionOptions& options);
+
+// Single-product convenience overload; the value is used during construction
+// only, so the temporary it spans cannot outlive its use.
+inline std::unique_ptr<Transport> create_transport(
+    uint16_t usb_vid, uint16_t usb_pid, std::string_view serial_filter,
+    const ConnectionOptions& options) {
+    return create_transport(usb_vid, std::span<const uint16_t>{&usb_pid, 1}, serial_filter, options);
+}
 
 } // namespace usb
 

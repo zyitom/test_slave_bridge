@@ -66,6 +66,11 @@
 
 #include <librmcs/board/rmcs_board_hpm5321_dual_can.hpp>
 
+
+// CAN ports are named as the ENCLOSURE labels them (1-based), not as the
+// 0-based DataId underneath. See librmcs/board/rmcs_can_port.hpp.
+using librmcs::board::rmcs::CanPort;
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -537,7 +542,8 @@ int main(int argc, char** argv) {
                 next += period;
                 for (auto& board : boards) {
                     auto builder = board->start_transmit();
-                    builder.can0_transmit({.can_id = 0x5A0, .can_data = payload, .is_fdcan = true});
+                    builder.can_transmit(
+                        CanPort::kCan1, {.can_id = 0x5A0, .can_data = payload, .is_fdcan = true});
                     sent.fetch_add(1, std::memory_order_relaxed);
                 }
                 // Clamp: once next falls behind now, "next += period" degenerates

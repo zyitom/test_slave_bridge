@@ -34,6 +34,11 @@
 #include <librmcs/board/rmcs_board_hpm5321_dual_can.hpp>
 #include <librmcs/data/datas.hpp>
 
+
+// CAN ports are named as the ENCLOSURE labels them (1-based), not as the
+// 0-based DataId underneath. See librmcs/board/rmcs_can_port.hpp.
+using librmcs::board::rmcs::CanPort;
+
 namespace examples {
 
 // Minimal non-owning callable view, so `transmit` can take a lambda without a
@@ -152,7 +157,7 @@ namespace detail {
 // temporary, so the fluent expression is built inline at each board construction
 // (it lives to the end of the full constructor call) rather than factored out.
 
-// c_board: CAN1/CAN2, UART1/UART2, DBUS, GPIO (PWM + read), IMU.
+// c_board: CAN2/CAN3, UART1/UART2, DBUS, GPIO (PWM + read), IMU.
 class CBoardSession final : public BoardSession, public librmcs::board::CBoard::Callback {
 public:
     explicit CBoardSession(BoardReceiver& receiver, std::string_view filter)
@@ -263,7 +268,7 @@ private:
     librmcs::board::CBoard board_;
 };
 
-// mc02: CAN1/CAN2/CAN3, UART1/UART2/UART3, DBUS, GPIO (PWM write only), IMU
+// mc02: CAN2/CAN3/CAN4, UART1/UART2/UART3, DBUS, GPIO (PWM write only), IMU
 // (accel + gyro, no temperature).
 class Mc02Session final : public BoardSession, public librmcs::board::Mc02::Callback {
 public:
@@ -391,9 +396,9 @@ private:
     librmcs::board::Mc02 board_;
 };
 
-// ch32_board: CAN1/CAN2 and UART1/UART2 over a USB 3.0 SuperSpeed bulk pipe, no
+// ch32_board: CAN2/CAN3 and UART1/UART2 over a USB 3.0 SuperSpeed bulk pipe, no
 // IMU / DBUS / GPIO. The logical channels are numbered from 1 on this board (it
-// follows the STM32 boards' peripheral numbering), so bus 0 here is CAN1.
+// follows the STM32 boards' peripheral numbering), so bus 0 here is CAN2.
 class Ch32BoardSession final : public BoardSession, public librmcs::board::Ch32Board::Callback {
 public:
     explicit Ch32BoardSession(BoardReceiver& receiver, std::string_view filter)
@@ -454,7 +459,7 @@ private:
     librmcs::board::Ch32Board board_;
 };
 
-// hpm5321: a single CAN0 and UART0, no IMU / DBUS / GPIO.
+// hpm5321: a single CAN1 and UART0, no IMU / DBUS / GPIO.
 class Hpm5321Session final : public BoardSession,
                              public librmcs::board::RmcsBoardHpm5321::Callback {
 public:
@@ -473,18 +478,23 @@ public:
 
     void transmit(FunctionRef<void(BoardTransmitter&)> build) override {
         auto builder = board_.start_transmit();
-        Transmitter transmitter{builder};
+        Transmitter transmitter{builder, board_};
         build(transmitter);
     }
 
 private:
     struct Transmitter final : BoardTransmitter {
         librmcs::board::RmcsBoardHpm5321::PacketBuilder& builder;
-        explicit Transmitter(librmcs::board::RmcsBoardHpm5321::PacketBuilder& b) : builder(b) {}
+        librmcs::board::RmcsBoardHpm5321& board;
+        Transmitter(
+            librmcs::board::RmcsBoardHpm5321::PacketBuilder& b,
+            librmcs::board::RmcsBoardHpm5321& board_ref)
+            : builder(b)
+            , board(board_ref) {}
         BoardTransmitter& can(int bus, const librmcs::data::CanDataView& data) override {
             if (bus != 0)
                 throw std::out_of_range{"RmcsBoardHpm5321: only CAN bus 0 exists"};
-            builder.can0_transmit(data);
+            builder.can_transmit(CanPort::kCan1, data);
             return *this;
         }
         BoardTransmitter& uart(int port, const librmcs::data::UartDataView& data) override {
@@ -493,10 +503,29 @@ private:
             builder.uart0_transmit(data);
             return *this;
         }
+        // Goes out on EP0, not in this batch: rmcs_board configuration left the
+        // data stream so that a rejected baudrate could be reported. It is
+        // therefore applied IMMEDIATELY, ahead of anything queued in the builder
+        // around it, and it throws instead of failing silently.
+        BoardTransmitter& uart_config(
+            int port, const librmcs::data::UartConfigView& config) override {
+            if (port != 0)
+                throw std::out_of_range{"RmcsBoardHpm5321: only UART port 0 exists"};
+            if (config.baudrate.has_value())
+                board.configure_uart0(*config.baudrate);
+            return *this;
+        }
     };
 
-    void can0_receive_callback(const librmcs::data::CanDataView& data) override {
-        receiver_.on_can(0, data);
+    void can_receive(
+        CanPort port, const librmcs::data::CanDataView& data) override {
+        switch (port) {
+        case CanPort::kCan1: {
+            receiver_.on_can(0, data);
+            break;
+        }
+        default: break;
+        }
     }
     void uart0_receive_callback(const librmcs::data::UartDataView& data) override {
         receiver_.on_uart(0, data);
@@ -506,7 +535,7 @@ private:
     librmcs::board::RmcsBoardHpm5321 board_;
 };
 
-// hpm5321_dual_can: CAN0 + CAN1, single UART0, no IMU / DBUS / GPIO.
+// hpm5321_dual_can: CAN1 + CAN2, single UART0, no IMU / DBUS / GPIO.
 class Hpm5321DualCanSession final : public BoardSession,
                                     public librmcs::board::RmcsBoardHpm5321DualCan::Callback {
 public:
@@ -525,19 +554,23 @@ public:
 
     void transmit(FunctionRef<void(BoardTransmitter&)> build) override {
         auto builder = board_.start_transmit();
-        Transmitter transmitter{builder};
+        Transmitter transmitter{builder, board_};
         build(transmitter);
     }
 
 private:
     struct Transmitter final : BoardTransmitter {
         librmcs::board::RmcsBoardHpm5321DualCan::PacketBuilder& builder;
-        explicit Transmitter(librmcs::board::RmcsBoardHpm5321DualCan::PacketBuilder& b)
-            : builder(b) {}
+        librmcs::board::RmcsBoardHpm5321DualCan& board;
+        Transmitter(
+            librmcs::board::RmcsBoardHpm5321DualCan::PacketBuilder& b,
+            librmcs::board::RmcsBoardHpm5321DualCan& board_ref)
+            : builder(b)
+            , board(board_ref) {}
         BoardTransmitter& can(int bus, const librmcs::data::CanDataView& data) override {
             switch (bus) {
-            case 0: builder.can0_transmit(data); break;
-            case 1: builder.can1_transmit(data); break;
+            case 0: builder.can_transmit(CanPort::kCan1, data); break;
+            case 1: builder.can_transmit(CanPort::kCan2, data); break;
             default: throw std::out_of_range{"RmcsBoardHpm5321DualCan: CAN bus out of range (0-1)"};
             }
             return *this;
@@ -548,20 +581,30 @@ private:
             builder.uart0_transmit(data);
             return *this;
         }
+        // EP0, not this batch -- see the note on Hpm5321Session::Transmitter.
         BoardTransmitter& uart_config(
             int port, const librmcs::data::UartConfigView& config) override {
             if (port != 0)
                 throw std::out_of_range{"RmcsBoardHpm5321DualCan: only UART port 0 exists"};
-            builder.uart0_config(config);
+            if (config.baudrate.has_value())
+                board.configure_uart0(*config.baudrate);
             return *this;
         }
     };
 
-    void can0_receive_callback(const librmcs::data::CanDataView& data) override {
-        receiver_.on_can(0, data);
-    }
-    void can1_receive_callback(const librmcs::data::CanDataView& data) override {
-        receiver_.on_can(1, data);
+    void can_receive(
+        CanPort port, const librmcs::data::CanDataView& data) override {
+        switch (port) {
+        case CanPort::kCan1: {
+            receiver_.on_can(0, data);
+            break;
+        }
+        case CanPort::kCan2: {
+            receiver_.on_can(1, data);
+            break;
+        }
+        default: break;
+        }
     }
     void uart0_receive_callback(const librmcs::data::UartDataView& data) override {
         receiver_.on_uart(0, data);

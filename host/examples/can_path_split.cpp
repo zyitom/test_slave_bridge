@@ -24,7 +24,7 @@
 // All N frames ride one USB packet, so USB downlink cost is paid once and shows
 // up only in pos0 -- that is what separates the fixed floor from the step.
 //
-// WIRING: two boards, A.CAN0 <-> B.CAN0, 120 ohm at each end.
+// WIRING: two boards, A.CAN1 <-> B.CAN1, 120 ohm at each end.
 // Needs root.  sudo ./can_path_split [burst] [trials]
 
 #include <algorithm>
@@ -47,6 +47,11 @@
 
 #include <librmcs/board/common.hpp>
 #include <librmcs/board/rmcs_board_hpm5321_dual_can.hpp>
+
+
+// CAN ports are named as the ENCLOSURE labels them (1-based), not as the
+// 0-based DataId underneath. See librmcs/board/rmcs_can_port.hpp.
+using librmcs::board::rmcs::CanPort;
 
 namespace {
 
@@ -154,9 +159,16 @@ public:
     void watch(BurstCatcher* catcher) { catcher_.store(catcher, std::memory_order_release); }
 
 private:
-    void can0_receive_callback(const librmcs::data::CanDataView& data) override {
-        if (BurstCatcher* catcher = catcher_.load(std::memory_order_acquire))
-            catch_frame(catcher, data);
+    void can_receive(
+        CanPort port, const librmcs::data::CanDataView& data) override {
+        switch (port) {
+        case CanPort::kCan1: {
+            if (BurstCatcher* catcher = catcher_.load(std::memory_order_acquire))
+                catch_frame(catcher, data);
+            break;
+        }
+        default: break;
+        }
     }
 
     NodeOptions options_;
@@ -240,7 +252,7 @@ int run(int burst, int trials) {
                 std::byte payload[kPayloadSize];
                 put_u32_le(payload, static_cast<uint32_t>(i));
                 put_u32_le(payload + 4, 0);
-                builder.can0_transmit(
+                builder.can_transmit(CanPort::kCan1, 
                     {.can_id = kCanIdBase, .can_data = payload, .is_fdcan = true});
             }
         }
@@ -290,7 +302,7 @@ int run(int burst, int trials) {
         "burst=%d  trials=%d complete / %d incomplete  (CAN-FD 1M/5M, 8-byte payload)\n", burst,
         complete, incomplete);
     if (complete == 0) {
-        fprintf(stderr, "no complete burst -- check the A.CAN0 <-> B.CAN0 wiring\n");
+        fprintf(stderr, "no complete burst -- check the A.CAN1 <-> B.CAN1 wiring\n");
         return 1;
     }
 

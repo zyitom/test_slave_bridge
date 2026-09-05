@@ -118,7 +118,7 @@ int main() {
 
         if (now - last_report >= std::chrono::seconds{1}) {
             last_report = now;
-            printf("CAN0: tx %lu rx %lu | CAN1: tx %lu rx %lu\n", tx_count[0],
+            printf("CAN1: tx %lu rx %lu | CAN2: tx %lu rx %lu\n", tx_count[0],
                    agent.rx_count(0), tx_count[1], agent.rx_count(1));
             tx_count = {};
         }

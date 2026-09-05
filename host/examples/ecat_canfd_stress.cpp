@@ -1,11 +1,11 @@
 // CAN-FD loopback stress test for the rmcs_board EtherCAT bridge (hpm6e8y),
-// which now exposes all four physical CAN ports CAN0..CAN3.
+// which now exposes all four physical CAN ports CAN1..CAN4.
 //
 // WIRING: two independent loopback pairs, each a single CAN bus with a 120 ohm
 // terminator at EACH end:
-//   pair 0/1 : CAN0_H<->CAN1_H, CAN0_L<->CAN1_L
-//   pair 2/3 : CAN2_H<->CAN3_H, CAN2_L<->CAN3_L
-// The host floods CAN-FD frames out CAN0 and CAN2; the partner (CAN1 / CAN3)
+//   pair 0/1 : CAN1_H<->CAN2_H, CAN1_L<->CAN2_L
+//   pair 2/3 : CAN3_H<->CAN4_H, CAN3_L<->CAN4_L
+// The host floods CAN-FD frames out CAN1 and CAN3; the partner (CAN2 / CAN4)
 // receives and ACKs; the firmware forwards every received frame back to the
 // host, which checks it. So each pair is stressed one-way (even->odd) with a
 // clean, verifiable sequence.
@@ -25,7 +25,7 @@
 // the frame has to come back rather than be timestamped on arrival at the board.
 // The reported RTT covers the whole chain:
 //
-//   T0 --EtherCAT--> core1 --CAN0 TX--> wire --CAN1 RX--> core1 --EtherCAT--> T1
+//   T0 --EtherCAT--> core1 --CAN1 TX--> wire --CAN2 RX--> core1 --EtherCAT--> T1
 //
 // i.e. EtherCAT down + firmware + CAN wire time + firmware + EtherCAT up. To
 // isolate the CAN segment, run ecat_stream_latency against the LOOPBACK image
@@ -66,12 +66,17 @@
 
 #include <librmcs/board/rmcs_board_ecat_bridge.hpp>
 
+
+// CAN ports are named as the ENCLOSURE labels them (1-based), not as the
+// 0-based DataId underneath. See librmcs/board/rmcs_can_port.hpp.
+using librmcs::board::rmcs::CanPort;
+
 namespace {
 
 // Distinct standard IDs per source so a receiver can attribute frames and a
 // miswire (frame arriving on the wrong bus) is visible.
-constexpr uint32_t kCanId0 = 0x200; // sent on CAN0, expected on CAN1
-constexpr uint32_t kCanId2 = 0x202; // sent on CAN2, expected on CAN3
+constexpr uint32_t kCanId0 = 0x200; // sent on CAN1, expected on CAN2
+constexpr uint32_t kCanId2 = 0x202; // sent on CAN3, expected on CAN4
 constexpr size_t kPayloadBytes = 8;
 constexpr size_t kCorruptionEvidenceCount = 8;
 constexpr auto kDrainTimeout = std::chrono::seconds{2};
@@ -261,24 +266,25 @@ struct Stream {
 
 class Receiver final : public librmcs::board::RmcsBoardEcatBridge::Callback {
 public:
-    Stream pair01; // CAN0 -> CAN1
-    Stream pair23; // CAN2 -> CAN3
+    Stream pair01; // CAN1 -> CAN2
+    Stream pair23; // CAN3 -> CAN4
     std::atomic<uint64_t> unexpected{0};
 
 private:
-    void can1_receive_callback(const librmcs::data::CanDataView& data) override {
-        pair01.verify(data, kCanId0);
-    }
-    void can3_receive_callback(const librmcs::data::CanDataView& data) override {
-        pair23.verify(data, kCanId2);
-    }
-    // The transmitters never receive their own frames on a one-way bus; anything
-    // landing here signals a miswire or an unexpected bus partner.
-    void can0_receive_callback(const librmcs::data::CanDataView&) override {
-        unexpected.fetch_add(1, std::memory_order_relaxed);
-    }
-    void can2_receive_callback(const librmcs::data::CanDataView&) override {
-        unexpected.fetch_add(1, std::memory_order_relaxed);
+    void can_receive(
+        CanPort port, const librmcs::data::CanDataView& data) override {
+        switch (port) {
+        case CanPort::kCan2: pair01.verify(data, kCanId0); break;
+        case CanPort::kCan4: pair23.verify(data, kCanId2); break;
+        // The transmitters never receive their own frames on a one-way bus;
+        // anything landing here signals a miswire or an unexpected bus partner.
+        case CanPort::kCan1: {
+        case CanPort::kCan3:
+            unexpected.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+        default: break;
+        }
     }
 };
 
@@ -385,7 +391,7 @@ int main(int argc, char** argv) {
         board.emplace(argv[1], rx);
         printf("EtherCAT bridge connected on %s, session established.\n", argv[1]);
         printf(
-            "CAN-FD stress: CAN0->CAN1 and CAN2->CAN3, target %u f/s per stream for %d s "
+            "CAN-FD stress: CAN1->CAN2 and CAN3->CAN4, target %u f/s per stream for %d s "
             "(Ctrl-C to stop early)\n\n",
             rate, duration_s);
 
@@ -425,9 +431,9 @@ int main(int argc, char** argv) {
                 // not surface transport enqueue failure; the final tx/rx
                 // equality check catches a command lost at any layer.
                 board->start_transmit()
-                    .can0_transmit(
+                    .can_transmit(CanPort::kCan1, 
                         {.can_id = kCanId0, .can_data = a, .is_fdcan = true})
-                    .can2_transmit(
+                    .can_transmit(CanPort::kCan3, 
                         {.can_id = kCanId2, .can_data = b, .is_fdcan = true});
 
                 rx.pair01.tx.fetch_add(1, std::memory_order_relaxed);
